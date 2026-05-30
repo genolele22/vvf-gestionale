@@ -79,7 +79,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($azione === 'set_stato') {
         $stato = $_POST['stato'] ?? '';
-        if (!in_array($stato, ['approved', 'rejected', 'pending'], true)) {
+        if (!in_array($stato, ['approved', 'rejected'], true)) {
             echo json_encode(['ok' => false, 'errore' => 'Stato non valido']); exit;
         }
         $ids = json_decode($_POST['ids'] ?? '[]', true);
@@ -97,7 +97,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute($ids);
         $rows = $stmt->fetchAll();
 
-        $processedAt = ($stato === 'pending') ? null : date('Y-m-d H:i:s');
+        $processedAt = date('Y-m-d H:i:s');
         $up = $pdo->prepare("UPDATE bot_requests SET stato=?, processed_at=? WHERE id=?");
 
         $pdo->beginTransaction();
@@ -416,10 +416,6 @@ $totVigili   = count($perVigile);
       <span class="n"><?= $totVigili ?></span>
       <span class="lbl">Vigili</span>
     </div>
-    <div class="stat-pill pending">
-      <span class="n" id="statPending"><?= $totPending ?></span>
-      <span class="lbl">In attesa</span>
-    </div>
     <div class="stat-pill approved">
       <span class="n" id="statApproved"><?= $totApproved ?></span>
       <span class="lbl">Accettati</span>
@@ -503,7 +499,7 @@ $totVigili   = count($perVigile);
         <span class="turno-spacer"></span>
         <div class="scelta">
           <label class="lbl-si">
-            <input type="checkbox" class="chk-si" <?= $r['stato'] === 'approved' ? 'checked' : '' ?>
+            <input type="checkbox" class="chk-si" <?= $r['stato'] !== 'rejected' ? 'checked' : '' ?>
                    onchange="onScelta(this, 'approved')">accetto
           </label>
           <label class="lbl-no">
@@ -542,13 +538,13 @@ function showMsg(html, cls) {
     setTimeout(() => { box.innerHTML = ''; }, 2500);
 }
 
-// ── Spunta singola accetto/respingo (mutuamente esclusive) ───
+// ── Spunta singola accetto/respingo (binaria: una sempre attiva) ───
 function onScelta(chk, target) {
     const riga = chk.closest('.turno-riga');
     const id   = parseInt(riga.dataset.id);
-    // checkbox spuntata → quel target; deselezionata → torna pending
-    const nuovoStato = chk.checked ? target : 'pending';
-    setStato([id], nuovoStato);
+    // Non si può lasciare la richiesta senza scelta: ri-flagga e basta
+    if (!chk.checked) { chk.checked = true; return; }
+    setStato([id], target);
 }
 
 // ── Applica uno stato a una lista di richieste ───────────────
@@ -588,7 +584,7 @@ function sincronizzaDOM() {
         const st = riga.dataset.stato;
         const si = riga.querySelector('.chk-si');
         const no = riga.querySelector('.chk-no');
-        if (si) si.checked = (st === 'approved');
+        if (si) si.checked = (st !== 'rejected');
         if (no) no.checked = (st === 'rejected');
     });
 
@@ -608,7 +604,6 @@ function sincronizzaDOM() {
     // contatori
     const tutte = [...document.querySelectorAll('.turno-riga')];
     const conta = s => tutte.filter(r => r.dataset.stato === s).length;
-    document.getElementById('statPending').textContent  = conta('pending');
     document.getElementById('statApproved').textContent = conta('approved');
     document.getElementById('statRejected').textContent = conta('rejected');
 }
