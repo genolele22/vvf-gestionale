@@ -173,6 +173,38 @@ body.cruscotto-bloccato .foglio-layout {
     font-size: .72rem;
     color: var(--grigio-md);
 }
+.ferie-ufficio-panel {
+    background: var(--bianco);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+}
+.ferie-ufficio-head {
+    background: #1a6fb0;
+    color: var(--bianco);
+    padding: 9px 14px;
+    font-size: .8rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.ferie-ufficio-list {
+    max-height: 240px;
+    overflow-y: auto;
+    padding: 6px;
+    min-height: 40px;
+}
+.ferie-ufficio-list.drop-target {
+    background: #eaf4fb;
+    box-shadow: inset 0 0 0 2px #1a6fb0;
+}
+.ferie-ufficio-vuoto {
+    padding: 10px 14px;
+    font-size: .72rem;
+    color: var(--grigio-md);
+    text-align: center;
+}
 .organico-head {
     background: var(--grigio-sc);
     color: var(--bianco);

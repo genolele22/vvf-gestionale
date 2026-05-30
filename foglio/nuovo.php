@@ -151,7 +151,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // Guardia: se il foglio è bloccato, nessuna operazione di modifica passa
     $azioniModifica = ['salva_intestazione', 'assegna', 'rimuovi', 'assenza',
-                       'rimuovi_assenza', 'metti_salto', 'richiama_salto', 'reset_foglio'];
+                       'rimuovi_assenza', 'metti_salto', 'richiama_salto', 'reset_foglio',
+                       'ferie_ufficio', 'rimuovi_ufficio'];
     if ($foglioBloccato && in_array($azione, $azioniModifica, true)) {
         echo json_encode(['ok' => false, 'bloccato' => true,
                           'errore' => 'Foglio bloccato. Sblocca per modificare.']);
@@ -302,6 +303,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
+        echo json_encode(['ok' => true]);
+        exit;
+    }
+
+    // ── AJAX: ferie d'ufficio (assenza ferie diretta, senza richiesta) ──
+    if ($azione === 'ferie_ufficio') {
+        $vigileId = (int)($_POST['vigile_id'] ?? 0);
+        if ($vigileId <= 0) { echo json_encode(['ok' => false]); exit; }
+
+        // Libera da posizioni/salto/assenze sul foglio corrente
+        $pdo->prepare("DELETE FROM assegnazioni  WHERE foglio_id=? AND vigile_id=?")->execute([$foglioId, $vigileId]);
+        $pdo->prepare("DELETE FROM salto_servizio WHERE foglio_id=? AND vigile_id=?")->execute([$foglioId, $vigileId]);
+        $pdo->prepare("DELETE FROM assenze        WHERE foglio_id=? AND vigile_id=?")->execute([$foglioId, $vigileId]);
+
+        // Crea assenza FERIE (tipo=1) — nessun bot_request
+        $nid = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM assenze")->fetchColumn();
+        $pdo->prepare(
+            "INSERT INTO assenze (id, foglio_id, vigile_id, tipo_assenza_id) VALUES (?, ?, ?, 1)"
+        )->execute([$nid, $foglioId, $vigileId]);
+
+        echo json_encode(['ok' => true]);
+        exit;
+    }
+
+    // ── AJAX: togli ferie d'ufficio ───────────────────────────
+    if ($azione === 'rimuovi_ufficio') {
+        $vigileId = (int)($_POST['vigile_id'] ?? 0);
+        $pdo->prepare(
+            "DELETE FROM assenze WHERE foglio_id=? AND vigile_id=? AND tipo_assenza_id=1"
+        )->execute([$foglioId, $vigileId]);
         echo json_encode(['ok' => true]);
         exit;
     }
@@ -529,6 +560,21 @@ $stResp = $pdo->prepare(
 );
 $stResp->execute(array_merge([$dataStr], $tipiRespinte));
 $idFerieRespinte = array_map('intval', array_column($stResp->fetchAll(), 'vigile_id'));
+
+// Vigili con ferie APPROVATA da richiesta per questo turno (= ferie "da flusso")
+$stApp = $pdo->prepare(
+    "SELECT DISTINCT vigile_id FROM bot_requests
+     WHERE data_richiesta=? AND stato='approved' AND tipo_turno IN ($phResp)"
+);
+$stApp->execute(array_merge([$dataStr], $tipiRespinte));
+$idFerieRichiesta = array_map('intval', array_column($stApp->fetchAll(), 'vigile_id'));
+
+// Splitta le assenze FER: da richiesta (colonna Ferie) vs d'ufficio (box dedicato)
+$ferieTutte     = $assenzePerTipo['FER'] ?? [];
+$ferieRichiesta = array_values(array_filter($ferieTutte,
+    fn($a) => in_array((int)$a['vigile_id'], $idFerieRichiesta)));
+$ferieUfficio   = array_values(array_filter($ferieTutte,
+    fn($a) => !in_array((int)$a['vigile_id'], $idFerieRichiesta)));
 
 // Select per capo servizio e vice (solo Cr e Cs)
 $dirigenti = $pdo->query(
@@ -901,6 +947,35 @@ function colorePatentePHP(?string $patente): string {
       </div>
     </div><!-- /.ferie-respinte-panel -->
 
+    <!-- ── PANNELLO FERIE D'UFFICIO (drop zone) ─────────────── -->
+    <div class="ferie-ufficio-panel" data-drop-zone="colFerieUfficio">
+      <div class="ferie-ufficio-head">
+        <span>🏛️ Ferie d'ufficio</span>
+        <span id="ferieUfficioCount" style="font-size:.75rem;opacity:.85"><?= count($ferieUfficio) ?></span>
+      </div>
+      <div class="ferie-ufficio-list" id="colFerieUfficio">
+        <?php if (empty($ferieUfficio)): ?>
+          <div class="ferie-ufficio-vuoto" id="ferieUfficioVuoto">Trascina qui un vigile per dare ferie d'ufficio.</div>
+        <?php endif; ?>
+        <?php foreach ($ferieUfficio as $a):
+          $colore = colorePatentePHP($a['patente_max'] ?? null);
+        ?>
+        <div class="assente-row" data-vigile-id="<?= $a['vigile_id'] ?>">
+            <span class="qual-dot <?= htmlspecialchars($a['qcodice']) ?>"></span>
+            <span class="assente-nome" style="color:<?= $colore ?>">
+                <?= htmlspecialchars(etichettaVigile($a)) ?>
+                <?php if (!empty($a['sede_nome']) && $a['sede_nome'] !== 'CENTRALE'): ?>
+                    <span class="persona-salto"><?= htmlspecialchars($a['sede_codice']) ?></span>
+                <?php endif; ?>
+            </span>
+            <button class="assente-del"
+                    onclick="rimuoviFerieUfficio(<?= $a['vigile_id'] ?>)"
+                    title="Togli ferie d'ufficio">✕</button>
+        </div>
+        <?php endforeach; ?>
+      </div>
+    </div><!-- /.ferie-ufficio-panel -->
+
     </div><!-- /.col-sinistra -->
 
     <!-- ── GRIGLIA POSIZIONI (destra) ─────────────────────── -->
@@ -1154,7 +1229,7 @@ function colorePatentePHP(?string $patente): string {
 <div class="assenti-col" data-drop-zone="colFerie">
   <span class="assenti-col-head ac-ferie">🏖️ Ferie</span>
   <div id="colFerie">
-          <?php foreach ($assenzePerTipo['FER'] ?? [] as $a):
+          <?php foreach ($ferieRichiesta as $a):
     $colore = colorePatentePHP($a['patente_max'] ?? null);
 ?>
     <div class="assente-row" data-vigile-id="<?= $a['vigile_id'] ?>">
@@ -1655,6 +1730,20 @@ document.addEventListener('drop', async function(e) {
         return;
     }
 
+    // ── Drop su box Ferie d'ufficio ──────────────────────────
+    if (target.id === 'colFerieUfficio') {
+        const res = await ajax({ azione: 'ferie_ufficio', vigile_id: vigileId });
+        if (!res.ok) { showMsg('⚠️ Errore.','err'); return; }
+
+        rimuoviDOM(vigileId);
+        document.getElementById('ferieUfficioVuoto')?.remove();
+        target.insertAdjacentHTML('beforeend', buildUfficioRow(p));
+        if (!p.saltoCanon) setOccupato(vigileId, true, 'ferie ufficio');
+        updateUfficioCount();
+        showMsg('🏛️ ' + p.nome + ' → ferie d\'ufficio.');
+        return;
+    }
+
     // ── Drop su colonna assenza ──────────────────────────────
     const colId = target.id; // colFerie | colRC | colMissione | colMalattia
     const tipoEntry = Object.values(TIPI_ASSENZA).find(t => t.colId === colId);
@@ -1779,6 +1868,36 @@ function updateRespinteCount() {
     const n = list.querySelectorAll('.persona-card:not(.assente)').length;
     const badge = document.getElementById('ferieRespinteCount');
     if (badge) badge.textContent = n;
+}
+
+// ── Ferie d'ufficio ──────────────────────────────────────────
+function buildUfficioRow(p) {
+    const sedeBadge = (!p.sedeCentrale && p.sede)
+        ? `<span class="persona-salto">${p.sede}</span>` : '';
+    const colore = colorePatente(p.patente);
+    return `<div class="assente-row" data-vigile-id="${p.id}">
+              <span class="qual-dot ${p.qcodice}"></span>
+              <span class="assente-nome" style="color:${colore}">${p.nome}${sedeBadge}</span>
+              <button class="assente-del" onclick="rimuoviFerieUfficio(${p.id})"
+                      title="Togli ferie d'ufficio">✕</button>
+            </div>`;
+}
+
+function updateUfficioCount() {
+    const list = document.getElementById('colFerieUfficio');
+    if (!list) return;
+    const badge = document.getElementById('ferieUfficioCount');
+    if (badge) badge.textContent = list.querySelectorAll('.assente-row').length;
+}
+
+async function rimuoviFerieUfficio(vigileId) {
+    const res = await ajax({ azione: 'rimuovi_ufficio', vigile_id: vigileId });
+    if (!res.ok) { showMsg('⚠️ Errore.','err'); return; }
+    rimuoviDOM(vigileId);
+    const p = PERSONALE[vigileId];
+    if (p && !p.saltoCanon) setOccupato(vigileId, false);
+    updateUfficioCount();
+    showMsg('↩️ Ferie d\'ufficio rimossa.');
 }
 
 async function rimuoviDaZonaSalto(vigileId) {
