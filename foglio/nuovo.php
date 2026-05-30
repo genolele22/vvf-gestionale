@@ -256,6 +256,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $sedeDist ?: null, $dataDa, $dataA, $nrTurni, $notaAss ?: null
         ]);
 
+        // Se è una FERIE (tipo=1) e c'era una richiesta respinta per questa data,
+        // riportala ad approved → sulla pagina ferie torna flaggata "accetto".
+        if ($tipoAssenzaId === 1) {
+            $stReq = $pdo->prepare(
+                "SELECT tipo_turno FROM bot_requests
+                 WHERE vigile_id=? AND data_richiesta=? AND stato='rejected'
+                 ORDER BY id DESC LIMIT 1"
+            );
+            $stReq->execute([$vigileId, $dataStr]);
+            $reqTipo = $stReq->fetchColumn();
+
+            if ($reqTipo !== false) {
+                $pdo->prepare(
+                    "UPDATE bot_requests SET stato='approved', processed_at=NOW()
+                     WHERE vigile_id=? AND data_richiesta=? AND stato='rejected'"
+                )->execute([$vigileId, $dataStr]);
+
+                // Richiesta DN → ripristina la ferie anche sull'altro turno del giorno
+                if ($reqTipo === 'DN') {
+                    $tipoPaired = ($tipoParam === 'D') ? 'N' : 'D';
+                    $stF = $pdo->prepare(
+                        "SELECT id FROM fogli_servizio WHERE data_servizio=? AND tipo_turno=?"
+                    );
+                    $stF->execute([$dataStr, $tipoPaired]);
+                    $fidPaired = $stF->fetchColumn();
+                    if (!$fidPaired) {
+                        $fidPaired = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM fogli_servizio")->fetchColumn();
+                        $pdo->prepare(
+                            "INSERT INTO fogli_servizio (id,data_servizio,tipo_turno,salto_riposo_id,creato_da)
+                             VALUES (?,?,?,1,'ferie')"
+                        )->execute([$fidPaired, $dataStr, $tipoPaired]);
+                    }
+                    $stChk = $pdo->prepare(
+                        "SELECT id FROM assenze WHERE foglio_id=? AND vigile_id=? AND tipo_assenza_id=1"
+                    );
+                    $stChk->execute([$fidPaired, $vigileId]);
+                    if (!$stChk->fetchColumn()) {
+                        $nid = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM assenze")->fetchColumn();
+                        $pdo->prepare(
+                            "INSERT INTO assenze (id,foglio_id,vigile_id,tipo_assenza_id) VALUES (?,?,?,1)"
+                        )->execute([$nid, $fidPaired, $vigileId]);
+                    }
+                }
+            }
+        }
+
         echo json_encode(['ok' => true]);
         exit;
     }
