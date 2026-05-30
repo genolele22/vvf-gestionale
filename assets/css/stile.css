@@ -1,0 +1,604 @@
+/* ============================================================
+   VVF GENOVA — Gestionale Turno B
+   File: assets/css/stile.css
+   
+   INDICE:
+   1.  Reset & Variabili globali
+   2.  Body e impostazioni base
+   3.  Header (barra superiore rossa)
+   4.  Navbar (menu di navigazione)
+   5.  Layout principale (main)
+   6.  Stat Cards (riquadri statistiche)
+   7.  Calendario — wrapper e testata
+   8.  Calendario — griglia e celle
+   9.  Calendario — numero del giorno
+   10. Calendario — pill turno (diurno/notturno)
+   11. Legenda del calendario
+   12. Responsive (tablet e mobile)
+   ============================================================ */
+
+
+/* ============================================================
+   1. RESET & VARIABILI GLOBALI
+   Azzera margini e padding su tutti gli elementi.
+   Le variabili CSS (--nome) centralizzano i colori e le misure:
+   cambiarle qui si riflette automaticamente su tutto il file.
+   ============================================================ */
+*, *::before, *::after {
+    box-sizing: border-box; /* il padding non aumenta la larghezza degli elementi */
+    margin: 0;
+    padding: 0;
+}
+
+:root {
+    /* Colori principali */
+    --rosso:      #c0392b;   /* rosso VVF — usato in header, badge, oggi */
+    --rosso-sc:   #922b21;   /* rosso scuro — secondo colore del gradiente header */
+    --grigio-sc:  #2c3e50;   /* grigio scuro — navbar, testata calendario, testo */
+    --grigio-md:  #5d6d7e;   /* grigio medio — testi secondari, intestazioni colonne */
+    --grigio-ch:  #ecf0f1;   /* grigio chiaro — sfondi neutri */
+    --bianco:     #ffffff;
+
+    /* Colori turno diurno (giallo/arancio) */
+    --giallo:     #f39c12;   /* bordo e accenti diurno */
+    --giallo-bg:  #fef9e7;   /* sfondo pill diurno */
+
+    /* Colori turno notturno (blu) */
+    --blu:        #2471a3;   /* bordo e accenti notturno */
+    --blu-bg:     #eaf4fb;   /* sfondo pill notturno */
+
+    /* Colori foglio compilato (verde) */
+    --verde:      #1e8449;   /* bordo e testo foglio compilato */
+    --verde-bg:   #eafaf1;   /* sfondo pill compilato */
+
+    /* Misure e ombre */
+    --radius:     8px;                       /* arrotondamento angoli card/box */
+    --shadow:     0 2px 10px rgba(0,0,0,.12); /* ombra leggera per le card */
+}
+
+
+/* ============================================================
+   2. BODY E IMPOSTAZIONI BASE
+   Font di sistema, sfondo grigio chiaro, testo scuro.
+   ============================================================ */
+body {
+    font-family: 'Segoe UI', system-ui, sans-serif; /* font moderno con fallback */
+    background: #f0f2f5;   /* sfondo pagina leggermente grigio */
+    color: var(--grigio-sc);
+    min-height: 100vh;     /* occupa almeno tutta l'altezza dello schermo */
+}
+
+
+/* ============================================================
+   3. HEADER
+   Barra superiore con gradiente rosso, logo, titolo e badge.
+   position:sticky la fa restare visibile scorrendo la pagina.
+   ============================================================ */
+.header {
+    background: linear-gradient(135deg, var(--rosso) 0%, var(--rosso-sc) 100%);
+    color: var(--bianco);
+    box-shadow: 0 3px 14px rgba(0,0,0,.28); /* ombra sotto l'header */
+    position: sticky;  /* rimane in cima anche scorrendo */
+    top: 0;
+    z-index: 200;      /* sopra tutti gli altri elementi */
+}
+
+/* Contenitore interno: limita la larghezza e centra il contenuto */
+.header-inner {
+    max-width: 1300px;
+    margin: 0 auto;
+    padding: 0 24px;
+    display: flex;         /* dispone logo, testo e badge in fila */
+    align-items: center;   /* allinea verticalmente al centro */
+    gap: 16px;
+    height: 68px;
+}
+
+/* Emoji/icona del camion a sinistra */
+.header-logo {
+    font-size: 2rem;
+}
+
+/* Blocco testo centrale (titolo + sottotitolo) */
+.header-testi {
+    flex: 1; /* occupa tutto lo spazio disponibile tra logo e badge */
+}
+.header-testi h1 {
+    font-size: 1.1rem;
+    font-weight: 700;
+}
+.header-testi p {
+    font-size: .76rem;
+    opacity: .82;    /* leggermente trasparente per sembrare secondario */
+    margin-top: 2px;
+}
+
+/* Pillola "TURNO B" a destra */
+.header-badge {
+    background: rgba(255,255,255,.18); /* bianco semitrasparente */
+    border: 1px solid rgba(255,255,255,.35);
+    border-radius: 20px;   /* forma ovale */
+    padding: 4px 16px;
+    font-size: .82rem;
+    font-weight: 700;
+    letter-spacing: .5px;
+}
+
+
+/* ============================================================
+   4. NAVBAR
+   Menu di navigazione orizzontale su sfondo grigio scuro.
+   I link cambiano aspetto al passaggio del mouse e quando attivi.
+   ============================================================ */
+.navbar {
+    background: var(--grigio-sc);
+    box-shadow: 0 2px 6px rgba(0,0,0,.2);
+}
+
+/* Contenitore interno allineato con l'header */
+.navbar-inner {
+    max-width: 1300px;
+    margin: 0 auto;
+    padding: 0 24px;
+    display: flex;
+    gap: 2px;
+    overflow-x: auto; /* su schermi piccoli scorre orizzontalmente */
+}
+
+/* Singolo pulsante/link della navbar */
+.nav-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 12px 16px;
+    color: rgba(255,255,255,.75); /* bianco leggermente trasparente */
+    text-decoration: none;
+    font-size: .86rem;
+    font-weight: 500;
+    /* Bordo inferiore invisibile di default,
+       diventa giallo quando attivo/hover */
+    border-bottom: 3px solid transparent;
+    white-space: nowrap; /* non va a capo */
+    transition: color .2s, border-color .2s, background .2s;
+}
+
+/* Stato hover (mouse sopra) e active (pagina corrente) */
+.nav-btn:hover,
+.nav-btn.active {
+    color: var(--bianco);
+    border-bottom-color: var(--giallo); /* linea gialla in basso */
+    background: rgba(255,255,255,.06);  /* leggero schiarimento */
+}
+
+/* Spinge il pulsante "Esci" tutto a destra */
+.nav-btn.ml-auto {
+    margin-left: auto;
+}
+
+
+/* ============================================================
+   5. LAYOUT PRINCIPALE
+   Contenitore centrale con larghezza massima e padding.
+   ============================================================ */
+.main {
+    max-width: 1300px;
+    margin: 28px auto;           /* centrato orizzontalmente, spazio sopra */
+    padding: 0 24px 60px;        /* padding laterale e spazio in fondo */
+}
+
+
+/* ============================================================
+   6. STAT CARDS
+   Quattro riquadri con statistiche rapide sopra il calendario.
+   Usano CSS Grid per adattarsi automaticamente alla larghezza.
+   ============================================================ */
+
+/* Contenitore griglia delle card */
+.stat-grid {
+    display: grid;
+    /* Colonne flessibili: minimo 200px, poi crescono per riempire */
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    margin-bottom: 28px;
+}
+
+/* Singola card */
+.stat-card {
+    background: var(--bianco);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 20px 22px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    border-top: 4px solid var(--rosso); /* barra colorata in cima — default rosso */
+}
+
+/* Varianti di colore per la barra superiore */
+.stat-card.blu    { border-top-color: var(--blu); }
+.stat-card.verde  { border-top-color: var(--verde); }
+.stat-card.giallo { border-top-color: var(--giallo); }
+
+/* Icona a sinistra della card */
+.stat-icon {
+    font-size: 2rem;
+    width: 44px;
+    text-align: center;
+}
+
+/* Testo della card: etichetta piccola + numero grande */
+.stat-info span {
+    display: block;
+    font-size: .72rem;
+    opacity: .6;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    margin-bottom: 2px;
+}
+.stat-info strong {
+    font-size: 1.7rem;
+    font-weight: 700;
+}
+
+
+/* ============================================================
+   7. CALENDARIO — WRAPPER E TESTATA
+   Il wrapper è il riquadro bianco che contiene tutto il calendario.
+   La testata ha sfondo scuro con le frecce di navigazione mese.
+   ============================================================ */
+
+/* Riquadro esterno del calendario */
+.cal-wrapper {
+    background: var(--bianco);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden; /* gli angoli arrotondati tagliano il contenuto interno */
+}
+
+/* Barra superiore con mese/anno e frecce */
+.cal-head {
+    background: var(--grigio-sc);
+    color: var(--bianco);
+    display: flex;
+    align-items: center;
+    justify-content: space-between; /* frecce ai lati, titolo al centro */
+    padding: 14px 24px;
+}
+.cal-head h2 {
+    font-size: 1.15rem;
+    font-weight: 600;
+}
+
+/* Pulsanti freccia precedente/successivo */
+.cal-nav-btn {
+    color: var(--bianco);
+    text-decoration: none;
+    background: rgba(255,255,255,.15);
+    border-radius: 6px;
+    padding: 6px 16px;
+    font-size: .9rem;
+    transition: background .2s;
+}
+.cal-nav-btn:hover {
+    background: rgba(255,255,255,.28);
+}
+
+
+/* ============================================================
+   8. CALENDARIO — GRIGLIA E CELLE
+   Griglia a 7 colonne (una per giorno della settimana).
+   Ogni cella corrisponde a un giorno del mese.
+   ============================================================ */
+
+/* Griglia 7 colonne di uguale larghezza */
+.cal-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+}
+
+/* Intestazione colonne (Lun, Mar, Mer…) */
+.cal-dow {
+    text-align: center;
+    font-size: .7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    padding: 9px 4px;
+    background: #f8f9fa;
+    border-bottom: 1px solid #e0e0e0;
+    color: var(--grigio-md);
+}
+/* La domenica è evidenziata in rosso */
+.cal-dow.dom {
+    color: var(--rosso);
+}
+
+/* Cella di un giorno */
+.cal-cell {
+    border: 1px solid #e8e8e8;
+    min-height: 115px;  /* altezza minima per contenere le pill */
+    padding: 6px;
+    background: var(--bianco);
+}
+
+/* Cella vuota (prima del primo giorno del mese) */
+.cal-cell.vuota {
+    background: #fafafa;
+}
+
+/* Cella del giorno corrente — sfondo caldo */
+.cal-cell.oggi-cell {
+    background: #fff8f0;
+}
+
+/* Cella nei giorni in cui il turno B è in servizio — sfondo azzurrino */
+.cal-cell.turno-b {
+    background: #f0f7ff;
+}
+
+
+/* ============================================================
+   9. CALENDARIO — NUMERO DEL GIORNO
+   Il numero in alto a sinistra in ogni cella.
+   Può essere normale, rosso (domenica) o con cerchio (oggi).
+   ============================================================ */
+.cal-num {
+    font-size: .8rem;
+    font-weight: 700;
+    margin-bottom: 5px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+/* Cerchio rosso per il giorno corrente */
+.num-bubble {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;          /* forma circolare */
+    background: var(--rosso);
+    color: var(--bianco);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: .75rem;
+}
+
+/* Numero domenica in rosso (senza cerchio) */
+.num-dom {
+    color: var(--rosso);
+}
+
+
+/* ============================================================
+   10. CALENDARIO — PILL TURNO
+   Le pill sono i pulsanti cliccabili dentro ogni cella:
+   uno per il turno diurno (giallo) e uno per il notturno (blu).
+   Se il foglio è già compilato diventano verdi.
+   Il badge "B" rosso appare quando il turno B è in servizio.
+   ============================================================ */
+
+/* Stile base della pill (condiviso da diurno e notturno) */
+.pill {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-radius: 5px;
+    padding: 4px 7px;
+    margin-bottom: 3px;    /* spazio tra la pill diurna e quella notturna */
+    font-size: .7rem;
+    font-weight: 600;
+    text-decoration: none; /* rimuove sottolineatura del link */
+    border: none;
+    width: 100%;           /* occupa tutta la larghezza della cella */
+    cursor: pointer;
+    transition: filter .15s, transform .1s;
+    line-height: 1.3;
+}
+
+/* Effetto hover: leggermente più scura e si alza di 1px */
+.pill:hover {
+    filter: brightness(.92);
+    transform: translateY(-1px);
+}
+
+/* Pill diurna — sfondo giallo chiaro, bordo giallo a sinistra */
+.pill.diurno {
+    background: var(--giallo-bg);
+    color: #7d5a00;              /* testo marrone scuro per contrasto */
+    border-left: 3px solid var(--giallo);
+}
+
+/* Pill notturna — sfondo blu chiaro, bordo blu a sinistra */
+.pill.notte {
+    background: var(--blu-bg);
+    color: #1a4d72;              /* testo blu scuro per contrasto */
+    border-left: 3px solid var(--blu);
+}
+
+/* Pill compilata — sovrascrive diurno/notte con il verde */
+.pill.compilato {
+    background: var(--verde-bg) !important;
+    color: var(--verde) !important;
+    border-left-color: var(--verde) !important;
+}
+
+/* Contenitore icona + testo + ora dentro la pill */
+.pill-label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+/* Etichetta turno (es. "B1") — grassetto e leggermente più grande */
+.pill-turno {
+    font-size: .75rem;
+    font-weight: 800;
+}
+
+/* Orario sotto l'etichetta (es. "08:00→20:00") — testo secondario */
+.pill-ora {
+    font-size: .62rem;
+    opacity: .7;
+    display: block;  /* va su riga separata rispetto all'etichetta */
+    font-weight: 400;
+}
+
+/* Badge "B" rosso — indica che il turno B è attivo su quel slot */
+.pill-badge-b {
+    font-size: .6rem;
+    font-weight: 800;
+    background: var(--rosso);
+    color: var(--bianco);
+    border-radius: 3px;
+    padding: 1px 5px;
+    white-space: nowrap;
+    flex-shrink: 0; /* non si restringe se lo spazio è poco */
+}
+
+
+/* ============================================================
+   11. LEGENDA DEL CALENDARIO
+   Barra in fondo al calendario che spiega i colori usati.
+   ============================================================ */
+.cal-legenda {
+    display: flex;
+    flex-wrap: wrap;   /* va a capo su schermi stretti */
+    gap: 20px;
+    padding: 12px 20px;
+    border-top: 1px solid #e8e8e8;
+    background: #fafafa;
+    font-size: .76rem;
+    color: var(--grigio-md);
+}
+
+/* Singola voce della legenda: quadratino + testo */
+.leg {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+
+/* Quadratino colorato della legenda */
+.leg-box {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    flex-shrink: 0;
+}
+
+
+/* ============================================================
+   12. RESPONSIVE
+   Adatta il layout a schermi più piccoli (tablet e smartphone).
+   Le regole dentro @media si applicano solo sotto quella larghezza.
+   ============================================================ */
+
+/* Tablet (sotto 900px) */
+@media (max-width: 900px) {
+    .cal-cell  { min-height: 90px; }           /* celle un po' più basse */
+    .pill      { font-size: .64rem; padding: 3px 5px; }
+}
+
+/* Smartphone (sotto 600px) */
+@media (max-width: 600px) {
+    /* Header: si adatta su più righe se necessario */
+    .header-inner {
+        height: auto;
+        padding: 12px 16px;
+        flex-wrap: wrap;
+    }
+
+    /* Meno spazio laterale nel contenuto principale */
+    .main { padding: 14px 10px 40px; }
+
+    /* Celle calendario più compatte */
+    .cal-cell  { min-height: 72px; padding: 4px; }
+
+    /* Pill ancora più piccole */
+    .pill      { font-size: .58rem; padding: 2px 4px; }
+
+    /* Nasconde l'orario (08:00→20:00) per risparmiare spazio */
+    .pill-ora  { display: none; }
+
+    /* Griglia statistiche: 2 colonne invece di 4 */
+    .stat-grid { grid-template-columns: 1fr 1fr; }
+
+    /* Titolo header più piccolo */
+    .header-testi h1 { font-size: .95rem; }
+}
+/* ============================================================
+   PILL ALTRI TURNI (A, C, D)
+   Testo neutro e discreto, senza sfondo colorato né bordi.
+   Non è cliccabile — serve solo come riferimento visivo.
+   ============================================================ */
+.pill-altri {
+    font-size: .68rem;
+    color: #aab;              /* grigio-azzurro molto tenue */
+    padding: 3px 4px;
+    margin-bottom: 2px;
+    font-weight: 500;
+    letter-spacing: .2px;
+
+}
+
+/* ══ Pulsanti base (condivisi) — foglio.css/vigili.css possono sovrascrivere ══ */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 9px 18px;
+    border-radius: 6px;
+    font-size: .875rem;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    text-decoration: none;
+    transition: filter .15s, transform .1s;
+}
+.btn:hover  { filter: brightness(.9); transform: translateY(-1px); }
+.btn-rosso  { background: var(--rosso);     color: var(--bianco); }
+.btn-grigio { background: var(--grigio-sc); color: var(--bianco); }
+.btn-verde  { background: var(--verde);     color: var(--bianco); }
+.btn-sm     { padding: 5px 12px; font-size: .78rem; }
+
+/* ══ Modale di conferma condiviso (centrato, in stile cruscotto) ══ */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, .5);
+    z-index: 9999;
+    align-items: center;
+    justify-content: center;
+}
+.modal-overlay .modal-box {
+    background: #fff;
+    border-radius: 10px;
+    padding: 28px 32px;
+    max-width: 380px;
+    width: 90%;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, .25);
+    text-align: center;
+    animation: modalIn .15s ease-out;
+}
+@keyframes modalIn {
+    from { transform: translateY(8px); opacity: 0; }
+    to   { transform: translateY(0);   opacity: 1; }
+}
+.modal-titolo {
+    font-size: 1.3rem;
+    font-weight: 700;
+    margin-bottom: 10px;
+    color: var(--grigio-sc);
+}
+.modal-testo {
+    color: #555;
+    margin-bottom: 24px;
+    line-height: 1.5;
+    font-size: .9rem;
+}
+.modal-azioni {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+}

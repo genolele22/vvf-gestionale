@@ -1,0 +1,335 @@
+/* ============================================================
+   VVF GENOVA — Gestione Personale
+   File: assets/css/vigili.css
+   ============================================================ */
+
+/* ── Titolo pagina ── */
+.page-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+.page-title h2 {
+    font-size: 1.4rem;
+    font-weight: 700;
+}
+
+/* ── Pulsanti ── */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 9px 18px;
+    border-radius: 6px;
+    font-size: .875rem;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    text-decoration: none;
+    transition: filter .15s, transform .1s;
+}
+.btn:hover       { filter: brightness(.9); transform: translateY(-1px); }
+.btn-rosso       { background: var(--rosso);     color: var(--bianco); }
+.btn-grigio      { background: var(--grigio-sc); color: var(--bianco); }
+.btn-verde       { background: var(--verde);     color: var(--bianco); }
+.btn-arancio     { background: #e67e22;          color: var(--bianco); }
+.btn-sm          { padding: 5px 11px; font-size: .78rem; }
+
+/* ── Card generica ── */
+.card {
+    background: var(--bianco);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    margin-bottom: 24px;
+    overflow: hidden;
+}
+.card-head {
+    background: var(--grigio-sc);
+    color: var(--bianco);
+    padding: 12px 20px;
+    font-size: .95rem;
+    font-weight: 600;
+}
+.card-body { padding: 24px; }
+
+/* ── Form griglia ── */
+.form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+}
+.form-group              { display: flex; flex-direction: column; gap: 5px; }
+.form-group.full         { grid-column: 1 / -1; }
+
+label {
+    font-size: .78rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .4px;
+    color: var(--grigio-md);
+}
+
+input[type=text],
+input[type=number],
+select,
+textarea {
+    padding: 8px 12px;
+    border: 1px solid #d5d8dc;
+    border-radius: 6px;
+    font-size: .875rem;
+    font-family: inherit;
+    color: var(--grigio-sc);
+    background: var(--bianco);
+    transition: border-color .2s, box-shadow .2s;
+}
+input:focus, select:focus, textarea:focus {
+    outline: none;
+    border-color: var(--rosso);
+    box-shadow: 0 0 0 3px rgba(192,57,43,.12);
+}
+textarea { resize: vertical; min-height: 70px; }
+
+/* ── Checkbox patenti ── */
+.patenti-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 4px;
+}
+.patente-check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: #f8f9fa;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    padding: 7px 14px;
+    cursor: pointer;
+    font-size: .85rem;
+    font-weight: 600;
+    transition: background .15s, border-color .15s;
+}
+.patente-check:has(input:checked) {
+    background: var(--giallo-bg);
+    border-color: var(--giallo);
+    color: #7d5a00;
+}
+.patente-check input { cursor: pointer; }
+
+/* ── Toggle attivo/disattivo ── */
+.toggle-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 4px;
+}
+.toggle {
+    position: relative;
+    width: 44px;
+    height: 24px;
+    flex-shrink: 0;
+}
+.toggle input { opacity: 0; width: 0; height: 0; }
+.toggle-slider {
+    position: absolute;
+    inset: 0;
+    background: #ccc;
+    border-radius: 24px;
+    cursor: pointer;
+    transition: background .2s;
+}
+.toggle-slider::before {
+    content: '';
+    position: absolute;
+    width: 18px; height: 18px;
+    left: 3px; top: 3px;
+    background: white;
+    border-radius: 50%;
+    transition: transform .2s;
+}
+.toggle input:checked + .toggle-slider           { background: var(--verde); }
+.toggle input:checked + .toggle-slider::before   { transform: translateX(20px); }
+
+/* ── Alert ── */
+.alert {
+    padding: 12px 18px;
+    border-radius: 6px;
+    margin-bottom: 20px;
+    font-size: .875rem;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.alert-ok  { background: var(--verde-bg); color: var(--verde); border: 1px solid #a9dfbf; }
+.alert-err { background: #fdf2f2;         color: var(--rosso); border: 1px solid #f5b7b1; }
+
+/* ── Barra filtri ── */
+.filtri {
+    background: var(--bianco);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 16px 20px;
+    margin-bottom: 20px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: flex-end;
+}
+.filtri .form-group { min-width: 140px; flex: 1; }
+
+/* ── Tabella ── */
+.tabella-wrap {
+    background: var(--bianco);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+}
+.tabella-head {
+    background: var(--grigio-sc);
+    color: var(--bianco);
+    padding: 12px 20px;
+    font-size: .9rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+table                { width: 100%; border-collapse: collapse; font-size: .85rem; }
+thead th {
+    background: #f8f9fa;
+    padding: 10px 14px;
+    text-align: left;
+    font-size: .72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    color: var(--grigio-md);
+    border-bottom: 2px solid #e0e0e0;
+}
+tbody td              { padding: 10px 14px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+tbody tr:hover        { background: #fafafa; }
+tbody tr.disattivo    { opacity: .4; }
+
+/* ── Badge qualifica ── */
+.badge-qual {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: .72rem;
+    font-weight: 700;
+    letter-spacing: .3px;
+}
+.badge-Cr { background: #fdedec;          color: var(--rosso); }
+.badge-Cs { background: var(--blu-bg);    color: var(--blu); }
+.badge-Vp { background: var(--verde-bg);  color: var(--verde); }
+
+/* ── Badge salto turno ── */
+.badge-salto {
+    display: inline-block;
+    background: var(--grigio-sc);
+    color: var(--bianco);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: .72rem;
+    font-weight: 700;
+}
+
+/* ── Badge patente ── */
+.badge-pat {
+    display: inline-block;
+    background: var(--giallo-bg);
+    color: #7d5a00;
+    border: 1px solid var(--giallo);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: .68rem;
+    font-weight: 700;
+    margin-right: 2px;
+}
+
+/* ── Colonna azioni ── */
+.azioni {
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+/* ── Footer tabella ── */
+.pag-info {
+    padding: 10px 20px;
+    font-size: .78rem;
+    color: var(--grigio-md);
+    border-top: 1px solid #f0f0f0;
+    background: #fafafa;
+}
+
+/* ── Responsive ── */
+@media (max-width: 768px) {
+    table               { font-size: .75rem; }
+    thead th, tbody td  { padding: 7px 7px; }
+    .form-grid          { grid-template-columns: 1fr; }
+    .filtri             { flex-direction: column; }
+    .azioni             { flex-direction: column; }
+    th:nth-child(5),
+    td:nth-child(5)     { display: none; } /* nasconde colonna patenti su mobile */
+}
+/* ── Badge abilitazione ── */
+.badge-abil {
+    display: inline-block;
+    background: #f4ecf7;
+    color: #6c3483;
+    border: 1px solid #d2b4de;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: .65rem;
+    font-weight: 700;
+    margin-right: 2px;
+    margin-bottom: 2px;
+    white-space: nowrap;
+}
+
+/* Gruppo checkbox abilitazioni (stesso stile patenti ma viola) */
+.abil-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 4px;
+}
+.abil-check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: #f9f9f9;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    padding: 6px 12px;
+    cursor: pointer;
+    font-size: .82rem;
+    font-weight: 600;
+    transition: background .15s, border-color .15s;
+}
+.abil-check:has(input:checked) {
+    background: #f4ecf7;
+    border-color: #d2b4de;
+    color: #6c3483;
+}
+.abil-check input { cursor: pointer; }
+
+/* Badge sede distaccamento (nelle ass-card e nell'organico) */
+.badge-sede {
+    font-size: .6rem;
+    background: var(--blu-bg);
+    color: var(--blu);
+    border: 1px solid var(--blu);
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-weight: 700;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
