@@ -982,11 +982,22 @@ function colorePatentePHP(?string $patente): string {
     <!-- ── GRIGLIA POSIZIONI (destra) ─────────────────────── -->
     <div class="griglia-wrapper" id="grigliaPosizioni">
 
-      <?php foreach ($sedi as $sede):
-        $posSede = $posizioniPerSede[$sede['id']] ?? [];
+      <?php
+      // Ordine: Centrale (full-width) → distaccamenti → Aeroporto (full-width)
+      $sediCentrale      = array_filter($sedi, fn($s) => $s['codice'] === 'CENTR');
+      $sediAeroporto     = array_filter($sedi, fn($s) => $s['codice'] === 'AP');
+      $sediDistaccamenti = array_filter($sedi, fn($s) => !in_array($s['codice'], ['CENTR','AP']));
+      $sediOrdinati      = array_merge(
+          array_values($sediCentrale),
+          array_values($sediDistaccamenti),
+          array_values($sediAeroporto)
+      );
+      foreach ($sediOrdinati as $sede):
+        $posSede  = $posizioniPerSede[$sede['id']] ?? [];
         if (empty($posSede)) continue;
+        $sedeFull = in_array($sede['codice'], ['CENTR','AP']);
       ?>
-      <div class="sede-block">
+      <div class="sede-block<?= $sedeFull ? ' sede-full' : '' ?>">
         <div class="sede-head">
           🏠 <?= htmlspecialchars($sede['nome']) ?>
           <span style="font-size:.72rem;opacity:.7;margin-left:auto">
