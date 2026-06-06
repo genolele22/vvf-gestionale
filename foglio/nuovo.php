@@ -960,7 +960,8 @@ function colorePatentePHP(?string $patente): string {
         <?php foreach ($ferieUfficio as $a):
           $colore = colorePatentePHP($a['patente_max'] ?? null);
         ?>
-        <div class="assente-row" data-vigile-id="<?= $a['vigile_id'] ?>">
+        <div class="assente-row" data-vigile-id="<?= $a['vigile_id'] ?>"
+             draggable="true" style="cursor:grab">
             <span class="qual-dot <?= htmlspecialchars($a['qcodice']) ?>"></span>
             <span class="assente-nome" style="color:<?= $colore ?>">
                 <?= htmlspecialchars(etichettaVigile($a)) ?>
@@ -1613,6 +1614,17 @@ document.addEventListener('dragstart', function(e) {
         return;
     }
 
+    // 4. Da ferie d'ufficio
+    const ufficioRow = e.target.closest('#colFerieUfficio .assente-row[draggable="true"]');
+    if (ufficioRow) {
+        _dragId     = parseInt(ufficioRow.dataset.vigileId);
+        _dragSource = 'ufficio';
+        ufficioRow.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', _dragId);
+        return;
+    }
+
     // Nessuna sorgente valida
     e.preventDefault();
 });
@@ -1661,6 +1673,14 @@ document.addEventListener('drop', async function(e) {
     if (!vigileId) return;
     const p = PERSONALE[vigileId];
     if (!p) return;
+
+    // ── Drag-out da ferie d'ufficio → rimetti in organico ────
+    if (source === 'ufficio') {
+        if (target.id === 'organicoList') {
+            await rimuoviFerieUfficio(vigileId);
+        }
+        return;
+    }
 
     // ── Drop su posizione ────────────────────────────────────
     if (target.classList.contains('pos-card')) {
@@ -1796,6 +1816,10 @@ document.addEventListener('drop', async function(e) {
 // ════════════════════════════════════════════════════════════
 function getDropTarget(el) {
     while (el && el !== document.body) {
+        // Organico (per drag-out da ferie ufficio)
+        if (el.id === 'organicoList' || el.closest?.('#organicoList')) {
+            return document.getElementById('organicoList');
+        }
         // Posizione/squadra
         if (el.classList && el.classList.contains('pos-card')) return el;
         // Zona salto — intercetta sia il div interno che il contenitore
@@ -1875,7 +1899,8 @@ function buildUfficioRow(p) {
     const sedeBadge = (!p.sedeCentrale && p.sede)
         ? `<span class="persona-salto">${p.sede}</span>` : '';
     const colore = colorePatente(p.patente);
-    return `<div class="assente-row" data-vigile-id="${p.id}">
+    return `<div class="assente-row" data-vigile-id="${p.id}"
+                 draggable="true" style="cursor:grab">
               <span class="qual-dot ${p.qcodice}"></span>
               <span class="assente-nome" style="color:${colore}">${p.nome}${sedeBadge}</span>
               <button class="assente-del" onclick="rimuoviFerieUfficio(${p.id})"
