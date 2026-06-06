@@ -13,6 +13,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $cognome        = strtoupper(trim($_POST['cognome'] ?? ''));
     $nome           = trim($_POST['nome']               ?? '');
     $disambiguatore = (int)($_POST['disambiguatore']    ?? 0) ?: null;
+    $email          = trim($_POST['email']              ?? '') ?: null;
     $qualifica_id   = (int)($_POST['qualifica_id']      ?? 0);
     $sede_id        = (int)($_POST['sede_id']           ?? 0);
     $salto_id       = (int)($_POST['salto_id']          ?? 0);
@@ -23,15 +24,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($cognome === '' || $qualifica_id === 0 || $sede_id === 0 || $salto_id === 0) {
         $errore = 'Cognome, qualifica, sede e salto turno sono obbligatori.';
+    } elseif ($email !== null && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $errore = 'Indirizzo email non valido.';
     } else {
 
         if ($azione === 'inserisci') {
             $vid = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM vigili")->fetchColumn();
             $pdo->prepare(
                 "INSERT INTO vigili
-                 (id,cognome,nome,disambiguatore,qualifica_id,sede_id,salto_id,attivo,note)
-                 VALUES (?,?,?,?,?,?,?,?,?)"
-            )->execute([$vid,$cognome,$nome,$disambiguatore,
+                 (id,cognome,nome,disambiguatore,email,qualifica_id,sede_id,salto_id,attivo,note)
+                 VALUES (?,?,?,?,?,?,?,?,?,?)"
+            )->execute([$vid,$cognome,$nome,$disambiguatore,$email,
                         $qualifica_id,$sede_id,$salto_id,$attivo,$note]);
 
             foreach ($patenti as $pid) {
@@ -50,10 +53,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $id = (int)($_POST['id'] ?? 0);
             $pdo->prepare(
                 "UPDATE vigili
-                 SET cognome=?,nome=?,disambiguatore=?,qualifica_id=?,
+                 SET cognome=?,nome=?,disambiguatore=?,email=?,qualifica_id=?,
                      sede_id=?,salto_id=?,attivo=?,note=?
                  WHERE id=?"
-            )->execute([$cognome,$nome,$disambiguatore,
+            )->execute([$cognome,$nome,$disambiguatore,$email,
                         $qualifica_id,$sede_id,$salto_id,$attivo,$note,$id]);
 
             $pdo->prepare("DELETE FROM vigili_patenti WHERE vigile_id=?")->execute([$id]);
@@ -259,6 +262,12 @@ if (!empty($vigili)) {
             <input type="text" name="nome"
                    placeholder="es. Mario"
                    value="<?= htmlspecialchars($vigileEdit['nome'] ?? '') ?>">
+          </div>
+          <div class="form-group">
+            <label>Email</label>
+            <input type="email" name="email"
+                   placeholder="es. mario.rossi@vigilfuoco.it"
+                   value="<?= htmlspecialchars($vigileEdit['email'] ?? '') ?>">
           </div>
           <div class="form-group">
             <label>N° Disambiguatore</label>
