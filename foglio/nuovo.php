@@ -995,9 +995,12 @@ function colorePatentePHP(?string $patente): string {
       foreach ($sediOrdinati as $sede):
         $posSede  = $posizioniPerSede[$sede['id']] ?? [];
         if (empty($posSede)) continue;
-        $sedeFull = in_array($sede['codice'], ['CENTR','AP']);
+        $sedeFull  = in_array($sede['codice'], ['CENTR','AP']);
+        $sedeClass = '';
+        if ($sede['codice'] === 'CENTR') $sedeClass = ' sede-full sede-centrale';
+        elseif ($sede['codice'] === 'AP') $sedeClass = ' sede-full sede-aeroporto';
       ?>
-      <div class="sede-block<?= $sedeFull ? ' sede-full' : '' ?>">
+      <div class="sede-block<?= $sedeClass ?>">
         <div class="sede-head">
           🏠 <?= htmlspecialchars($sede['nome']) ?>
           <span style="font-size:.72rem;opacity:.7;margin-left:auto">
@@ -1018,8 +1021,10 @@ function colorePatentePHP(?string $patente): string {
             elseif (str_contains($codPos,'el-'))  $tipoHead = 'tipo-el';
             elseif (str_contains($codPos,'op'))   $tipoHead = 'tipo-op';
             elseif (str_contains($codPos,'b'))    $tipoHead = 'tipo-b';
+            // CENTR-OP occupa 2 colonne: chiude la riga A a 7 e manda 1B in seconda riga
+            $posWide = ($pos['codice'] === 'CENTR-OP') ? ' pos-wide' : '';
           ?>
-          <div class="pos-card"
+          <div class="pos-card<?= $posWide ?>"
                id="pos-<?= $pos['id'] ?>"
                data-pos-id="<?= $pos['id'] ?>"
                ondragover="event.preventDefault();this.classList.add('drag-over')"

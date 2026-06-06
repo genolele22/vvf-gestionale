@@ -5,9 +5,9 @@
 
 /* ── Layout generale pagina foglio ── */
 .foglio-page {
-    max-width: 1400px;
-    margin: 24px auto;
-    padding: 0 16px 60px;
+    max-width: 1800px;
+    margin: 20px auto;
+    padding: 0 20px 50px;
 }
 
 /* ── Intestazione foglio ── */
@@ -295,25 +295,42 @@ body.cruscotto-bloccato .foglio-layout {
 /* ── Griglia posizioni (parte destra) ── */
 .griglia-wrapper {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
     gap: 12px;
     align-items: start;
 }
+/* I distaccamenti riempiono il loro blocco (niente spazio sprecato a destra) */
+.sede-block:not(.sede-full) .pos-card {
+    max-width: none;
+}
 
 /* Centrale e Aeroporto: blocco full-width con posizioni in griglia
-   che va a capo (niente scroll orizzontale) — come nell'ODT */
+   (niente scroll orizzontale) — come nell'ODT */
 .sede-block.sede-full {
     grid-column: 1 / -1;
-}
-.sede-block.sede-full .sede-body {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
-    gap: 8px;
 }
 .sede-block.sede-full .pos-card {
     min-width: 0;
     max-width: none;
     flex: none;
+}
+
+/* CENTRALE: 7 colonne. CENTR-OP occupa 2 colonne così la riga A
+   (6 posizioni) si chiude a 7 e la serie B parte in seconda riga. */
+.sede-centrale .sede-body {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 8px;
+}
+.sede-centrale .pos-card.pos-wide {
+    grid-column: span 2;
+}
+
+/* AEROPORTO: le 5 posizioni distribuite sull'intera larghezza, una riga */
+.sede-aeroporto .sede-body {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 8px;
 }
 
 /* Blocco sede */
@@ -540,9 +557,17 @@ body.cruscotto-bloccato .foglio-layout {
 .alert-inf { background: var(--blu-bg);   color: var(--blu);   border: 1px solid #aed6f1; }
 
 /* ── Responsive ── */
+@media (max-width: 1024px) {
+    /* Centrale/Aeroporto: niente griglia fissa, le card vanno a capo */
+    .sede-centrale .sede-body,
+    .sede-aeroporto .sede-body {
+        grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    }
+    .sede-centrale .pos-card.pos-wide { grid-column: span 1; }
+}
 @media (max-width: 768px) {
     .foglio-layout          { grid-template-columns: 1fr; }
-    .col-sinistra           { position: static; }
+    .col-sinistra           { position: static; max-height: none; }
     .organico-list          { max-height: 200px; }
     .pos-card               { min-width: 140px; }
     .assenti-grid           { grid-template-columns: 1fr 1fr; }
