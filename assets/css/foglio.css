@@ -295,24 +295,25 @@ body.cruscotto-bloccato .foglio-layout {
 /* ── Griglia posizioni (parte destra) ── */
 .griglia-wrapper {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
     gap: 12px;
     align-items: start;
 }
 
-/* Centrale e Aeroporto: striscia orizzontale full-width */
+/* Centrale e Aeroporto: blocco full-width con posizioni in griglia
+   che va a capo (niente scroll orizzontale) — come nell'ODT */
 .sede-block.sede-full {
     grid-column: 1 / -1;
 }
 .sede-block.sede-full .sede-body {
-    flex-wrap: nowrap;
-    overflow-x: auto;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
     gap: 8px;
 }
 .sede-block.sede-full .pos-card {
-    min-width: 140px;
-    max-width: 170px;
-    flex-shrink: 0;
+    min-width: 0;
+    max-width: none;
+    flex: none;
 }
 
 /* Blocco sede */
