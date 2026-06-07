@@ -25,7 +25,11 @@ $turnoRiposo  = $tipoParam === 'D' ? $turnoGiorno['notte']  : $turnoGiorno['diur
 $codSaltoRip  = 'B' . $turnoRiposo['salto'];
 
 // ── Helper: pre-popola assegnazioni e salto per un foglio ────
+// Regola: max 7 vigili per posizione. Chi ha una posizione esplicita
+// (template ODT / default) ci va; gli altri vengono SPALMATI sulle
+// posizioni della loro sede, riempiendo 7 alla volta in ordine.
 function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId): void {
+    if (!defined('MAX_PER_SQUADRA')) define('MAX_PER_SQUADRA', 7);
     $pdo->prepare("DELETE FROM assegnazioni WHERE foglio_id=?")->execute([$foglioId]);
 
     // Posizione da montaggio ODT per questo salto canonico
@@ -36,15 +40,12 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId): voi
         $tmpl[(int)$r['vigile_id']] = (int)$r['posizione_id'];
     }
 
-    // Fallback: posizione principale per sede
-    $posPerSede = [];
-    foreach ($pdo->query(
-        "SELECT p.id, p.sede_id
-         FROM posizioni p
-         INNER JOIN (SELECT sede_id, MIN(ordine) min_ordine FROM posizioni GROUP BY sede_id) pm
-         ON p.sede_id=pm.sede_id AND p.ordine=pm.min_ordine"
-    )->fetchAll() as $pp) {
-        $posPerSede[(int)$pp['sede_id']] = (int)$pp['id'];
+    // Tutte le posizioni di ogni sede, ordinate; + mappa posizione→sede
+    $posizioniDiSede = [];
+    $sedeDiPos       = [];
+    foreach ($pdo->query("SELECT id, sede_id FROM posizioni ORDER BY sede_id, ordine") as $pp) {
+        $posizioniDiSede[(int)$pp['sede_id']][] = (int)$pp['id'];
+        $sedeDiPos[(int)$pp['id']]              = (int)$pp['sede_id'];
     }
 
     $personale = $pdo->query(
@@ -60,25 +61,47 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId): voi
     }
 
     $nextAssId = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM assegnazioni")->fetchColumn();
-    $ordine    = [];
     $stA       = $pdo->prepare("INSERT IGNORE INTO assegnazioni (id,foglio_id,posizione_id,vigile_id,ordine,in_straordinario) VALUES (?,?,?,?,?,0)");
 
+    $conteggio = [];  // posId => n attuale
+    $assegna = function(int $vid, int $posId) use (&$conteggio, &$nextAssId, $stA, $foglioId): void {
+        $conteggio[$posId] = ($conteggio[$posId] ?? 0) + 1;
+        $stA->execute([$nextAssId++, $foglioId, $posId, $vid, $conteggio[$posId]]);
+    };
+
+    // Prima posizione libera (<7) della sede, scorrendo in ordine
+    $primaLibera = function(int $sedeId) use (&$conteggio, $posizioniDiSede): ?int {
+        foreach ($posizioniDiSede[$sedeId] ?? [] as $pid) {
+            if (($conteggio[$pid] ?? 0) < MAX_PER_SQUADRA) return $pid;
+        }
+        return null;
+    };
+
+    // Pass 1: chi ha posizione esplicita (template/default) e c'è ancora posto
+    $daSpalmare = [];
     foreach ($personale as $vp) {
         $vid     = (int)$vp['id'];
         $sedeId  = (int)$vp['sede_id'];
-        $saltoId = (int)$vp['salto_id'];
-        if ($saltoId === $saltoRiposoId) continue;
+        if ((int)$vp['salto_id'] === $saltoRiposoId) continue;
         if (isset($assentiIds[$vid])) continue;
 
-        // Priorità: 1) montaggio ODT  2) posizione_default_id  3) posizione principale sede
-        $posId = $tmpl[$vid]
-            ?? ($vp['posizione_default_id'] ? (int)$vp['posizione_default_id'] : null)
-            ?? ($posPerSede[$sedeId] ?? null);
+        $posEsplicita = $tmpl[$vid]
+            ?? ($vp['posizione_default_id'] ? (int)$vp['posizione_default_id'] : null);
 
-        if ($posId) {
-            $ordine[$posId] = ($ordine[$posId] ?? 0) + 1;
-            $stA->execute([$nextAssId++, $foglioId, $posId, $vid, $ordine[$posId]]);
+        if ($posEsplicita && ($conteggio[$posEsplicita] ?? 0) < MAX_PER_SQUADRA) {
+            $assegna($vid, $posEsplicita);
+        } else {
+            // Sede di destinazione: quella della posizione esplicita (se piena) o quella del vigile
+            $daSpalmare[] = ['vid' => $vid,
+                             'sede' => $posEsplicita ? ($sedeDiPos[$posEsplicita] ?? $sedeId) : $sedeId];
         }
+    }
+
+    // Pass 2: spalma i restanti sulle posizioni libere della loro sede
+    foreach ($daSpalmare as $d) {
+        $pid = $primaLibera($d['sede']);
+        if ($pid) $assegna($d['vid'], $pid);
+        // se tutte piene → resta nei disponibili (non assegnato)
     }
 }
 
@@ -1085,8 +1108,10 @@ function colorePatentePHP(?string $patente): string {
                 title="Rimuovi">✕</button>
     </div>
 <?php endforeach; ?>
-
-
+              <?php // Slot vuoti fino a 7: presentazione a posti fissi
+              for ($i = count($assQui); $i < 7; $i++): ?>
+                <div class="slot-empty"></div>
+              <?php endfor; ?>
             </div>
 
           </div><!-- /.pos-card -->
@@ -1505,13 +1530,23 @@ function setOccupato(id, occupato, label) {
     updateRespinteCount();
 }
 
+// Mantiene esattamente 7 slot in una posizione: card + placeholder vuoti
+function sincronizzaSlot(body) {
+    if (!body) return;
+    body.querySelectorAll('.slot-empty').forEach(s => s.remove());
+    const n = body.querySelectorAll('.ass-card').length;
+    for (let i = n; i < 7; i++) {
+        body.insertAdjacentHTML('beforeend', '<div class="slot-empty"></div>');
+    }
+}
+
 // Rimuove dal DOM da qualsiasi posto (senza toccare la riga salto canonico)
 function rimuoviDOM(id) {
     const p = PERSONALE[id];
 
     // Da posizione
     const ac = document.getElementById('ass-' + id);
-    if (ac) ac.remove();
+    if (ac) { const body = ac.parentElement; ac.remove(); sincronizzaSlot(body); }
 
     // Da riga salto canonico: solo badge, non la riga
     const sr = document.getElementById('salto-' + id);
@@ -1730,7 +1765,7 @@ document.addEventListener('drop', async function(e) {
         rimuoviDOM(vigileId);
 
         const body = document.getElementById('body-' + posId);
-        if (body) body.insertAdjacentHTML('beforeend', buildAssCard(p, posId, straord));
+        if (body) { body.insertAdjacentHTML('beforeend', buildAssCard(p, posId, straord)); sincronizzaSlot(body); }
 
         // Aggiorna riga salto se STR
         if (p.saltoCanon) {

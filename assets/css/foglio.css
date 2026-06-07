@@ -397,11 +397,19 @@ body.cruscotto-bloccato .foglio-layout {
 .pos-head.tipo-op  { background: #7b241c; } /* Centrale Op*/
 
 .pos-body {
-    min-height: 80px;
     padding: 5px;
     display: flex;
     flex-direction: column;
     gap: 3px;
+}
+
+/* Slot vuoto: posto libero della squadra (presentazione a 7 posti fissi) */
+.slot-empty {
+    height: 26px;
+    border: 1px dashed #d8dce0;
+    border-radius: 4px;
+    background: repeating-linear-gradient(
+        45deg, #fcfcfd, #fcfcfd 6px, #f6f7f8 6px, #f6f7f8 12px);
 }
 
 /* Persona assegnata dentro una posizione */
