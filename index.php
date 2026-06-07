@@ -110,6 +110,8 @@ $saltoOggi = $turnoOggi['diurno']['turno'] . $turnoOggi['diurno']['salto']
     <a href="ferie/index.php"  class="nav-btn">🏖️ Ferie</a>
     <a href="report/index.php" class="nav-btn">📊 Reportistica</a>
     <a href="admin/index.php"  class="nav-btn">⚙️ Amministrazione</a>
+    <!-- TEMP sviluppo: rimuovere a fine beta -->
+    <a href="logbook/index.php" class="nav-btn">📓 Logbook</a>
     <a href="logout.php"       class="nav-btn ml-auto">🚪 Esci</a>
   </div>
 </nav>
