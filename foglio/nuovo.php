@@ -181,6 +181,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $posizioneId = (int)($_POST['posizione_id']  ?? 0);
         $straord     = (int)($_POST['straordinario'] ?? 0);
 
+        // Limite 7 vigili per squadra: controlla PRIMA di toccare i dati,
+        // escludendo il vigile stesso (caso di ri-drop nella stessa squadra)
+        if ($posizioneId > 0) {
+            $stCap = $pdo->prepare(
+                "SELECT COUNT(*) FROM assegnazioni
+                 WHERE foglio_id=? AND posizione_id=? AND vigile_id<>?"
+            );
+            $stCap->execute([$foglioId, $posizioneId, $vigileId]);
+            if ((int)$stCap->fetchColumn() >= 7) {
+                echo json_encode(['ok' => false, 'pieno' => true,
+                                  'errore' => 'Squadra al completo (max 7).']);
+                exit;
+            }
+        }
+
         // Rimuove assegnazioni e salto precedenti dello stesso vigile
         $pdo->prepare(
             "DELETE FROM assegnazioni WHERE foglio_id=? AND vigile_id=?"
@@ -1707,7 +1722,10 @@ document.addEventListener('drop', async function(e) {
             azione: 'assegna', vigile_id: vigileId,
             posizione_id: posId, straordinario: straord
         });
-        if (!res.ok) { showMsg('⚠️ Errore.','err'); return; }
+        if (!res.ok) {
+            showMsg(res.pieno ? '🚫 Squadra al completo (max 7). ' + p.nome + ' resta tra i disponibili.' : '⚠️ Errore.', 'err');
+            return;
+        }
 
         rimuoviDOM(vigileId);
 
