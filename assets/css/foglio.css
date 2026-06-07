@@ -230,6 +230,9 @@ body.cruscotto-bloccato .foglio-layout {
 
 .organico-list {
     padding: 6px;
+    max-height: 50vh;
+    overflow-y: auto;
+    scrollbar-width: thin;
 }
 
 /* Singola card persona nell'organico */
