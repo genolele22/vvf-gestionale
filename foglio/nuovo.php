@@ -24,11 +24,35 @@ $turnoAttivo  = $tipoParam === 'D' ? $turnoGiorno['diurno'] : $turnoGiorno['nott
 $turnoRiposo  = $tipoParam === 'D' ? $turnoGiorno['notte']  : $turnoGiorno['diurno'];
 $codSaltoRip  = 'B' . $turnoRiposo['salto'];
 
+// ── Helper: chi riposa davvero su questo foglio ──────────────
+// Default = vigili col salto_id del giorno. Poi applica gli scambi salto
+// approvati (salto_override) per quella data/turno: il vigile "out" torna a
+// lavorare, il vigile "in" va a riposo. Ritorna [vigile_id => true].
+function resterEffettivi(PDO $pdo, string $dataStr, string $tipoParam, int $saltoRiposoId): array {
+    $resters = [];
+    $st = $pdo->prepare("SELECT id FROM vigili WHERE attivo=1 AND salto_id=?");
+    $st->execute([$saltoRiposoId]);
+    foreach ($st->fetchAll(PDO::FETCH_COLUMN) as $vid) {
+        $resters[(int)$vid] = true;
+    }
+    $so = $pdo->prepare(
+        "SELECT vigile_out_id, vigile_in_id FROM salto_override
+         WHERE data=? AND tipo=? AND attivo=1"
+    );
+    $so->execute([$dataStr, $tipoParam]);
+    foreach ($so->fetchAll() as $r) {
+        unset($resters[(int)$r['vigile_out_id']]);
+        $resters[(int)$r['vigile_in_id']] = true;
+    }
+    return $resters;
+}
+
 // ── Helper: pre-popola assegnazioni e salto per un foglio ────
 // Regola: max 7 vigili per posizione. Chi ha una posizione esplicita
 // (template ODT / default) ci va; gli altri vengono SPALMATI sulle
 // posizioni della loro sede, riempiendo 7 alla volta in ordine.
-function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId): void {
+// $resters = insieme effettivo dei riposanti (default ± scambi salto).
+function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, array $resters): void {
     if (!defined('MAX_PER_SQUADRA')) define('MAX_PER_SQUADRA', 7);
     $pdo->prepare("DELETE FROM assegnazioni WHERE foglio_id=?")->execute([$foglioId]);
 
@@ -82,7 +106,7 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId): voi
     foreach ($personale as $vp) {
         $vid     = (int)$vp['id'];
         $sedeId  = (int)$vp['sede_id'];
-        if ((int)$vp['salto_id'] === $saltoRiposoId) continue;
+        if (isset($resters[$vid])) continue;
         if (isset($assentiIds[$vid])) continue;
 
         $posEsplicita = $tmpl[$vid]
@@ -105,20 +129,20 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId): voi
     }
 }
 
-function prepopolaFoglio(PDO $pdo, int $foglioId, int $saltoRiposoId): void {
+function prepopolaFoglio(PDO $pdo, int $foglioId, int $saltoRiposoId, array $resters): void {
     $pdo->prepare("DELETE FROM salto_servizio WHERE foglio_id=?")->execute([$foglioId]);
 
-    $personale   = $pdo->query("SELECT v.id, v.salto_id FROM vigili v WHERE v.attivo=1")->fetchAll();
+    $personale   = $pdo->query("SELECT v.id FROM vigili v WHERE v.attivo=1")->fetchAll();
     $nextSaltoId = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM salto_servizio")->fetchColumn();
     $stS         = $pdo->prepare("INSERT IGNORE INTO salto_servizio (id,foglio_id,vigile_id,richiamato) VALUES (?,?,?,0)");
 
     foreach ($personale as $vp) {
-        if ((int)$vp['salto_id'] === $saltoRiposoId) {
+        if (isset($resters[(int)$vp['id']])) {
             $stS->execute([$nextSaltoId++, $foglioId, (int)$vp['id']]);
         }
     }
 
-    prepopolaAssegnazioni($pdo, $foglioId, $saltoRiposoId);
+    prepopolaAssegnazioni($pdo, $foglioId, $saltoRiposoId, $resters);
 }
 
 // ── Recupera o crea il foglio ────────────────────────────────
@@ -140,7 +164,7 @@ if (!$foglio) {
     $stmtF->execute([$dataStr, $tipoParam]);
     $foglio = $stmtF->fetch();
     $foglioId = (int)$foglio['id'];
-    prepopolaFoglio($pdo, $foglioId, $saltoRiposoId);
+    prepopolaFoglio($pdo, $foglioId, $saltoRiposoId, resterEffettivi($pdo, $dataStr, $tipoParam, $saltoRiposoId));
 }
 $foglioId = (int)$foglio['id'];
 
@@ -448,7 +472,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // ── AJAX: reset foglio ───────────────────────────────────
     if ($azione === 'reset_foglio') {
-        prepopolaAssegnazioni($pdo, $foglioId, $saltoRiposoId);
+        prepopolaAssegnazioni($pdo, $foglioId, $saltoRiposoId, resterEffettivi($pdo, $dataStr, $tipoParam, $saltoRiposoId));
         echo json_encode(['ok' => true]);
         exit;
     }
