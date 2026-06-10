@@ -600,6 +600,9 @@ $stmtSalto = $pdo->prepare(
 $stmtSalto->execute([$foglioId]);
 $vigiliInSalto = $stmtSalto->fetchAll();
 $idVigiliInSalto = array_unique(array_column($vigiliInSalto, 'vigile_id'));
+// richiamato (STR) per vigile, dalla verità salto_servizio (riflette gli scambi)
+$saltoRichiamato = [];
+foreach ($vigiliInSalto as $r) { $saltoRichiamato[(int)$r['vigile_id']] = (int)$r['richiamato']; }
 
 // Vigili disponibili (non assegnati, non assenti, non in salto)
 $vigiliOccupati = array_unique(array_merge(
@@ -715,7 +718,7 @@ function colorePatentePHP(?string $patente): string {
     <a href="../index.php"        class="nav-btn">🏠 Cruscotto</a>
     <a href="nuovo.php"           class="nav-btn active">📋 Foglio</a>
     <a href="../vigili/lista.php" class="nav-btn">👥 Personale</a>
-    <a href="../ferie/index.php"  class="nav-btn">🏖️ Ferie</a>
+    <a href="../ferie/index.php"  class="nav-btn">🗓️ Agenda</a>
     <a href="../report/index.php" class="nav-btn">📊 Reportistica</a>
     <a href="../admin/index.php"  class="nav-btn">⚙️ Amministrazione</a>
     <a href="../logout.php"       class="nav-btn ml-auto">🚪 Esci</a>
@@ -1264,9 +1267,9 @@ function colorePatentePHP(?string $patente): string {
 
     <?php
     foreach ($tuttoPersonale as $v):
-      if ((int)$v['salto_id'] !== $idSaltoRiposo) continue;
       $vid          = $v['id'];
-      $isAssegnatoStr = in_array($vid, $vigiliAssegnati);
+      if (!in_array($vid, $idVigiliInSalto)) continue;   // verità: salto_servizio (riflette gli scambi)
+      $isAssegnatoStr = !empty($saltoRichiamato[$vid]);   // STR = richiamato (straordinario)
       $label        = etichettaVigile($v);
     ?>
       <div class="assente-row"

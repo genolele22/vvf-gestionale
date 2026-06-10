@@ -115,7 +115,7 @@ foreach ($voci as $v) { $v['fatto'] ? $nFatte++ : $nDaFare++; }
     <a href="../index.php"        class="nav-btn">🏠 Cruscotto</a>
     <a href="../foglio/nuovo.php" class="nav-btn">📋 Nuovo Foglio</a>
     <a href="../vigili/lista.php" class="nav-btn">👥 Personale</a>
-    <a href="../ferie/index.php"  class="nav-btn">🏖️ Ferie</a>
+    <a href="../ferie/index.php"  class="nav-btn">🗓️ Agenda</a>
     <a href="index.php"           class="nav-btn active">📓 Logbook</a>
   </div>
 </nav>

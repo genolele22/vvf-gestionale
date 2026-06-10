@@ -248,7 +248,7 @@ $totVigili   = count($perVigile);
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>VVF – Gestione Ferie <?= $mesiNomi[$meseP] ?> <?= $annoP ?></title>
+<title>VVF – Agenda <?= $mesiNomi[$meseP] ?> <?= $annoP ?></title>
 <link rel="stylesheet" href="../assets/css/stile.css?v=<?= @filemtime(__DIR__.'/../assets/css/stile.css') ?>">
 <script defer src="../assets/js/conferma.js?v=<?= @filemtime(__DIR__.'/../assets/js/conferma.js') ?>"></script>
 <style>
@@ -381,7 +381,7 @@ $totVigili   = count($perVigile);
     <div class="header-logo">🚒</div>
     <div class="header-testi">
       <h1>Comando Provinciale VVF di Genova</h1>
-      <p>Gestionale — Gestione Ferie Turno B</p>
+      <p>Gestionale — Agenda Turno B</p>
     </div>
     <div class="header-badge">TURNO B</div>
   </div>
@@ -392,7 +392,7 @@ $totVigili   = count($perVigile);
     <a href="../index.php"          class="nav-btn">🏠 Cruscotto</a>
     <a href="../foglio/nuovo.php"   class="nav-btn">📋 Foglio</a>
     <a href="../vigili/lista.php"   class="nav-btn">👥 Personale</a>
-    <a href="index.php"             class="nav-btn active">🏖️ Ferie</a>
+    <a href="index.php"             class="nav-btn active">🗓️ Agenda</a>
     <a href="../report/index.php"   class="nav-btn">📊 Reportistica</a>
     <a href="../admin/index.php"    class="nav-btn">⚙️ Amministrazione</a>
     <a href="../logout.php"         class="nav-btn ml-auto">🚪 Esci</a>
@@ -406,7 +406,7 @@ $totVigili   = count($perVigile);
   <!-- Navigazione mese -->
   <div class="mese-nav">
     <a href="?anno=<?= $annoPrev ?>&mese=<?= $mesePrev ?>" class="btn btn-grigio btn-sm">◀</a>
-    <h2>🏖️ Ferie — <?= $mesiNomi[$meseP] ?> <?= $annoP ?></h2>
+    <h2>🗓️ Agenda — <?= $mesiNomi[$meseP] ?> <?= $annoP ?></h2>
     <a href="?anno=<?= $annoNext ?>&mese=<?= $meseNext ?>" class="btn btn-grigio btn-sm">▶</a>
   </div>
 
@@ -425,6 +425,45 @@ $totVigili   = count($perVigile);
       <span class="lbl">Rifiutati</span>
     </div>
   </div>
+
+  <!-- Scambi salto approvati (traccia) -->
+  <?php
+    $scambiApprovati = $pdo->query("
+        SELECT s.id, s.vigile_a_id, s.vigile_b_id, s.slot_a, s.slot_b,
+               a.cognome AS a_cog, b.cognome AS b_cog
+        FROM bot_scambi_salto s
+        JOIN vigili a ON a.id = s.vigile_a_id
+        JOIN vigili b ON b.id = s.vigile_b_id
+        WHERE s.stato = 'approvato'
+        ORDER BY s.id DESC
+    ")->fetchAll();
+    $ovStmt = $pdo->prepare(
+        "SELECT data, vigile_in_id FROM salto_override
+         WHERE scambio_id=? AND tipo='D' AND attivo=1"
+    );
+  ?>
+  <?php if ($scambiApprovati): ?>
+  <div class="data-section">
+    <div class="data-head" style="display:flex;align-items:baseline;gap:10px;padding:6px 4px 6px 0;margin-bottom:6px;border-bottom:2px solid var(--rosso);">
+      <span class="data-label" style="font-size:.95rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--grigio-sc);">🔄 Scambi salto approvati</span>
+      <span class="data-count" style="font-size:.72rem;color:var(--grigio-md);font-weight:600;"><?= count($scambiApprovati) ?></span>
+    </div>
+    <div class="vigile-card">
+    <?php foreach ($scambiApprovati as $sc):
+        $ovStmt->execute([$sc['id']]);
+        $rest = [];
+        foreach ($ovStmt->fetchAll() as $r) { $rest[(int)$r['vigile_in_id']] = $r['data']; }
+        $aData = isset($rest[(int)$sc['vigile_a_id']]) ? date('d/m', strtotime($rest[(int)$sc['vigile_a_id']])) : '—';
+        $bData = isset($rest[(int)$sc['vigile_b_id']]) ? date('d/m', strtotime($rest[(int)$sc['vigile_b_id']])) : '—';
+    ?>
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;padding:6px 4px;border-bottom:1px solid #eee;font-size:.85rem;">
+        <span style="font-weight:700;">🔄 <?= htmlspecialchars($sc['a_cog']) ?> (B<?= (int)$sc['slot_a'] ?>) ⇄ <?= htmlspecialchars($sc['b_cog']) ?> (B<?= (int)$sc['slot_b'] ?>)</span>
+        <span style="color:var(--grigio-md);"><?= htmlspecialchars($sc['a_cog']) ?> riposa <?= $aData ?> · <?= htmlspecialchars($sc['b_cog']) ?> riposa <?= $bData ?></span>
+      </div>
+    <?php endforeach; ?>
+    </div>
+  </div>
+  <?php endif; ?>
 
   <?php if (empty($perData)): ?>
     <div class="alert alert-ok">Nessuna richiesta di ferie per <?= $mesiNomi[$meseP] ?> <?= $annoP ?>.</div>

@@ -203,7 +203,7 @@ if (!empty($vigili)) {
     <a href="../index.php"        class="nav-btn">🏠 Cruscotto</a>
     <a href="../foglio/nuovo.php" class="nav-btn">📋 Nuovo Foglio</a>
     <a href="lista.php"           class="nav-btn active">👥 Personale</a>
-    <a href="../ferie/index.php"  class="nav-btn">🏖️ Ferie</a>
+    <a href="../ferie/index.php"  class="nav-btn">🗓️ Agenda</a>
     <a href="../report/index.php" class="nav-btn">📊 Reportistica</a>
     <a href="../admin/index.php"  class="nav-btn">⚙️ Amministrazione</a>
     <a href="../logout.php"       class="nav-btn ml-auto">🚪 Esci</a>
