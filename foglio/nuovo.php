@@ -365,7 +365,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
-        echo json_encode(['ok' => true]);
+        // Per le ferie: è "a mano" (d'ufficio) se non c'è una richiesta Telegram dietro.
+        // Serve al client per mostrarla anche nel box "Ferie d'ufficio" (ridondanza).
+        $isUfficio = false;
+        if ($tipoAssenzaId === 1) {
+            $stU = $pdo->prepare(
+                "SELECT 1 FROM bot_requests
+                 WHERE vigile_id=? AND data_richiesta=? AND stato IN ('pending','approved') LIMIT 1"
+            );
+            $stU->execute([$vigileId, $dataStr]);
+            $isUfficio = !(bool) $stU->fetchColumn();
+        }
+
+        echo json_encode(['ok' => true, 'ufficio' => $isUfficio]);
         exit;
     }
 
@@ -403,19 +415,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($azione === 'rimuovi_assenza') {
         $vigileId = (int)($_POST['vigile_id'] ?? 0);
 
-        // Controlla se è una ferie Telegram (tipo=1) prima di eliminare
+        // È una ferie (tipo=1)?
         $stCheck = $pdo->prepare(
             "SELECT 1 FROM assenze WHERE foglio_id=? AND vigile_id=? AND tipo_assenza_id=1"
         );
         $stCheck->execute([$foglioId, $vigileId]);
         $isFeria = (bool) $stCheck->fetchColumn();
 
+        // C'è una richiesta Telegram dietro? (ferie a mano = nessuna richiesta)
+        $stReq = $pdo->prepare(
+            "SELECT 1 FROM bot_requests
+             WHERE vigile_id=? AND data_richiesta=? AND stato IN ('pending','approved') LIMIT 1"
+        );
+        $stReq->execute([$vigileId, $dataStr]);
+        $eraRichiesta = (bool) $stReq->fetchColumn();
+
         $pdo->prepare(
             "DELETE FROM assenze WHERE foglio_id=? AND vigile_id=?"
         )->execute([$foglioId, $vigileId]);
 
-        if ($isFeria) {
-            // Per richieste DN: pulisce l'assenza sull'altro turno dello stesso giorno
+        // Solo le ferie DA RICHIESTA vanno "respinte" (pulizia DN + stato rejected).
+        // Le ferie a mano si tolgono e basta: la persona torna disponibile.
+        if ($isFeria && $eraRichiesta) {
             $tipoPaired = ($tipoParam === 'D') ? 'N' : 'D';
             $pdo->prepare(
                 "DELETE a FROM assenze a
@@ -423,14 +444,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                  WHERE a.vigile_id=? AND f.data_servizio=? AND f.tipo_turno=? AND a.tipo_assenza_id=1"
             )->execute([$vigileId, $dataStr, $tipoPaired]);
 
-            // Marca come rifiutata la richiesta Telegram corrispondente
             $pdo->prepare(
                 "UPDATE bot_requests SET stato='rejected', processed_at=NOW()
                  WHERE vigile_id=? AND data_richiesta=? AND stato IN ('pending','approved')"
             )->execute([$vigileId, $dataStr]);
         }
 
-        echo json_encode(['ok' => true, 'era_feria' => $isFeria]);
+        echo json_encode(['ok' => true, 'era_feria' => $isFeria, 'era_richiesta' => $eraRichiesta]);
         exit;
     }
 
@@ -1337,7 +1357,9 @@ function colorePatentePHP(?string $patente): string {
 <div class="assenti-col" data-drop-zone="colFerie">
   <span class="assenti-col-head ac-ferie">🏖️ Ferie</span>
   <div id="colFerie">
-          <?php foreach ($ferieRichiesta as $a):
+          <?php /* Mostra TUTTE le ferie (da Telegram + a mano): le ferie a mano
+                   si vedono sia qui sia nel box "Ferie d'ufficio" (ridondanza voluta). */ ?>
+          <?php foreach ($ferieTutte as $a):
     $colore = colorePatentePHP($a['patente_max'] ?? null);
 ?>
     <div class="assente-row" data-vigile-id="<?= $a['vigile_id'] ?>">
@@ -1895,9 +1917,12 @@ document.addEventListener('drop', async function(e) {
         rimuoviDOM(vigileId);
         document.getElementById('ferieUfficioVuoto')?.remove();
         target.insertAdjacentHTML('beforeend', buildUfficioRow(p));
+        // Ridondanza: la ferie a mano si vede anche nella colonna Ferie
+        document.getElementById('colFerie')
+            ?.insertAdjacentHTML('beforeend', buildAssenteRow(p, 'FER'));
         if (!p.saltoCanon) setOccupato(vigileId, true, 'ferie ufficio');
         updateUfficioCount();
-        showMsg('🏛️ ' + p.nome + ' → ferie d\'ufficio.');
+        showMsg('🏛️ ' + p.nome + ' → ferie d\'ufficio (anche in Ferie).');
         return;
     }
 
@@ -1942,6 +1967,15 @@ document.addEventListener('drop', async function(e) {
 
     document.getElementById(colId)
         ?.insertAdjacentHTML('beforeend', buildAssenteRow(p, tipoCodice));
+
+    // Ridondanza ferie a mano: se è una ferie senza richiesta Telegram,
+    // mostrala anche nel box "Ferie d'ufficio".
+    if (colId === 'colFerie' && res.ufficio) {
+        document.getElementById('ferieUfficioVuoto')?.remove();
+        document.getElementById('colFerieUfficio')
+            ?.insertAdjacentHTML('beforeend', buildUfficioRow(p));
+        updateUfficioCount();
+    }
 
     if (!p.saltoCanon) setOccupato(vigileId, true, 'assente');
     showMsg('📋 ' + p.nome + ' → ' + tipoCodice + '.');
@@ -1999,13 +2033,15 @@ async function rimuoviDaPosizione(vigileId) {
 async function rimuoviDaAssenza(vigileId) {
     const res = await ajax({ azione: 'rimuovi_assenza', vigile_id: vigileId });
     if (!res.ok) { showMsg('⚠️ Errore.','err'); return; }
-    rimuoviDOM(vigileId);
+    rimuoviDOM(vigileId);          // toglie la card sia da Ferie sia da Ferie d'ufficio
+    updateUfficioCount();
     const p = PERSONALE[vigileId];
-    if (res.era_feria) {
-        // Ferie tolta dal foglio = ferie respinta → finisce nella casella dedicata
+    if (res.era_richiesta) {
+        // Solo le ferie DA RICHIESTA Telegram diventano "respinte"
         spostaInFerieRespinte(vigileId);
         showMsg('🚫 ' + (p ? p.nome : 'Vigile') + ' → ferie respinta.');
     } else {
+        // Ferie a mano: si toglie e basta, la persona torna disponibile
         if (p && !p.saltoCanon) setOccupato(vigileId, false);
         showMsg('↩️ Rimesso disponibile.');
     }
@@ -2123,6 +2159,13 @@ async function salvaAssenza() {
             if (colId) {
                 document.getElementById(colId)
                     ?.insertAdjacentHTML('beforeend', buildAssenteRow(p, tipoCodice));
+            }
+            // Ridondanza ferie a mano: anche nel box "Ferie d'ufficio"
+            if (colId === 'colFerie' && res.ufficio) {
+                document.getElementById('ferieUfficioVuoto')?.remove();
+                document.getElementById('colFerieUfficio')
+                    ?.insertAdjacentHTML('beforeend', buildUfficioRow(p));
+                updateUfficioCount();
             }
             if (!p.saltoCanon) setOccupato(vigileId, true, 'assente');
         }
