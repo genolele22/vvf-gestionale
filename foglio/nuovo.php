@@ -815,7 +815,8 @@ function colorePatentePHP(?string $patente): string {
       <!-- Capo Servizio -->
       <div class="fh-field">
         <div class="fh-label">Capo Servizio</div>
-        <div class="fh-value">
+        <div class="fh-value fh-dropzone" id="dropCapoServizio"
+             title="Trascina qui un vigile, oppure scegli dalla tendina">
           <select name="capo_servizio_id" id="csId">
             <option value="">— seleziona —</option>
             <?php foreach ($dirigenti as $d): ?>
@@ -831,7 +832,8 @@ function colorePatentePHP(?string $patente): string {
       <!-- Vice Capo Servizio -->
       <div class="fh-field">
         <div class="fh-label">Vice Capo Servizio</div>
-        <div class="fh-value">
+        <div class="fh-value fh-dropzone" id="dropViceCapo"
+             title="Trascina qui un vigile, oppure scegli dalla tendina">
           <select name="vice_capo_id" id="vcsId">
             <option value="">— seleziona —</option>
             <?php foreach ($dirigenti as $d): ?>
@@ -1775,6 +1777,23 @@ document.addEventListener('drop', async function(e) {
         return;
     }
 
+    // ── Drop su Capo Servizio / Vice Capo (barra intestazione) ─
+    if (target.id === 'dropCapoServizio' || target.id === 'dropViceCapo') {
+        const isCapo = (target.id === 'dropCapoServizio');
+        const sel    = document.getElementById(isCapo ? 'csId' : 'vcsId');
+        // La tendina contiene solo Cr/Cs: se manca, aggiungi l'opzione al volo
+        if (!sel.querySelector(`option[value="${vigileId}"]`)) {
+            const opt = document.createElement('option');
+            opt.value = vigileId;
+            opt.textContent = p.nome;
+            sel.appendChild(opt);
+        }
+        sel.value = String(vigileId);
+        await salvaIntestazioneAjax();
+        showMsg((isCapo ? '👤 Capo Servizio: ' : '👤 Vice Capo: ') + p.nome);
+        return;
+    }
+
     // ── Drop su posizione ────────────────────────────────────
     if (target.classList.contains('pos-card')) {
         const posId   = parseInt(target.dataset.posId);
@@ -1922,6 +1941,14 @@ function getDropTarget(el) {
         if (el.id === 'colSalto') return el;
         if (el.closest && el.closest('#colSalto')) {
             return document.getElementById('colSalto');
+        }
+        // Capo Servizio / Vice Capo (barra intestazione)
+        if (el.id === 'dropCapoServizio' || el.id === 'dropViceCapo') return el;
+        if (el.closest && el.closest('#dropCapoServizio')) {
+            return document.getElementById('dropCapoServizio');
+        }
+        if (el.closest && el.closest('#dropViceCapo')) {
+            return document.getElementById('dropViceCapo');
         }
         // Colonne assenze — intercetta qualsiasi figlio
         // usando data-drop-zone sul contenitore .assenti-col
@@ -2147,6 +2174,11 @@ styleEl.textContent = `
         background: #fff0ee !important;
         outline: 2px dashed var(--rosso) !important;
         border-radius: 4px;
+    }
+    .fh-dropzone { border-radius: 6px; transition: background .12s, outline .12s; }
+    .fh-dropzone.drop-target {
+        background: #fff0ee !important;
+        outline: 2px dashed var(--rosso) !important;
     }
 `;
 document.head.appendChild(styleEl);
