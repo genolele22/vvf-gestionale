@@ -599,10 +599,32 @@ $stmtSalto = $pdo->prepare(
 );
 $stmtSalto->execute([$foglioId]);
 $vigiliInSalto = $stmtSalto->fetchAll();
-$idVigiliInSalto = array_unique(array_column($vigiliInSalto, 'vigile_id'));
-// richiamato (STR) per vigile, dalla verità salto_servizio (riflette gli scambi)
+
+// Chi è in salto su questo foglio — calcolo ROBUSTO. NON dipende dal fatto che
+// salto_servizio sia stato pre-popolato: quella tabella resta vuota per i fogli
+// creati dal bot (richiesta ferie), per quelli mai pre-popolati e dopo un reset
+// → prima i nomi sparivano dal riquadro salto al ricaricamento. Ora:
+//   base = riposanti di diritto (canonico ± scambi salto) via resterEffettivi
+//   + chi è stato messo in salto a mano (salto_servizio)
+//   − chi è in ferie/assenza (se assente non è a riposo)
+// STR (richiamato) = riposante assegnato a una posizione, o flag su salto_servizio.
+$setAssegnati    = array_flip(array_map('intval', $vigiliAssegnati));
+$setAssenti      = array_flip(array_map('intval', $vigiliAssenti));
+$inSaltoSet      = [];
 $saltoRichiamato = [];
-foreach ($vigiliInSalto as $r) { $saltoRichiamato[(int)$r['vigile_id']] = (int)$r['richiamato']; }
+foreach (array_keys(resterEffettivi($pdo, $dataStr, $tipoParam, $saltoRiposoId)) as $vid) {
+    $vid = (int)$vid;
+    if (isset($setAssenti[$vid])) continue;
+    $inSaltoSet[$vid]      = true;
+    $saltoRichiamato[$vid] = isset($setAssegnati[$vid]) ? 1 : 0;
+}
+foreach ($vigiliInSalto as $r) {
+    $vid = (int)$r['vigile_id'];
+    if (isset($setAssenti[$vid]) || isset($inSaltoSet[$vid])) continue;
+    $inSaltoSet[$vid]      = true;
+    $saltoRichiamato[$vid] = (int)$r['richiamato'] ? 1 : (isset($setAssegnati[$vid]) ? 1 : 0);
+}
+$idVigiliInSalto = array_keys($inSaltoSet);
 
 // Vigili disponibili (non assegnati, non assenti, non in salto)
 $vigiliOccupati = array_unique(array_merge(
