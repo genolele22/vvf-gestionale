@@ -501,6 +501,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     exit;
 }
 
+// ── Auto-popolamento fogli "nudi" creati dal bot ─────────────
+// Quando un vigile chiede ferie, il bot crea il foglio (+ assenza) ma NON popola
+// salti/assegnazioni: restavano vuoti finché la fureria non faceva un reset a mano.
+// Alla prima APERTURA (GET), se il foglio non è mai stato popolato (0 assegnazioni
+// e 0 salto_servizio) e nasce dal flusso ferie (bot/ferie), lo popoliamo ora.
+// Le ferie sono preservate: prepopolaAssegnazioni salta chi è già assente.
+if (!$foglioBloccato && in_array(($foglio['creato_da'] ?? ''), ['bot', 'ferie'], true)) {
+    $stChkA = $pdo->prepare("SELECT COUNT(*) FROM assegnazioni  WHERE foglio_id=?");
+    $stChkA->execute([$foglioId]);
+    $stChkS = $pdo->prepare("SELECT COUNT(*) FROM salto_servizio WHERE foglio_id=?");
+    $stChkS->execute([$foglioId]);
+    if ((int)$stChkA->fetchColumn() === 0 && (int)$stChkS->fetchColumn() === 0) {
+        prepopolaFoglio($pdo, $foglioId, $saltoRiposoId,
+            resterEffettivi($pdo, $dataStr, $tipoParam, $saltoRiposoId));
+    }
+}
+
 // ── Carica dati per la pagina ────────────────────────────────
 
 // Sedi con le loro posizioni
