@@ -752,6 +752,7 @@ function etichettaVigile(array $v): string {
 }
 function colorePatentePHP(?string $patente): string {
     switch ($patente) {
+        case '4':
         case '3': return '#c0392b';
         case '2': return '#2471a3';
         default:  return '#2c3e50';
@@ -1698,6 +1699,7 @@ function rimuoviDOM(id) {
 // Restituisce il colore CSS in base alla patente massima
 function colorePatente(patente) {
     switch (patente) {
+        case '4':
         case '3': return '#c0392b';  // rosso
         case '2': return '#2471a3';  // blu
         case '1':
