@@ -6,3 +6,7 @@
 *.bak
 vendor/
 .DS_Store
+
+# file di riferimento caricati (non versionare)
+content%3A*
+/*.pdf
