@@ -985,6 +985,7 @@ function colorePatentePHP(?string $patente): string {
          id="pers-<?= $vid ?>"
          data-id="<?= $vid ?>"
          data-nome="<?= htmlspecialchars($label) ?>"
+         data-cognome="<?= htmlspecialchars($v['cognome']) ?>"
          data-qualifica="<?= htmlspecialchars($v['qcodice']) ?>"
          data-salto="<?= htmlspecialchars($v['salto_codice']) ?>"
          data-salto-id="<?= (int)$v['salto_id'] ?>"
@@ -1818,14 +1819,38 @@ document.addEventListener('dragstart', function(e) {
 document.addEventListener('dragend', function() {
     document.querySelectorAll('.dragging').forEach(el => el.classList.remove('dragging'));
     document.querySelectorAll('.drop-target').forEach(el => el.classList.remove('drop-target'));
+    _stopAutoScroll();
     _dragId     = null;
     _dragSource = null;
 });
 
 // ════════════════════════════════════════════════════════════
+// AUTO-SCROLL durante il drag: avvicinando il puntatore al bordo
+// alto/basso della finestra la pagina scorre, così si raggiungono
+// anche le caselle in fondo senza lasciare il trascinamento.
+// ════════════════════════════════════════════════════════════
+let _autoScrollDir = 0, _autoScrollTimer = null;
+function _autoScrollTick() {
+    if (_autoScrollDir !== 0) window.scrollBy(0, _autoScrollDir * 14);
+}
+function _setAutoScroll(clientY) {
+    const m = 110;                               // zona sensibile ai bordi (px)
+    if (clientY > window.innerHeight - m)      _autoScrollDir = 1;
+    else if (clientY < m)                      _autoScrollDir = -1;
+    else                                       _autoScrollDir = 0;
+    if (_autoScrollDir !== 0 && !_autoScrollTimer)
+        _autoScrollTimer = setInterval(_autoScrollTick, 16);
+}
+function _stopAutoScroll() {
+    if (_autoScrollTimer) { clearInterval(_autoScrollTimer); _autoScrollTimer = null; }
+    _autoScrollDir = 0;
+}
+
+// ════════════════════════════════════════════════════════════
 // ZONE DI DROP — listener delegato su tutto il documento
 // ════════════════════════════════════════════════════════════
 document.addEventListener('dragover', function(e) {
+    _setAutoScroll(e.clientY);                    // scorri vicino ai bordi
     const target = getDropTarget(e.target);
     if (target) {
         e.preventDefault();
@@ -1845,6 +1870,7 @@ document.addEventListener('dragleave', function(e) {
 });
 
 document.addEventListener('drop', async function(e) {
+    _stopAutoScroll();
     const target = getDropTarget(e.target);
     if (!target) return;
 
@@ -2261,10 +2287,11 @@ async function salvaIntestazioneAjax() {
 // FILTRO ORGANICO
 // ════════════════════════════════════════════════════════════
 function filtraOrganico(testo) {
+    // Oscura (non nasconde) chi NON inizia con la/le lettera/e digitate.
     const t = testo.toLowerCase().trim();
     document.querySelectorAll('#organicoList .persona-card').forEach(card => {
-        card.style.display =
-            (!t || card.dataset.nome.toLowerCase().includes(t)) ? '' : 'none';
+        const cognome = (card.dataset.cognome || card.dataset.nome || '').toLowerCase();
+        card.classList.toggle('dimmed', t !== '' && !cognome.startsWith(t));
     });
 }
 

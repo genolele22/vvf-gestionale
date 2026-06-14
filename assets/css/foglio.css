@@ -129,8 +129,8 @@
 
 .col-sinistra {
     position: sticky;
-    top: 80px;
-    max-height: calc(100vh - 96px);
+    top: 116px;                       /* sotto header (68) + navbar (~46) ora sticky */
+    max-height: calc(100vh - 130px);
     overflow-y: auto;
     scrollbar-width: thin;
     display: flex;
@@ -250,6 +250,8 @@ body.cruscotto-bloccato .foglio-layout {
     font-size: .8rem;
     user-select: none;
 }
+/* Ricerca: chi non inizia con la lettera digitata viene oscurato */
+.persona-card.dimmed { opacity: .22; }
 .persona-card:hover {
     background: #f0f7ff;
     box-shadow: 0 2px 6px rgba(0,0,0,.1);
@@ -299,7 +301,7 @@ body.cruscotto-bloccato .foglio-layout {
 .griglia-wrapper {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-    gap: 12px;
+    gap: 8px;
     align-items: start;
 }
 /* I distaccamenti riempiono il loro blocco (niente spazio sprecato a destra) */
@@ -346,7 +348,7 @@ body.cruscotto-bloccato .foglio-layout {
 .sede-head {
     background: var(--grigio-sc);
     color: var(--bianco);
-    padding: 8px 16px;
+    padding: 5px 14px;
     font-size: .82rem;
     font-weight: 700;
     text-transform: uppercase;
@@ -358,8 +360,8 @@ body.cruscotto-bloccato .foglio-layout {
 .sede-body {
     display: flex;
     flex-wrap: wrap;
-    gap: 10px;
-    padding: 12px;
+    gap: 8px;
+    padding: 8px;
 }
 
 /* Card posizione/mezzo */
