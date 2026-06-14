@@ -838,7 +838,7 @@ function colorePatentePHP(?string $patente): string {
                   class="btn btn-verde btn-sm">💾 Salva</button>
           <a href="stampa.php?id=<?= $foglioId ?>" target="_blank"
              class="btn btn-grigio btn-sm">🖨️ Stampa</a>
-          <a href="scarica_odt.php?data=<?= $dataStr ?>"
+          <a href="scarica_odt.php?data=<?= $dataStr ?>&tipo=<?= $tipoParam ?>"
              class="btn btn-grigio btn-sm">📄 Scarica .odt</a>
           <a href="../index.php" class="btn btn-grigio btn-sm">← Torna</a>
           <button onclick="apriModalReset()"
