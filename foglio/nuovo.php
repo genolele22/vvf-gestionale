@@ -663,6 +663,19 @@ foreach ($vigiliInSalto as $r) {
 }
 $idVigiliInSalto = array_keys($inSaltoSet);
 
+// Scambi salto attivi per questa data/turno: chi ENTRA (prende il salto) e chi CEDE
+// (torna in servizio). Servono solo per marcare le card con un badge 🔄.
+$scambioIn = []; $scambioOut = [];
+$stSc = $pdo->prepare(
+    "SELECT vigile_in_id, vigile_out_id FROM salto_override
+     WHERE data=? AND tipo=? AND attivo=1"
+);
+$stSc->execute([$dataStr, $tipoParam]);
+foreach ($stSc->fetchAll() as $r) {
+    $scambioIn[(int)$r['vigile_in_id']]   = true;
+    $scambioOut[(int)$r['vigile_out_id']] = true;
+}
+
 // Vigili disponibili (non assegnati, non assenti, non in salto)
 $vigiliOccupati = array_unique(array_merge(
     $vigiliAssegnati,
@@ -989,6 +1002,11 @@ function colorePatentePHP(?string $patente): string {
             <?php elseif ($isInSalto): ?>
                 <small style="color:var(--grigio-md)">in salto</small>
             <?php endif; ?>
+            <?php if (isset($scambioOut[$vid])): ?>
+                <span class="scambio-badge"
+                      style="font-size:.65rem;color:#0a58ca;font-weight:700;margin-left:4px"
+                      title="Ha ceduto il salto per scambio turno">🔄 ha ceduto</span>
+            <?php endif; ?>
         </span>
 
         <?php if ($mostraSede): ?>
@@ -1185,6 +1203,11 @@ function colorePatentePHP(?string $patente): string {
                     <?= htmlspecialchars($ass['sede_codice']) ?>
                 </span>
             <?php endif; ?>
+            <?php if (isset($scambioOut[(int)$ass['vigile_id']])): ?>
+                <span class="scambio-badge"
+                      style="font-size:.6rem;color:#0a58ca;font-weight:700"
+                      title="Ha ceduto il salto per scambio turno">🔄</span>
+            <?php endif; ?>
             <?php if ($ass['in_straordinario']): ?>
                 <span style="font-size:.6rem;color:var(--giallo);
                              font-weight:700">STR</span>
@@ -1346,6 +1369,11 @@ function colorePatentePHP(?string $patente): string {
             <span class="persona-salto">
                 <?= htmlspecialchars($v['sede_codice']) ?>
             </span>
+        <?php endif; ?>
+        <?php if (isset($scambioIn[$vid])): ?>
+            <span class="scambio-badge"
+                  style="font-size:.65rem;color:#0a58ca;font-weight:700;margin-left:4px"
+                  title="A riposo per scambio salto turno">🔄 scambio</span>
         <?php endif; ?>
         <?php if ($isAssegnatoStr): ?>
             <span class="str-badge"
