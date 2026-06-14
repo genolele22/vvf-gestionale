@@ -236,10 +236,16 @@ bot_outbox(
    Dockerfile: aggiunta estensione `zip` (ZipArchive). FATTO.
 4. ✅ **Anteprima**: `stampa.php` → `FoglioRenderer::html()` — converte la tabella ODF
    riempita in HTML fedele (stesse colonne/span/bordi/stili) → anteprima === ODT. FATTO.
-5. **Approvazione ferie alla generazione**: ferie → `pending`; alla generazione ODT,
-   approva le pending del foglio + mail (gestionale) + scrive `bot_outbox` per il Telegram.
-   Lato bot: job di polling che drena `bot_outbox` e invia.
-6. **Pulizia bot**: rimuovere `/odt`, `odt_service.py`, i template; il bot resta solo
-   Telegram + mail + drain di `bot_outbox` (nessun endpoint HTTP in ingresso).
-7. **Verifica**: foglio reale → anteprima === ODT === modulo dirigenza; ferie approvate
-   solo a servizio completo, con mail+telegram.
+5. ✅ **Approvazione ferie alla generazione**: ferie nasce `pending` (bot `insert_request`);
+   `gestionale/includes/finalize_ferie.php` (chiamato da `scarica_odt.php`) approva le ferie
+   FER del foglio ancora pending + enfila in `bot_outbox` (idempotente via `ctx='ferie:<id>'`).
+   Trigger = generazione/download ODT (1ª volta approva+notifica, poi no-op). FATTO.
+6. ✅ **Pulizia bot**: rimossi `/odt`, `odt_service.py`, i template `B*.odt`; il bot ora ha
+   solo health-server `GET /` (per Fly) + Telegram + mail + `outbox_drain` (thread che drena
+   `bot_outbox`: Telegram via API diretta, mail dall'account fureria). FATTO.
+7. ✅ **Verifica**: ODT/anteprima dal DB identici; finalize approva pending→approved + enfila
+   outbox (collaudato, idempotente); drain del bot attivo e processante. FATTO.
+
+## Stato finale
+Tutte le fasi completate e deployate (gestionale + bot) il 2026-06-14. Foglio, ODT e anteprima
+nascono dal DB; il bot è solo canale (richieste, approvazione-alla-generazione via outbox, mail).
