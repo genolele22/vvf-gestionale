@@ -21,6 +21,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $attivo         = isset($_POST['attivo'])           ? 1 : 0;
     $note           = trim($_POST['note']               ?? '');
 
+    // Coerenza patenti: la 4 presuppone la 3. Se arriva la 4 senza la 3
+    // (es. JS bypassato), aggiungo la 3 lato server.
+    if (!empty($patenti)) {
+        $mapTipo = $pdo->query("SELECT tipo, id FROM patenti")->fetchAll(PDO::FETCH_KEY_PAIR);
+        $id3 = $mapTipo['3'] ?? null;
+        $id4 = $mapTipo['4'] ?? null;
+        $sel = array_map('strval', $patenti);
+        if ($id3 && $id4 && in_array((string)$id4, $sel, true) && !in_array((string)$id3, $sel, true)) {
+            $patenti[] = $id3;
+        }
+    }
+
     if ($cognome === '' || $qualifica_id === 0 || $sede_id === 0 || $salto_id === 0) {
         $errore = 'Cognome, qualifica, sede e salto turno sono obbligatori.';
     } elseif ($email !== null && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
@@ -303,16 +315,30 @@ if (!empty($vigili)) {
           </div>
           <div class="form-group full">
             <label>Patenti</label>
-            <div class="patenti-group">
+            <div class="patenti-group" id="patentiGroup">
               <?php foreach ($patentiAll as $p): ?>
                 <label class="patente-check">
                   <input type="checkbox" name="patenti[]"
                          value="<?= $p['id'] ?>"
+                         data-tipo="<?= htmlspecialchars($p['tipo']) ?>"
                          <?= in_array($p['id'], $patentiEdit) ? 'checked' : '' ?>>
                   Patente <?= htmlspecialchars($p['tipo']) ?>
                 </label>
               <?php endforeach; ?>
             </div>
+            <script>
+            // La patente 4 presuppone la 3: spuntando la 4 si spunta la 3;
+            // togliendo la 3 si toglie anche la 4.
+            (function () {
+              var g = document.getElementById('patentiGroup');
+              if (!g) return;
+              var c3 = g.querySelector('input[data-tipo="3"]');
+              var c4 = g.querySelector('input[data-tipo="4"]');
+              if (!c3 || !c4) return;
+              c4.addEventListener('change', function () { if (c4.checked) c3.checked = true; });
+              c3.addEventListener('change', function () { if (!c3.checked) c4.checked = false; });
+            })();
+            </script>
           </div>
 		  <div class="form-group full">
             <label>Abilitazioni speciali</label>
