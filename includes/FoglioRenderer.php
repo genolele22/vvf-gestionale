@@ -304,9 +304,9 @@ class FoglioRenderer
                     $code = $colCode[$col];
                     if (!empty($queue[$code])) {
                         $a = array_shift($queue[$code]);
-                        // fuori sede: sigla in prefisso + nome sottolineato
-                        $pfx = !empty($a['sigla']) ? $a['sigla'] . ' ' : '';
-                        $this->writeName($doc, $cell, $a, '', $pfx, !empty($a['sigla']));
+                        // fuori sede: sigla in suffisso (come in FERIE) + nome sottolineato
+                        $sfx = !empty($a['sigla']) ? ' ' . $a['sigla'] : '';
+                        $this->writeName($doc, $cell, $a, $sfx, '', !empty($a['sigla']));
                         $lastCell[$code] = $cell;
                     }
                 }
@@ -437,7 +437,7 @@ class FoglioRenderer
         }
         if ($p === null) { $p = $doc->createElementNS(self::TXT, 'text:p'); $cell->appendChild($p); }
         $p->appendChild($doc->createElementNS(self::TXT, 'text:line-break'));
-        $label = (!empty($a['sigla']) ? $a['sigla'] . ' ' : '') . self::etichetta($a);
+        $label = self::etichetta($a) . (!empty($a['sigla']) ? ' ' . $a['sigla'] : '');
         $style = self::nameStyle($a['patente_max'] ?? null, !empty($a['in_straordinario']), $underline);
         if ($style) {
             $span = $doc->createElementNS(self::TXT, 'text:span');
