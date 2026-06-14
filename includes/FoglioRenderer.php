@@ -113,16 +113,31 @@ class FoglioRenderer
         return null;
     }
 
+    private function modelPath(): string { return __DIR__ . '/../templates/modello.odt'; }
+
+    /** carica content.xml del modello, lo riempie dal DB, ritorna il DOMDocument */
+    private function buildFilledDoc(): DOMDocument
+    {
+        $zip = new ZipArchive();
+        if ($zip->open($this->modelPath()) !== true) throw new RuntimeException('modello.odt non apribile');
+        $xml = $zip->getFromName('content.xml');
+        $zip->close();
+        $doc = new DOMDocument();
+        $doc->preserveWhiteSpace = true;
+        $doc->loadXML($xml);
+        $this->fill($doc);
+        return $doc;
+    }
+
     /** Genera i bytes .odt */
     public function odt(): string
     {
-        $modelPath = __DIR__ . '/../templates/modello.odt';
+        $doc = $this->buildFilledDoc();
+        $xml = $doc->saveXML();
         $tmp = tempnam(sys_get_temp_dir(), 'odt');
-        copy($modelPath, $tmp);
+        copy($this->modelPath(), $tmp);
         $zip = new ZipArchive();
         if ($zip->open($tmp) !== true) throw new RuntimeException('modello.odt non apribile');
-        $xml = $zip->getFromName('content.xml');
-        $xml = $this->fillContentXml($xml);
         $zip->deleteName('content.xml');
         $zip->addFromString('content.xml', $xml);
         $zip->close();
@@ -131,11 +146,9 @@ class FoglioRenderer
         return $bytes;
     }
 
-    private function fillContentXml(string $xml): string
+    /** Riempie il DOMDocument del modello coi dati DB (mezzi, assenti, intestazione) */
+    private function fill(DOMDocument $doc): void
     {
-        $doc = new DOMDocument();
-        $doc->preserveWhiteSpace = true;
-        $doc->loadXML($xml);
         $this->ensureColorStyles($doc);
 
         $xp = new DOMXPath($doc);
@@ -223,8 +236,6 @@ class FoglioRenderer
 
         // ── INTESTAZIONE ─────────────────────────────────────────────────────────
         $this->fillHeader($doc, $rows, $pa);
-
-        return $doc->saveXML();
     }
 
     private function fillLista(DOMDocument $doc, array $rows, int $from, int $to, array $items): void
@@ -331,6 +342,154 @@ class FoglioRenderer
         } else {
             $p->appendChild($doc->createTextNode($text));
         }
+    }
+
+    // ── ANTEPRIMA HTML (stesso modello → identico all'ODT) ───────────────────────
+
+    /** Pagina HTML stampabile: converte la tabella ODF riempita in HTML fedele. */
+    public function html(): string
+    {
+        $doc = $this->buildFilledDoc();
+        $tab = $this->tableToHtml($doc);
+        $titolo = htmlspecialchars($this->giornoLbl . ' ' . $this->dataLabel . ' ' . $this->tipoParam);
+        $back = 'nuovo.php?data=' . urlencode($this->dataStr) . '&tipo=' . $this->tipoParam;
+        return '<!DOCTYPE html><html lang="it"><head><meta charset="UTF-8">'
+            . '<title>Foglio di Servizio — ' . $titolo . '</title><style>'
+            . 'body{margin:0;background:#e9eaed;font-family:Arial,"Liberation Sans",sans-serif}'
+            . '.toolbar{position:sticky;top:0;z-index:10;background:#1f2937;color:#fff;padding:10px 16px;display:flex;gap:10px;align-items:center}'
+            . '.toolbar .sp{flex:1}.toolbar button,.toolbar a{font:inherit;font-size:13px;border:none;border-radius:6px;padding:8px 14px;cursor:pointer;text-decoration:none}'
+            . '.tb-print{background:#0a58ca;color:#fff}.tb-close{background:#374151;color:#fff}.toolbar .meta{font-size:13px;opacity:.85}'
+            . '.sheet{width:210mm;min-height:297mm;margin:14px auto;background:#fff;padding:8mm 7mm;box-shadow:0 2px 12px rgba(0,0,0,.2)}'
+            . 'table.foglio{border-collapse:collapse;table-layout:fixed;width:100%;font-size:9.5px}'
+            . 'table.foglio td{overflow:hidden;padding:0 2px;word-wrap:break-word}'
+            . '@media print{body{background:#fff}.toolbar{display:none}.sheet{width:auto;min-height:auto;margin:0;padding:0;box-shadow:none}@page{size:A4 portrait;margin:8mm}}'
+            . '</style></head><body>'
+            . '<div class="toolbar"><strong>Anteprima di stampa</strong>'
+            . '<span class="meta">— ' . $titolo . ' · salto ' . htmlspecialchars($this->codSaltoRip) . '</span>'
+            . '<span class="sp"></span>'
+            . '<button class="tb-print" onclick="window.print()">🖨️ Stampa</button>'
+            . '<a class="tb-close" href="' . htmlspecialchars($back) . '">← Torna al foglio</a></div>'
+            . '<div class="sheet">' . $tab . '</div></body></html>';
+    }
+
+    /** Converte la table:table ODF (riempita) in una <table> HTML preservando layout/stili. */
+    private function tableToHtml(DOMDocument $doc): string
+    {
+        [$cellSt, $paraSt, $rowH, $colW, $textCol] = $this->readStyles($doc);
+        $xp = new DOMXPath($doc);
+        $xp->registerNamespace('table', self::TBL);
+        $table = $xp->query('//table:table')->item(0);
+
+        // larghezze colonne (cm) → percentuali
+        $widths = [];
+        foreach ($table->childNodes as $n) {
+            if ($n->nodeType !== XML_ELEMENT_NODE || $n->localName !== 'table-column') continue;
+            $rep = max(1, (int)$n->getAttributeNS(self::TBL, 'number-columns-repeated') ?: 1);
+            $w = $colW[$n->getAttributeNS(self::TBL, 'style-name')] ?? '0cm';
+            for ($k = 0; $k < $rep; $k++) $widths[] = (float)$w;
+        }
+        $tot = array_sum($widths) ?: 1;
+        $cols = '';
+        foreach ($widths as $w) $cols .= '<col style="width:' . round($w / $tot * 100, 3) . '%">';
+
+        $html = '<table class="foglio"><colgroup>' . $cols . '</colgroup>';
+        foreach ($table->childNodes as $r) {
+            if ($r->nodeType !== XML_ELEMENT_NODE || $r->localName !== 'table-row') continue;
+            $h = $rowH[$r->getAttributeNS(self::TBL, 'style-name')] ?? null;
+            $html .= $h ? '<tr style="height:' . $h . '">' : '<tr>';
+            foreach ($r->childNodes as $c) {
+                if ($c->nodeType !== XML_ELEMENT_NODE) continue;
+                if ($c->localName === 'covered-table-cell') continue;
+                if ($c->localName !== 'table-cell') continue;
+                $cs = (int)$c->getAttributeNS(self::TBL, 'number-columns-spanned') ?: 1;
+                $rs = (int)$c->getAttributeNS(self::TBL, 'number-rows-spanned') ?: 1;
+                $attr = ($cs > 1 ? ' colspan="' . $cs . '"' : '') . ($rs > 1 ? ' rowspan="' . $rs . '"' : '');
+                $style = $cellSt[$c->getAttributeNS(self::TBL, 'style-name')] ?? '';
+                $html .= '<td' . $attr . ' style="' . $style . '">' . $this->cellHtml($c, $paraSt, $textCol) . '</td>';
+            }
+            $html .= '</tr>';
+        }
+        return $html . '</table>';
+    }
+
+    /** contenuto HTML di una cella: <text:p> → div, <text:span> colore, <text:line-break> → br */
+    private function cellHtml(DOMElement $cell, array $paraSt, array $textCol): string
+    {
+        $out = '';
+        foreach ($cell->childNodes as $p) {
+            if ($p->nodeType !== XML_ELEMENT_NODE || $p->localName !== 'p') continue;
+            $css = $paraSt[$p->getAttributeNS(self::TXT, 'style-name')] ?? '';
+            $out .= '<div style="margin:0;line-height:1.25;' . $css . '">' . $this->inlineHtml($p, $textCol) . '</div>';
+        }
+        return $out !== '' ? $out : '&nbsp;';
+    }
+
+    private function inlineHtml(DOMNode $node, array $textCol): string
+    {
+        $h = '';
+        foreach ($node->childNodes as $n) {
+            if ($n->nodeType === XML_TEXT_NODE) {
+                $h .= htmlspecialchars($n->nodeValue);
+            } elseif ($n->nodeType === XML_ELEMENT_NODE && $n->localName === 'line-break') {
+                $h .= '<br>';
+            } elseif ($n->nodeType === XML_ELEMENT_NODE && $n->localName === 'span') {
+                $col = $textCol[$n->getAttributeNS(self::TXT, 'style-name')] ?? null;
+                $inner = $this->inlineHtml($n, $textCol);
+                $h .= $col ? '<span style="color:' . $col . '">' . $inner . '</span>' : $inner;
+            } elseif ($n->nodeType === XML_ELEMENT_NODE) {
+                $h .= $this->inlineHtml($n, $textCol);
+            }
+        }
+        return $h;
+    }
+
+    /** legge dagli automatic-styles: [cellCss, paraCss, rowHeight, colWidth, textColor] per nome-stile */
+    private function readStyles(DOMDocument $doc): array
+    {
+        $cell = []; $para = []; $rowH = []; $colW = []; $textCol = [];
+        $auto = $doc->getElementsByTagNameNS(self::OFF, 'automatic-styles')->item(0);
+        if (!$auto) return [$cell, $para, $rowH, $colW, $textCol];
+        foreach ($auto->getElementsByTagNameNS(self::STY, 'style') as $s) {
+            $name = $s->getAttributeNS(self::STY, 'name');
+            $fam  = $s->getAttributeNS(self::STY, 'family');
+            if ($fam === 'table-cell') {
+                $p = $s->getElementsByTagNameNS(self::STY, 'table-cell-properties')->item(0);
+                if (!$p) continue;
+                $css = [];
+                $b = $p->getAttributeNS(self::FO, 'border');
+                if ($b) $css[] = 'border:' . $b;
+                foreach (['left','right','top','bottom'] as $side) {
+                    $v = $p->getAttributeNS(self::FO, 'border-' . $side);
+                    if ($v) $css[] = 'border-' . $side . ':' . $v;
+                }
+                $bg = $p->getAttributeNS(self::FO, 'background-color');
+                if ($bg && $bg !== 'transparent') $css[] = 'background:' . $bg;
+                $va = $p->getAttributeNS(self::STY, 'vertical-align');
+                $css[] = 'vertical-align:' . (in_array($va, ['middle','bottom','top']) ? $va : 'top');
+                $cell[$name] = implode(';', $css);
+            } elseif ($fam === 'paragraph') {
+                $css = [];
+                $pp = $s->getElementsByTagNameNS(self::STY, 'paragraph-properties')->item(0);
+                if ($pp) { $a = $pp->getAttributeNS(self::FO, 'text-align'); if ($a) $css[] = 'text-align:' . ($a === 'end' ? 'right' : ($a === 'center' ? 'center' : ($a === 'start' ? 'left' : $a))); }
+                $tp = $s->getElementsByTagNameNS(self::STY, 'text-properties')->item(0);
+                if ($tp) {
+                    $fs = $tp->getAttributeNS(self::FO, 'font-size'); if ($fs) $css[] = 'font-size:' . $fs;
+                    $fw = $tp->getAttributeNS(self::FO, 'font-weight'); if ($fw) $css[] = 'font-weight:' . $fw;
+                    $c  = $tp->getAttributeNS(self::FO, 'color'); if ($c) $css[] = 'color:' . $c;
+                }
+                $para[$name] = implode(';', $css);
+            } elseif ($fam === 'table-row') {
+                $p = $s->getElementsByTagNameNS(self::STY, 'table-row-properties')->item(0);
+                if ($p) { $h = $p->getAttributeNS(self::STY, 'row-height'); if ($h) $rowH[$name] = $h; }
+            } elseif ($fam === 'table-column') {
+                $p = $s->getElementsByTagNameNS(self::STY, 'table-column-properties')->item(0);
+                if ($p) { $w = $p->getAttributeNS(self::STY, 'column-width'); if ($w) $colW[$name] = $w; }
+            } elseif ($fam === 'text') {
+                $p = $s->getElementsByTagNameNS(self::STY, 'text-properties')->item(0);
+                if ($p) { $c = $p->getAttributeNS(self::FO, 'color'); if ($c) $textCol[$name] = $c; }
+            }
+        }
+        return [$cell, $para, $rowH, $colW, $textCol];
     }
 
     private function ensureColorStyles(DOMDocument $doc): void
