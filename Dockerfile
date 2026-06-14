@@ -1,8 +1,8 @@
 FROM php:8.2-apache
 
 RUN apt-get update && apt-get install -y \
-    libpng-dev libjpeg-dev libssl-dev default-mysql-client \
-    && docker-php-ext-install pdo pdo_mysql calendar \
+    libpng-dev libjpeg-dev libssl-dev libzip-dev default-mysql-client \
+    && docker-php-ext-install pdo pdo_mysql calendar zip \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . /var/www/html/
