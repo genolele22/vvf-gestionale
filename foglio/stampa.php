@@ -293,7 +293,7 @@ function renderNomi(string $code): string {
       <td style="width:55%">Furieri:
         <?= $furieri ? htmlspecialchars(implode(', ', array_map('etichettaVigile',$furieri))) : '—' ?>
       </td>
-      <td style="width:45%; text-align:right">Anno 202<?= '_' ?> &nbsp; Turno B</td>
+      <td style="width:45%; text-align:right">Anno <?= htmlspecialchars($dt->format('Y')) ?> &nbsp; Turno B</td>
     </tr>
     <tr>
       <td>Capo Servizio: <b><?= $capoServizio ? htmlspecialchars(etichettaVigile($capoServizio)) : '—' ?></b>
