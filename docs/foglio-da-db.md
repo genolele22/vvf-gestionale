@@ -205,9 +205,27 @@ dal gestionale leggendo il DB.
 3. **Righe per mezzo = fisse, come da modulo** (rifarsi all'ODT in visione), niente
    clonazione. Capienza definita nel `modello.odt`, riferimento B4 (tabella sopra).
 
-### Resta da confermare
-- Canale Telegram→gestionale: come il gestionale fa inviare il messaggio al bot
-  (endpoint HTTP sul bot, oppure il bot fa polling di una coda nel DB).
+### Canale gestionale → bot per Telegram = coda su DB (DECISO)
+Niente endpoint HTTP sul bot (così il bot non espone porte in ingresso, coerente con
+"tutto sul DB"). Il gestionale **scrive una notifica in coda**, il bot la **invia in polling**.
+
+Tabella `bot_outbox` (id espliciti MAX+1, come le altre tabelle TiDB):
+```
+bot_outbox(
+  id          INT UNSIGNED PK,
+  telegram_id BIGINT,                       -- destinatario
+  testo       TEXT,                         -- messaggio già pronto
+  stato       ENUM('pending','sent','error') DEFAULT 'pending',
+  tentativi   INT DEFAULT 0,
+  creato_il   DATETIME, inviato_il DATETIME NULL,
+  ctx         VARCHAR(80) NULL              -- es. 'ferie_appr:<foglio_id>' per audit/idempotenza
+)
+```
+- **Gestionale** (alla generazione ODT): scrive una riga `pending` per ogni vigile da
+  notificare (testo già composto coi turni approvati).
+- **Bot**: job periodico (`JobQueue`/thread) ogni N secondi → legge i `pending`, invia,
+  marca `sent` (o `error` + `tentativi++`). La mail la manda il gestionale.
+- Idempotenza: `ctx` evita doppi invii se l'ODT viene rigenerato.
 
 ## Piano di implementazione (fasi)
 1. **Modello**: creare `gestionale/templates/modello.odt` (B4 con celle-nome svuotate),
@@ -217,8 +235,9 @@ dal gestionale leggendo il DB.
 3. **scarica_odt.php**: puntare al renderer, rimuovere il proxy/curl/DNS.
 4. **Anteprima**: `stampa.php` → `FoglioRenderer::html()` (stesso modello → 100% ODT).
 5. **Approvazione ferie alla generazione**: ferie → `pending`; alla generazione ODT,
-   approva le pending del foglio + mail + notifica Telegram al bot.
+   approva le pending del foglio + mail (gestionale) + scrive `bot_outbox` per il Telegram.
+   Lato bot: job di polling che drena `bot_outbox` e invia.
 6. **Pulizia bot**: rimuovere `/odt`, `odt_service.py`, i template; il bot resta solo
-   Telegram + mail (+ endpoint per ricevere le notifiche da inoltrare, se scelto).
+   Telegram + mail + drain di `bot_outbox` (nessun endpoint HTTP in ingresso).
 7. **Verifica**: foglio reale → anteprima === ODT === modulo dirigenza; ferie approvate
    solo a servizio completo, con mail+telegram.
