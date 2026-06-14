@@ -234,8 +234,8 @@ bot_outbox(
    (no perdita dati). Collaudato su foglio reale. FATTO.
 3. ✅ **scarica_odt.php**: genera dal DB col renderer, rimosso proxy/curl/DNS al bot.
    Dockerfile: aggiunta estensione `zip` (ZipArchive). FATTO.
-4. **Anteprima**: `stampa.php` → output HTML dallo stesso `modello.odt` (100% ODT).
-   Serve convertitore tabella-ODT→HTML in PHP (prototipo Python già fatto).
+4. ✅ **Anteprima**: `stampa.php` → `FoglioRenderer::html()` — converte la tabella ODF
+   riempita in HTML fedele (stesse colonne/span/bordi/stili) → anteprima === ODT. FATTO.
 5. **Approvazione ferie alla generazione**: ferie → `pending`; alla generazione ODT,
    approva le pending del foglio + mail (gestionale) + scrive `bot_outbox` per il Telegram.
    Lato bot: job di polling che drena `bot_outbox` e invia.
