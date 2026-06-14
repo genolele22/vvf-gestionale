@@ -338,11 +338,8 @@ class FoglioRenderer
             }
             if ($ri < count($rc) && isset($byCol[self::RC_COG])) {
                 $a = $rc[$ri++];
-                $this->writeName($doc, $byCol[self::RC_COG], $a);
-                if (isset($byCol[self::RC_VAR])) {
-                    $var = array_filter([$a['sigla'] ?? null, $a['note'] ?? null]);   // sigla e/o "Riposa per X"
-                    $this->setText($doc, $byCol[self::RC_VAR], implode(' · ', $var));
-                }
+                $this->writeName($doc, $byCol[self::RC_COG], $a, !empty($a['sigla']) ? ' ' . $a['sigla'] : '');
+                if (isset($byCol[self::RC_VAR])) $this->setText($doc, $byCol[self::RC_VAR], $a['note'] ?? '');  // solo "Riposa per X"
             }
         }
 
