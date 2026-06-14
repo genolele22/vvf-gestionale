@@ -91,6 +91,58 @@ class FoglioRenderer
         $st = $this->pdo->prepare("SELECT vigile_out_id FROM salto_override WHERE data=? AND tipo=? AND attivo=1");
         $st->execute([$this->dataStr, $this->tipoParam]);
         foreach ($st->fetchAll() as $r) $this->scambioOut[(int)$r['vigile_out_id']] = true;
+
+        // SALTO TURNO = Riposo Compensativo: i riposanti effettivi vanno nella sezione RC.
+        $this->aggiungiSaltoInRC($pat);
+    }
+
+    /** I riposanti del salto (canonico ± scambi, esclusi assegnati/assenti) → sezione RC */
+    private function aggiungiSaltoInRC(string $pat): void
+    {
+        $saltoRiposoId = (int)($this->pdo->query(
+            "SELECT id FROM salti_turno WHERE codice=" . $this->pdo->quote($this->codSaltoRip)
+        )->fetchColumn() ?: 0);
+        if (!$saltoRiposoId) return;
+
+        // base: vigili attivi col salto di riposo di oggi
+        $st = $this->pdo->prepare(
+            "SELECT v.id, v.cognome, v.disambiguatore, q.codice AS qcodice, $pat AS patente_max
+             FROM vigili v JOIN qualifiche q ON q.id=v.qualifica_id WHERE v.attivo=1 AND v.salto_id=?");
+        $st->execute([$saltoRiposoId]);
+        $resters = [];
+        foreach ($st->fetchAll() as $r) $resters[(int)$r['id']] = $r;
+
+        // scambi: out esce, in entra
+        $st = $this->pdo->prepare("SELECT vigile_out_id, vigile_in_id FROM salto_override WHERE data=? AND tipo=? AND attivo=1");
+        $st->execute([$this->dataStr, $this->tipoParam]);
+        foreach ($st->fetchAll() as $o) {
+            unset($resters[(int)$o['vigile_out_id']]);
+            $vin = $this->vigFull((int)$o['vigile_in_id'], $pat);
+            if ($vin) $resters[(int)$vin['id']] = $vin;
+        }
+
+        // escludi chi è assegnato (in servizio) o assente (ferie/missione/...)
+        $occupati = [];
+        foreach ($this->assByCode as $list) foreach ($list as $a) $occupati[(int)$a['vigile_id']] = true;
+        foreach ($this->perTipo as $list) foreach ($list as $a) $occupati[(int)$a['vigile_id']] = true;
+
+        foreach ($resters as $vid => $r) {
+            if (isset($occupati[$vid])) continue;
+            $r['sede_distaccata'] = null; $r['note'] = null;
+            $this->perTipo['RC'][] = $r;
+        }
+        if (!empty($this->perTipo['RC'])) {
+            usort($this->perTipo['RC'], fn($a, $b) => strcmp($a['cognome'] ?? '', $b['cognome'] ?? ''));
+        }
+    }
+
+    private function vigFull(int $id, string $pat): ?array
+    {
+        $st = $this->pdo->prepare(
+            "SELECT v.id, v.cognome, v.disambiguatore, q.codice AS qcodice, $pat AS patente_max
+             FROM vigili v JOIN qualifiche q ON q.id=v.qualifica_id WHERE v.id=?");
+        $st->execute([$id]);
+        return $st->fetch() ?: null;
     }
 
     private function vigById($id): ?array
