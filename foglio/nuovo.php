@@ -960,7 +960,7 @@ function colorePatentePHP(?string $patente): string {
       </div>
       <input type="text" class="organico-cerca"
              id="cercaOrganico"
-             placeholder="🔍 Cerca cognome…"
+             placeholder="🔍 Trova vigile nel foglio…"
              oninput="filtraOrganico(this.value)">
       <div class="organico-list" id="organicoList">
   <?php foreach ($tuttoPersonale as $v):
@@ -1519,6 +1519,7 @@ const PERSONALE = {
   <?= $v['id'] ?>: {
     id:          <?= $v['id'] ?>,
     nome:        <?= json_encode(etichettaVigile($v)) ?>,
+    cognome:     <?= json_encode($v['cognome']) ?>,
     qcodice:     <?= json_encode($v['qcodice']) ?>,
     salto:       <?= json_encode($v['salto_codice']) ?>,
     saltoId:     <?= (int)$v['salto_id'] ?>,
@@ -2287,12 +2288,27 @@ async function salvaIntestazioneAjax() {
 // FILTRO ORGANICO
 // ════════════════════════════════════════════════════════════
 function filtraOrganico(testo) {
-    // Oscura (non nasconde) chi NON inizia con la/le lettera/e digitate.
+    // Ricerca su TUTTO il foglio: evidenzia dove si trova il vigile (assegnato,
+    // assente o tra i disponibili) e oscura il resto. Scorre al primo risultato.
     const t = testo.toLowerCase().trim();
-    document.querySelectorAll('#organicoList .persona-card').forEach(card => {
-        const cognome = (card.dataset.cognome || card.dataset.nome || '').toLowerCase();
-        card.classList.toggle('dimmed', t !== '' && !cognome.startsWith(t));
+    const cards = document.querySelectorAll(
+        '.ass-card[data-vigile-id], .assente-row[data-vigile-id], #organicoList .persona-card'
+    );
+    let primoFoglio = null, primoQualsiasi = null;
+    cards.forEach(card => {
+        const id = card.dataset.vigileId || card.dataset.id;
+        const p  = id ? PERSONALE[id] : null;
+        const cognome = ((p && p.cognome) ? p.cognome : (card.dataset.cognome || '')).toLowerCase();
+        const match = t !== '' && cognome.startsWith(t);
+        card.classList.toggle('trovato', match);
+        card.classList.toggle('dimmed', t !== '' && !match);
+        if (match) {
+            if (!primoQualsiasi) primoQualsiasi = card;
+            if (!primoFoglio && !card.classList.contains('persona-card')) primoFoglio = card;
+        }
     });
+    const target = primoFoglio || primoQualsiasi;
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 // ════════════════════════════════════════════════════════════

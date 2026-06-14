@@ -250,8 +250,19 @@ body.cruscotto-bloccato .foglio-layout {
     font-size: .8rem;
     user-select: none;
 }
-/* Ricerca: chi non inizia con la lettera digitata viene oscurato */
-.persona-card.dimmed { opacity: .22; }
+/* Ricerca nel foglio: oscura chi non corrisponde, evidenzia chi corrisponde */
+.persona-card.dimmed,
+.ass-card.dimmed,
+.assente-row.dimmed { opacity: .18; }
+.persona-card.trovato,
+.ass-card.trovato,
+.assente-row.trovato {
+    outline: 3px solid #f1c40f;
+    outline-offset: 1px;
+    box-shadow: 0 0 0 4px rgba(241,196,15,.35);
+    border-radius: 6px;
+    opacity: 1 !important;
+}
 .persona-card:hover {
     background: #f0f7ff;
     box-shadow: 0 2px 6px rgba(0,0,0,.1);
