@@ -30,6 +30,7 @@ class FoglioRenderer
     private PDO $pdo;
     private array $foglio;
     private string $dataStr, $tipoParam, $codSaltoRip, $dataLabel, $giornoLbl;
+    private string $rigaData1 = '', $rigaData2 = '';   // inizio/fine servizio in intestazione
     private array $assByCode = [], $perTipo = [], $furieri = [];
     private ?array $capo = null, $vice = null;
     private array $scambioOut = [];
@@ -55,7 +56,28 @@ class FoglioRenderer
         $tg = getTurnoGiorno($this->dataStr);
         $rip = $this->tipoParam === 'D' ? $tg['notte'] : $tg['diurno'];
         $this->codSaltoRip = 'B' . $rip['salto'];
+
+        // Intestazione: inizio/fine servizio. Diurno: 8→20 stesso giorno.
+        // Notturno: 20 del giorno → 8 del giorno dopo.
+        $dtFine = (clone $dt)->modify('+1 day');
+        if ($this->tipoParam === 'D') {
+            $this->rigaData1 = self::dataEstesa($dt)     . ', ore 8.00';
+            $this->rigaData2 = self::dataEstesa($dt)     . ', ore 20.00';
+        } else {
+            $this->rigaData1 = self::dataEstesa($dt)     . ', ore 20.00';
+            $this->rigaData2 = self::dataEstesa($dtFine) . ', ore 8.00';
+        }
         $this->loadData($foglioId);
+    }
+
+    private static function dataEstesa(DateTime $d): string
+    {
+        $gg = ['Sunday'=>'Domenica','Monday'=>'Lunedì','Tuesday'=>'Martedì','Wednesday'=>'Mercoledì',
+               'Thursday'=>'Giovedì','Friday'=>'Venerdì','Saturday'=>'Sabato'];
+        $mm = [1=>'Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno','Luglio','Agosto',
+               'Settembre','Ottobre','Novembre','Dicembre'];
+        return ($gg[$d->format('l')] ?? '') . ' ' . (int)$d->format('d') . ' '
+             . ($mm[(int)$d->format('n')] ?? '') . ' ' . $d->format('Y');
     }
 
     private function loadData(int $foglioId): void
@@ -112,13 +134,17 @@ class FoglioRenderer
         $resters = [];
         foreach ($st->fetchAll() as $r) $resters[(int)$r['id']] = $r;
 
-        // scambi: out esce, in entra
+        // scambi: out esce, in entra con dicitura "Riposa per <out>"
         $st = $this->pdo->prepare("SELECT vigile_out_id, vigile_in_id FROM salto_override WHERE data=? AND tipo=? AND attivo=1");
         $st->execute([$this->dataStr, $this->tipoParam]);
         foreach ($st->fetchAll() as $o) {
             unset($resters[(int)$o['vigile_out_id']]);
             $vin = $this->vigFull((int)$o['vigile_in_id'], $pat);
-            if ($vin) $resters[(int)$vin['id']] = $vin;
+            if ($vin) {
+                $out = $this->vigFull((int)$o['vigile_out_id'], $pat);
+                $vin['note'] = $out ? 'Riposa per ' . self::etichetta($out) : null;
+                $resters[(int)$vin['id']] = $vin;
+            }
         }
 
         // escludi chi è assegnato (in servizio) o assente (ferie/missione/...)
@@ -128,7 +154,8 @@ class FoglioRenderer
 
         foreach ($resters as $vid => $r) {
             if (isset($occupati[$vid])) continue;
-            $r['sede_distaccata'] = null; $r['note'] = null;
+            $r['sede_distaccata'] = $r['sede_distaccata'] ?? null;
+            $r['note'] = $r['note'] ?? null;   // preserva "Riposa per <out>" se impostato
             $this->perTipo['RC'][] = $r;
         }
         if (!empty($this->perTipo['RC'])) {
@@ -163,6 +190,14 @@ class FoglioRenderer
         if ($t === '3' || $t === '4') return 'ColRosso';
         if ($t === '2') return 'ColBlu';
         return null;
+    }
+
+    /** stile testo: colore patente + (straordinario = sfondo giallo) */
+    private static function nameStyle(?string $t, bool $straord): ?string
+    {
+        $col = ($t === '3' || $t === '4') ? 'Rosso' : ($t === '2' ? 'Blu' : '');
+        if ($straord) return 'Straord' . $col;     // Straord | StraordRosso | StraordBlu
+        return $col ? 'Col' . $col : null;          // ColRosso | ColBlu | (nessuno)
     }
 
     private function modelPath(): string { return __DIR__ . '/../templates/modello.odt'; }
@@ -301,20 +336,30 @@ class FoglioRenderer
 
     private function fillHeader(DOMDocument $doc, array $rows, int $pa): void
     {
-        // Furieri (riga subito sotto "Furieri"), Capo/Vice/Funzionario (valore dopo la label), data
         $furTxt = $this->furieri ? implode(', ', array_map([self::class, 'etichetta'], $this->furieri)) : '';
+        $dateCells = [];
         for ($i = 0; $i < $pa; $i++) {
             $cells = $this->rowCells($rows[$i]);
             for ($j = 0; $j < count($cells); $j++) {
                 [$col, $cell] = $cells[$j];
                 $t = trim($cell->textContent);
-                if ($t === 'Capo servizio' && isset($cells[$j+1])) $this->setText($doc, $cells[$j+1][1], $this->capo ? self::etichetta($this->capo) : '');
-                elseif ($t === 'Vice capo servizi' && isset($cells[$j+1])) $this->setText($doc, $cells[$j+1][1], $this->vice ? self::etichetta($this->vice) : '');
-                elseif ($t === 'Funzionario' && isset($cells[$j+1])) $this->setText($doc, $cells[$j+1][1], $this->foglio['funzionario'] ?? '');
-                elseif ($t === 'Furieri' && isset($cells[$j+1])) $this->setText($doc, $cells[$j+1][1], $furTxt);
+                if ($t === '') continue;
+                if (preg_match('/^B\s*\d+$/', $t)) { $this->setText($doc, $cell, $this->codSaltoRip); continue; } // badge salto
+                if (stripos($t, 'ore') !== false) { $dateCells[] = [$i, $cell]; continue; }                     // riga data
+                $tl = mb_strtolower($t);
+                if (strpos($tl, 'vice') !== false && strpos($tl, 'capo') !== false && isset($cells[$j+1]))
+                    $this->setText($doc, $cells[$j+1][1], $this->vice ? self::etichetta($this->vice) : '');
+                elseif (strpos($tl, 'capo servizio') !== false && isset($cells[$j+1]))
+                    $this->setText($doc, $cells[$j+1][1], $this->capo ? self::etichetta($this->capo) : '');
+                elseif (strpos($tl, 'funzionario') !== false && isset($cells[$j+1]))
+                    $this->setText($doc, $cells[$j+1][1], $this->foglio['funzionario'] ?? '');
             }
         }
-        // riga 3 (sotto Furieri) come fallback per i nomi furieri
+        // due righe data: la più in alto = inizio servizio, la sotto = fine
+        usort($dateCells, fn($a, $b) => $a[0] <=> $b[0]);
+        if (isset($dateCells[0])) $this->setText($doc, $dateCells[0][1], $this->rigaData1);
+        if (isset($dateCells[1])) $this->setText($doc, $dateCells[1][1], $this->rigaData2);
+        // nomi furieri: riga 3, prima cella
         if (isset($rows[3])) {
             $bc = $this->rowCellsByCol($rows[3]);
             if (isset($bc[0]) && trim($bc[0]->textContent) === '') $this->setText($doc, $bc[0], $furTxt);
@@ -343,11 +388,11 @@ class FoglioRenderer
         return $m;
     }
 
-    /** scrive un nome (con colore patente) in una cella */
+    /** scrive un nome (colore patente + giallo se straordinario) in una cella */
     private function writeName(DOMDocument $doc, DOMElement $cell, array $a, string $suffix = ''): void
     {
         $label = self::etichetta($a) . $suffix;
-        $style = self::colorStyle($a['patente_max'] ?? null);
+        $style = self::nameStyle($a['patente_max'] ?? null, !empty($a['in_straordinario']));
         $this->setText($doc, $cell, $label, $style);
     }
 
@@ -361,7 +406,7 @@ class FoglioRenderer
         if ($p === null) { $p = $doc->createElementNS(self::TXT, 'text:p'); $cell->appendChild($p); }
         $p->appendChild($doc->createElementNS(self::TXT, 'text:line-break'));
         $label = self::etichetta($a);
-        $style = self::colorStyle($a['patente_max'] ?? null);
+        $style = self::nameStyle($a['patente_max'] ?? null, !empty($a['in_straordinario']));
         if ($style) {
             $span = $doc->createElementNS(self::TXT, 'text:span');
             $span->setAttributeNS(self::TXT, 'text:style-name', $style);
@@ -485,9 +530,9 @@ class FoglioRenderer
             } elseif ($n->nodeType === XML_ELEMENT_NODE && $n->localName === 'line-break') {
                 $h .= '<br>';
             } elseif ($n->nodeType === XML_ELEMENT_NODE && $n->localName === 'span') {
-                $col = $textCol[$n->getAttributeNS(self::TXT, 'style-name')] ?? null;
+                $css = $textCol[$n->getAttributeNS(self::TXT, 'style-name')] ?? '';
                 $inner = $this->inlineHtml($n, $textCol);
-                $h .= $col ? '<span style="color:' . $col . '">' . $inner . '</span>' : $inner;
+                $h .= $css !== '' ? '<span style="' . $css . '">' . $inner . '</span>' : $inner;
             } elseif ($n->nodeType === XML_ELEMENT_NODE) {
                 $h .= $this->inlineHtml($n, $textCol);
             }
@@ -538,7 +583,12 @@ class FoglioRenderer
                 if ($p) { $w = $p->getAttributeNS(self::STY, 'column-width'); if ($w) $colW[$name] = $w; }
             } elseif ($fam === 'text') {
                 $p = $s->getElementsByTagNameNS(self::STY, 'text-properties')->item(0);
-                if ($p) { $c = $p->getAttributeNS(self::FO, 'color'); if ($c) $textCol[$name] = $c; }
+                if ($p) {
+                    $css = [];
+                    $c = $p->getAttributeNS(self::FO, 'color'); if ($c) $css[] = 'color:' . $c;
+                    $bg = $p->getAttributeNS(self::FO, 'background-color'); if ($bg) $css[] = 'background:' . $bg;
+                    if ($css) $textCol[$name] = implode(';', $css);
+                }
             }
         }
         return [$cell, $para, $rowH, $colW, $textCol];
@@ -550,14 +600,23 @@ class FoglioRenderer
         if (!$auto) return;
         $have = [];
         foreach ($auto->getElementsByTagNameNS(self::STY, 'style') as $s) $have[$s->getAttributeNS(self::STY, 'name')] = true;
-        $add = ['ColRosso' => '#C00000', 'ColBlu' => '#0000C0'];
-        foreach ($add as $name => $hex) {
+        $YEL = '#FFFF66';
+        // name => [color|null, background|null]
+        $add = [
+            'ColRosso'     => ['#C00000', null],
+            'ColBlu'       => ['#0000C0', null],
+            'Straord'      => [null,      $YEL],   // straordinario, patente 1 (nero)
+            'StraordRosso' => ['#C00000', $YEL],
+            'StraordBlu'   => ['#0000C0', $YEL],
+        ];
+        foreach ($add as $name => [$col, $bg]) {
             if (isset($have[$name])) continue;
             $st = $doc->createElementNS(self::STY, 'style:style');
             $st->setAttributeNS(self::STY, 'style:name', $name);
             $st->setAttributeNS(self::STY, 'style:family', 'text');
             $tp = $doc->createElementNS(self::STY, 'style:text-properties');
-            $tp->setAttributeNS(self::FO, 'fo:color', $hex);
+            if ($col) $tp->setAttributeNS(self::FO, 'fo:color', $col);
+            if ($bg)  $tp->setAttributeNS(self::FO, 'fo:background-color', $bg);
             $st->appendChild($tp);
             $auto->appendChild($st);
         }
