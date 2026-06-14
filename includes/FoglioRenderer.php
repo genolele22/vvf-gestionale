@@ -163,10 +163,10 @@ class FoglioRenderer
         $pa = $pa ?? count($rows); $miss = $miss ?? $pa; $mal = $mal ?? $miss;
 
         // ── AREA SERVIZIO: riempi i mezzi ───────────────────────────────────────
-        $colCode = [];          // start-col → codice mezzo corrente
-        $queue   = [];          // codice → lista nomi DB da piazzare (in ordine)
-        $placed  = [];          // codice → quanti piazzati
-        foreach ($this->assByCode as $code => $list) { $queue[$code] = $list; $placed[$code] = 0; }
+        $colCode  = [];         // start-col → codice mezzo corrente
+        $queue    = [];         // codice → lista nomi DB da piazzare (in ordine)
+        $lastCell = [];         // codice → ultima cella riempita (per overflow)
+        foreach ($this->assByCode as $code => $list) { $queue[$code] = $list; }
 
         for ($i = 0; $i < $pa; $i++) {
             foreach ($this->rowCells($rows[$i]) as [$col, $cell]) {
@@ -181,16 +181,19 @@ class FoglioRenderer
                     if (!empty($queue[$code])) {
                         $a = array_shift($queue[$code]);
                         $this->writeName($doc, $cell, $a);
-                        $placed[$code]++;
+                        $lastCell[$code] = $cell;
                     }
                 }
             }
         }
-        // mezzi rimasti con nomi non piazzati
+        // nomi in eccedenza: accodali all'ultima cella del mezzo (niente perdita dati)
         foreach ($queue as $code => $rest) {
-            if (!empty($rest)) {
-                if (($placed[$code] ?? 0) === 0) $this->noslot[] = $code . ' (' . count($rest) . ')';
-                else $this->overflow[] = $code . ' (+' . count($rest) . ')';
+            if (empty($rest)) continue;
+            if (isset($lastCell[$code])) {
+                foreach ($rest as $a) $this->appendName($doc, $lastCell[$code], $a);
+                $this->overflow[] = $code . ' (+' . count($rest) . ')';
+            } else {
+                $this->noslot[] = $code . ' (' . count($rest) . ')';
             }
         }
 
@@ -283,6 +286,27 @@ class FoglioRenderer
         $label = self::etichetta($a) . $suffix;
         $style = self::colorStyle($a['patente_max'] ?? null);
         $this->setText($doc, $cell, $label, $style);
+    }
+
+    /** accoda un nome (a capo) nell'ultima cella di un mezzo pieno (overflow) */
+    private function appendName(DOMDocument $doc, DOMElement $cell, array $a): void
+    {
+        $p = null;
+        foreach ($cell->childNodes as $n) {
+            if ($n->nodeType === XML_ELEMENT_NODE && $n->localName === 'p') { $p = $n; break; }
+        }
+        if ($p === null) { $p = $doc->createElementNS(self::TXT, 'text:p'); $cell->appendChild($p); }
+        $p->appendChild($doc->createElementNS(self::TXT, 'text:line-break'));
+        $label = self::etichetta($a);
+        $style = self::colorStyle($a['patente_max'] ?? null);
+        if ($style) {
+            $span = $doc->createElementNS(self::TXT, 'text:span');
+            $span->setAttributeNS(self::TXT, 'text:style-name', $style);
+            $span->appendChild($doc->createTextNode($label));
+            $p->appendChild($span);
+        } else {
+            $p->appendChild($doc->createTextNode($label));
+        }
     }
 
     /** imposta il testo di una cella nel primo <text:p>, opz. avvolto in span colore */
