@@ -3,7 +3,9 @@
 > Stato: **progettato, NON implementato.** Sposta la generazione del foglio/ODT dal
 > bot al gestionale, basandola interamente sul DB. Il bot resta solo canale di
 > richieste/approvazioni + mail.
-> Data design: 2026-06-14.
+> Data design: 2026-06-14. Decisioni chiave prese (vedi "Decisioni prese"):
+> approvazione ferie alla generazione ODT (mail+telegram), anteprima 100% = ODT,
+> righe fisse per mezzo come da modulo.
 
 ## Obiettivo
 
@@ -102,24 +104,56 @@ riga Capo Servizio · Vice · Funzionario, eventuali Note.
 5. Intestazione: Furieri, Capo/Vice/Funzionario, data, turno.
 6. Ricompatta lo zip (mimetype primo e STORED, come fa oggi `odt_service`) → bytes.
 
-**Nodo righe variabili**: il template ha slot fissi per mezzo, il DB può avere 1–7
-nomi. Soluzione consigliata: **clonare/eliminare** `<table:table-row>` per adattare
-il numero di righe al conteggio reale (mantiene il modulo pulito). Alternativa più
-semplice: tetto fisso di righe per mezzo (rischio troncamento se un mezzo supera lo slot).
+**Righe per mezzo — DECISO: righe fisse come da modulo, niente clonazione.**
+Si rispetta la capienza del modulo (rifarsi all'ODT in visione). Il `modello.odt` vuoto
+definisce, mezzo per mezzo, quante righe-nome esistono; il renderer le riempie dall'alto,
+lascia vuote le eccedenti, e tronca l'eventuale eccesso (raro). Capienza di riferimento
+estratta dal B4 (da rivedere creando il modello: i mezzi a 0 nel B4 vanno portati a un
+minimo sensato):
+
+| mezzo | slot | mezzo | slot | mezzo | slot |
+|---|---|---|---|---|---|
+| Centrale operativa | 5 | 5A | 8 | CH-1A | 6 |
+| 1A | 4 | 3B | 1 | CH-1B | 3 |
+| 2A | 4 | 4B | 1 | GA-1NAU | 3 |
+| 3A/Squadretta | 6 | 1SOP/Autorimessa | 2 | BL-1A | 5 |
+| 4A | 6 | ML-1A | 7 | RP-1A | 4 |
+| 1SMZ | 6 | GE-1A | 5 | EL-1SMZ | 0→min |
+| 1B | 1 | BS-1A | 6 | ML-1NAU | 0→min |
+| 2B/NBCR | 2 | Telefonista | 1 | AP-1ROS/1ASA/1VI/2VI | 2/3/2/4 |
+| 1FUN/Autoradio | 2 | | | | |
+
+Nota: i conteggi B4 riflettono il crew di quel giorno, non un vero massimo. In fase di
+creazione del `modello.odt` si fissano le righe definitive per mezzo (uniformando dove
+serve, p.es. min 4–7 sui mezzi principali).
 
 ## Bot ridotto a canale
 
 Resta: handler Telegram (`pompiere`, `fureria`, `scambio`) + `email_service.py`.
 **Si rimuove:** `odt_service.py`, `data/templates/B*.odt`, l'HTTP server `/odt` in `bot.py`.
 
-### Flusso ferie
+### Flusso ferie — approvazione alla generazione ODT
+L'approvazione ferie **non è un atto separato**: avviene quando il **servizio è completo**,
+cioè quando la fureria **genera l'ODT** del foglio. Generare l'ODT = chiudere il servizio
+= approvare le ferie che vi compaiono.
 ```
-vigile (Telegram) → richiesta
-   → bot scrive bot_requests (DB, pending) + manda mail (richiesta)
-fureria approva
-   → bot aggiorna bot_requests (approved) + manda mail (conferma)
-→ il gestionale, leggendo il DB, mostra la ferie nel foglio/ODT. Automatico.
+vigile (Telegram) → richiesta ferie
+   → bot scrive bot_requests (DB, stato = pending) + mail "richiesta ricevuta"
+   → la ferie resta PENDING; nel gestionale è una richiesta da evadere sul foglio
+fureria compila il foglio nel gestionale e GENERA l'ODT (servizio completo)
+   → il gestionale APPROVA le ferie pending di quel foglio (bot_requests → approved)
+   → comunica l'approvazione su DUE canali:
+        • MAIL     (al vigile / agli interessati)
+        • TELEGRAM (il gestionale notifica il bot, che invia il messaggio)
+→ foglio/ODT riflettono il DB. Coerente per costruzione.
 ```
+Nota: oggi le ferie nascono `approved` (commit `insert_request: ferie nasce approved`).
+Con questo design **tornano a nascere `pending`** e si approvano alla generazione ODT.
+
+**Da confermare** (ferie multi-giorno): una richiesta copre `data_da→data_a` / `nr_turni`.
+L'approvazione alla generazione ODT è per-foglio (per data+turno). Opzioni: (a) approva
+tutta la richiesta alla prima generazione utile; (b) approva per-giorno man mano che i
+fogli si generano. Default proposto: **(a)**.
 
 ### Flusso scambio salto (già implementato, si tiene)
 ```
@@ -142,19 +176,32 @@ dal gestionale leggendo il DB.
 | `bot/bot.py` | avvia anche HTTP `/odt` | solo Telegram |
 | Mail | bot (`email_service`) | bot (invariato) |
 
-## Decisioni aperte
-1. **Approvazione ferie**: solo via bot (Telegram) o anche dal gestionale web?
-   Se anche web → la mail di conferma la manda il gestionale o gira la palla al bot?
-2. **Anteprima = ODT al 100%**: riscrivere `stampa.php` perché usi `modello.odt`
-   (consigliato, coerenza totale) oppure tenere la replica HTML attuale (più leggera).
-3. **Righe variabili ODT**: clonare righe (modulo pulito, più codice) vs tetto fisso.
+## Decisioni prese (2026-06-14)
+1. **Approvazione ferie = alla generazione ODT** (servizio completo), comunicata su
+   **mail + telegram**. La ferie nasce `pending` e viene approvata quando la fureria
+   genera il foglio. Il gestionale fa l'approvazione + mail e notifica il bot per il
+   messaggio Telegram. (Multi-giorno: default = approva tutta la richiesta alla prima
+   generazione utile — da confermare.)
+2. **Anteprima = ODT al 100%**: `stampa.php` viene riscritto per usare lo stesso
+   `modello.odt` del download. La replica HTML a 5 colonne attuale è provvisoria.
+3. **Righe per mezzo = fisse, come da modulo** (rifarsi all'ODT in visione), niente
+   clonazione. Capienza definita nel `modello.odt`, riferimento B4 (tabella sopra).
+
+### Resta da confermare
+- Ferie multi-giorno: approvazione (a) tutta-alla-prima-generazione vs (b) per-giorno.
+- Canale Telegram→gestionale: come il gestionale fa inviare il messaggio al bot
+  (endpoint HTTP sul bot, oppure il bot fa polling di una coda nel DB).
 
 ## Piano di implementazione (fasi)
-1. **Modello**: creare `gestionale/templates/modello.odt` (B4 con celle-nome svuotate).
-2. **Renderer ODT**: `FoglioRenderer::odt()` con skeleton-fill dal DB; collaudo confronto
-   con un foglio reale.
+1. **Modello**: creare `gestionale/templates/modello.odt` (B4 con celle-nome svuotate),
+   fissando le righe definitive per mezzo (capienza, vedi tabella).
+2. **Renderer ODT**: `FoglioRenderer::odt()` con skeleton-fill dal DB (righe fisse);
+   collaudo confronto con un foglio reale.
 3. **scarica_odt.php**: puntare al renderer, rimuovere il proxy/curl/DNS.
-4. **Anteprima**: `stampa.php` → renderer HTML (se si sceglie la coerenza totale).
-5. **Pulizia bot**: rimuovere `/odt`, `odt_service.py`, i template; verificare che il
-   bot resti solo Telegram + mail.
-6. **Verifica**: foglio reale → anteprima === ODT === modulo dirigenza.
+4. **Anteprima**: `stampa.php` → `FoglioRenderer::html()` (stesso modello → 100% ODT).
+5. **Approvazione ferie alla generazione**: ferie → `pending`; alla generazione ODT,
+   approva le pending del foglio + mail + notifica Telegram al bot.
+6. **Pulizia bot**: rimuovere `/odt`, `odt_service.py`, i template; il bot resta solo
+   Telegram + mail (+ endpoint per ricevere le notifiche da inoltrare, se scelto).
+7. **Verifica**: foglio reale → anteprima === ODT === modulo dirigenza; ferie approvate
+   solo a servizio completo, con mail+telegram.
