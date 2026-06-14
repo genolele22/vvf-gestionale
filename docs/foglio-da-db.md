@@ -150,10 +150,27 @@ fureria compila il foglio nel gestionale e GENERA l'ODT (servizio completo)
 Nota: oggi le ferie nascono `approved` (commit `insert_request: ferie nasce approved`).
 Con questo design **tornano a nascere `pending`** e si approvano alla generazione ODT.
 
-**Da confermare** (ferie multi-giorno): una richiesta copre `data_da→data_a` / `nr_turni`.
-L'approvazione alla generazione ODT è per-foglio (per data+turno). Opzioni: (a) approva
-tutta la richiesta alla prima generazione utile; (b) approva per-giorno man mano che i
-fogli si generano. Default proposto: **(a)**.
+### Ferie multi-giorno = per-turno via Agenda
+Il modello è **già per-turno**: `bot_requests` ha **una riga per turno**
+(`data_richiesta`, `tipo_turno` ∈ D/N/DN, `stato` ∈ pending/approved/rejected).
+L'**Agenda** (`ferie/index.php`) raggruppa i turni consecutivi in **blocchi** e mostra
+"dal…al…", conteggio turni (DN=2) e badge stato (approved/pending/rejected/**misto**).
+È lì che ogni turno viene flaggato approvato o no (`set_stato`, `feriaSyncAssenza`).
+
+Regola alla generazione ODT: **contano solo i turni `approved`**.
+- L'ODT/anteprima segna **solo i turni approvati** del blocco, con `Turni = n_approvati`
+  e `Da…A` calcolati sul **sottoinsieme approvato** (non sul richiesto).
+- La conferma comunica **solo i turni approvati**.
+- I turni `pending`/`rejected` al momento della generazione **non** finiscono sull'ODT
+  né nella conferma.
+
+Esempio: 3 turni consecutivi richiesti, 2 approvati prima della generazione →
+messaggio conferma 2 turni; riga FERIE ODT = `Cognome | 2 | dal X | al Y` (X,Y =
+estremi dei 2 approvati).
+
+Nota stato lavorazione: oggi `feriaSyncAssenza` mette il vigile assente sul foglio sia
+per `pending` sia per `approved` (il `pending` è un'assenza provvisoria su cui la fureria
+decide). Alla generazione, solo `approved` viene consolidato su ODT/conferma.
 
 ### Flusso scambio salto (già implementato, si tiene)
 ```
@@ -180,15 +197,15 @@ dal gestionale leggendo il DB.
 1. **Approvazione ferie = alla generazione ODT** (servizio completo), comunicata su
    **mail + telegram**. La ferie nasce `pending` e viene approvata quando la fureria
    genera il foglio. Il gestionale fa l'approvazione + mail e notifica il bot per il
-   messaggio Telegram. (Multi-giorno: default = approva tutta la richiesta alla prima
-   generazione utile — da confermare.)
+   messaggio Telegram. **Multi-giorno = per-turno via Agenda**: contano solo i turni
+   `approved`; ODT e conferma mostrano solo quelli, con `Turni`/`Da…A` sul sottoinsieme
+   approvato (vedi "Ferie multi-giorno").
 2. **Anteprima = ODT al 100%**: `stampa.php` viene riscritto per usare lo stesso
    `modello.odt` del download. La replica HTML a 5 colonne attuale è provvisoria.
 3. **Righe per mezzo = fisse, come da modulo** (rifarsi all'ODT in visione), niente
    clonazione. Capienza definita nel `modello.odt`, riferimento B4 (tabella sopra).
 
 ### Resta da confermare
-- Ferie multi-giorno: approvazione (a) tutta-alla-prima-generazione vs (b) per-giorno.
 - Canale Telegram→gestionale: come il gestionale fa inviare il messaggio al bot
   (endpoint HTTP sul bot, oppure il bot fa polling di una coda nel DB).
 
