@@ -34,6 +34,7 @@ class FoglioRenderer
     private array $assByCode = [], $perTipo = [], $furieri = [];
     private ?array $capo = null, $vice = null;
     private array $scambioOut = [];
+    private int $centrSedeId = 1;   // sede "Centrale": non sigla nessuno
     public array $overflow = [];   // mezzi con più nomi che slot
     public array $noslot = [];     // mezzi con nomi ma 0 slot
 
@@ -82,27 +83,38 @@ class FoglioRenderer
 
     private function loadData(int $foglioId): void
     {
+        $this->centrSedeId = (int)($this->pdo->query("SELECT id FROM sedi WHERE codice='CENTR'")->fetchColumn() ?: 1);
         $pat = "(SELECT MAX(p.tipo) FROM vigili_patenti vp JOIN patenti p ON p.id=vp.patente_id WHERE vp.vigile_id=v.id)";
         // assegnazioni per codice posizione
         $idByCode = [];
         foreach ($this->pdo->query("SELECT id,codice FROM posizioni")->fetchAll() as $p) $idByCode[(int)$p['id']] = $p['codice'];
         $st = $this->pdo->prepare(
             "SELECT a.posizione_id, a.in_straordinario, a.vigile_id, v.cognome, v.disambiguatore,
-                    q.codice AS qcodice, $pat AS patente_max
+                    q.codice AS qcodice, $pat AS patente_max,
+                    v.sede_id AS vig_sede, p.sede_id AS pos_sede, s.codice AS sede_cod
              FROM assegnazioni a JOIN vigili v ON v.id=a.vigile_id JOIN qualifiche q ON q.id=v.qualifica_id
+             JOIN posizioni p ON p.id=a.posizione_id JOIN sedi s ON s.id=v.sede_id
              WHERE a.foglio_id=? ORDER BY a.posizione_id, a.ordine");
         $st->execute([$foglioId]);
         foreach ($st->fetchAll() as $a) {
             $code = $idByCode[(int)$a['posizione_id']] ?? null;
-            if ($code) $this->assByCode[$code][] = $a;
+            if (!$code) continue;
+            // sigla = sede di appartenenza, solo se in servizio fuori dal proprio distaccamento
+            $a['sigla'] = ((int)$a['vig_sede'] !== (int)$a['pos_sede']) ? $a['sede_cod'] : null;
+            $this->assByCode[$code][] = $a;
         }
         // assenze per tipo
         $st = $this->pdo->prepare(
-            "SELECT a.*, v.cognome, v.disambiguatore, q.codice AS qcodice, ta.codice AS tipo_codice, $pat AS patente_max
+            "SELECT a.*, v.cognome, v.disambiguatore, q.codice AS qcodice, ta.codice AS tipo_codice, $pat AS patente_max,
+                    v.sede_id AS vig_sede, s.codice AS sede_cod
              FROM assenze a JOIN vigili v ON v.id=a.vigile_id JOIN qualifiche q ON q.id=v.qualifica_id
-             JOIN tipo_assenza ta ON ta.id=a.tipo_assenza_id WHERE a.foglio_id=? ORDER BY ta.id, v.cognome");
+             JOIN tipo_assenza ta ON ta.id=a.tipo_assenza_id JOIN sedi s ON s.id=v.sede_id
+             WHERE a.foglio_id=? ORDER BY ta.id, v.cognome");
         $st->execute([$foglioId]);
-        foreach ($st->fetchAll() as $a) $this->perTipo[$a['tipo_codice']][] = $a;
+        foreach ($st->fetchAll() as $a) {
+            $a['sigla'] = $this->siglaAssenza($a);
+            $this->perTipo[$a['tipo_codice']][] = $a;
+        }
         // capo / vice / furieri
         $this->capo = $this->vigById($this->foglio['capo_servizio_id'] ?? null);
         $this->vice = $this->vigById($this->foglio['vice_capo_id'] ?? null);
@@ -128,11 +140,13 @@ class FoglioRenderer
 
         // base: vigili attivi col salto di riposo di oggi
         $st = $this->pdo->prepare(
-            "SELECT v.id, v.cognome, v.disambiguatore, q.codice AS qcodice, $pat AS patente_max
-             FROM vigili v JOIN qualifiche q ON q.id=v.qualifica_id WHERE v.attivo=1 AND v.salto_id=?");
+            "SELECT v.id, v.cognome, v.disambiguatore, q.codice AS qcodice, $pat AS patente_max,
+                    v.sede_id AS vig_sede, s.codice AS sede_cod
+             FROM vigili v JOIN qualifiche q ON q.id=v.qualifica_id JOIN sedi s ON s.id=v.sede_id
+             WHERE v.attivo=1 AND v.salto_id=?");
         $st->execute([$saltoRiposoId]);
         $resters = [];
-        foreach ($st->fetchAll() as $r) $resters[(int)$r['id']] = $r;
+        foreach ($st->fetchAll() as $r) { $r['sigla'] = $this->siglaAssenza($r); $resters[(int)$r['id']] = $r; }
 
         // scambi: out esce, in entra con dicitura "Riposa per <out>"
         $st = $this->pdo->prepare("SELECT vigile_out_id, vigile_in_id FROM salto_override WHERE data=? AND tipo=? AND attivo=1");
@@ -166,10 +180,20 @@ class FoglioRenderer
     private function vigFull(int $id, string $pat): ?array
     {
         $st = $this->pdo->prepare(
-            "SELECT v.id, v.cognome, v.disambiguatore, q.codice AS qcodice, $pat AS patente_max
-             FROM vigili v JOIN qualifiche q ON q.id=v.qualifica_id WHERE v.id=?");
+            "SELECT v.id, v.cognome, v.disambiguatore, q.codice AS qcodice, $pat AS patente_max,
+                    v.sede_id AS vig_sede, s.codice AS sede_cod
+             FROM vigili v JOIN qualifiche q ON q.id=v.qualifica_id JOIN sedi s ON s.id=v.sede_id WHERE v.id=?");
         $st->execute([$id]);
-        return $st->fetch() ?: null;
+        $r = $st->fetch() ?: null;
+        if ($r) $r['sigla'] = $this->siglaAssenza($r);
+        return $r;
+    }
+
+    /** sigla per le sezioni assenti: distacco manuale, o sede di appartenenza (se non Centrale) */
+    private function siglaAssenza(array $a): ?string
+    {
+        if (!empty($a['sede_distaccata'])) return $a['sede_distaccata'];          // override manuale
+        return ((int)($a['vig_sede'] ?? 0) !== $this->centrSedeId) ? ($a['sede_cod'] ?? null) : null;
     }
 
     private function vigById($id): ?array
@@ -192,12 +216,12 @@ class FoglioRenderer
         return null;
     }
 
-    /** stile testo: colore patente + (straordinario = sfondo giallo) */
-    private static function nameStyle(?string $t, bool $straord): ?string
+    /** stile testo: colore patente + straordinario (giallo) + sottolineato (in servizio fuori sede) */
+    private static function nameStyle(?string $t, bool $straord, bool $und = false): ?string
     {
         $col = ($t === '3' || $t === '4') ? 'Rosso' : ($t === '2' ? 'Blu' : '');
-        if ($straord) return 'Straord' . $col;     // Straord | StraordRosso | StraordBlu
-        return $col ? 'Col' . $col : null;          // ColRosso | ColBlu | (nessuno)
+        if (!$straord && !$und && $col === '') return null;
+        return 'Nm' . ($straord ? 'S' : '') . ($und ? 'U' : '') . $col;  // es: NmRosso, NmS, NmU, NmSURosso…
     }
 
     private function modelPath(): string { return __DIR__ . '/../templates/modello.odt'; }
@@ -280,7 +304,9 @@ class FoglioRenderer
                     $code = $colCode[$col];
                     if (!empty($queue[$code])) {
                         $a = array_shift($queue[$code]);
-                        $this->writeName($doc, $cell, $a);
+                        // fuori sede: sigla in prefisso + nome sottolineato
+                        $pfx = !empty($a['sigla']) ? $a['sigla'] . ' ' : '';
+                        $this->writeName($doc, $cell, $a, '', $pfx, !empty($a['sigla']));
                         $lastCell[$code] = $cell;
                     }
                 }
@@ -290,7 +316,7 @@ class FoglioRenderer
         foreach ($queue as $code => $rest) {
             if (empty($rest)) continue;
             if (isset($lastCell[$code])) {
-                foreach ($rest as $a) $this->appendName($doc, $lastCell[$code], $a);
+                foreach ($rest as $a) $this->appendName($doc, $lastCell[$code], $a, !empty($a['sigla']));
                 $this->overflow[] = $code . ' (+' . count($rest) . ')';
             } else {
                 $this->noslot[] = $code . ' (' . count($rest) . ')';
@@ -305,7 +331,7 @@ class FoglioRenderer
             $byCol = $this->rowCellsByCol($rows[$i]);
             if ($fi < count($fer) && isset($byCol[self::FER_COG])) {
                 $a = $fer[$fi++];
-                $this->writeName($doc, $byCol[self::FER_COG], $a, !empty($a['sede_distaccata']) ? ' (' . $a['sede_distaccata'] . ')' : '');
+                $this->writeName($doc, $byCol[self::FER_COG], $a, !empty($a['sigla']) ? ' ' . $a['sigla'] : '');
                 if (isset($byCol[self::FER_TUR])) $this->setText($doc, $byCol[self::FER_TUR], $a['nr_turni'] ? (string)(int)$a['nr_turni'] : '');
                 if (isset($byCol[self::FER_DA]))  $this->setText($doc, $byCol[self::FER_DA], $a['data_da'] ? date('d/m', strtotime($a['data_da'])) : '');
                 if (isset($byCol[self::FER_A]))   $this->setText($doc, $byCol[self::FER_A], $a['data_a'] ? date('d/m', strtotime($a['data_a'])) : '');
@@ -313,7 +339,10 @@ class FoglioRenderer
             if ($ri < count($rc) && isset($byCol[self::RC_COG])) {
                 $a = $rc[$ri++];
                 $this->writeName($doc, $byCol[self::RC_COG], $a);
-                if (isset($byCol[self::RC_VAR])) $this->setText($doc, $byCol[self::RC_VAR], $a['sede_distaccata'] ?? ($a['note'] ?? ''));
+                if (isset($byCol[self::RC_VAR])) {
+                    $var = array_filter([$a['sigla'] ?? null, $a['note'] ?? null]);   // sigla e/o "Riposa per X"
+                    $this->setText($doc, $byCol[self::RC_VAR], implode(' · ', $var));
+                }
             }
         }
 
@@ -330,7 +359,10 @@ class FoglioRenderer
         $k = 0;
         for ($i = $from; $i < $to && $k < count($items); $i++) {
             $byCol = $this->rowCellsByCol($rows[$i]);
-            if (isset($byCol[0])) { $this->writeName($doc, $byCol[0], $items[$k]); $k++; }
+            if (isset($byCol[0])) {
+                $it = $items[$k++];
+                $this->writeName($doc, $byCol[0], $it, !empty($it['sigla']) ? ' ' . $it['sigla'] : '');
+            }
         }
     }
 
@@ -388,16 +420,16 @@ class FoglioRenderer
         return $m;
     }
 
-    /** scrive un nome (colore patente + giallo se straordinario) in una cella */
-    private function writeName(DOMDocument $doc, DOMElement $cell, array $a, string $suffix = ''): void
+    /** scrive un nome (colore patente + giallo straord. + sottolineato se fuori sede) in una cella */
+    private function writeName(DOMDocument $doc, DOMElement $cell, array $a, string $suffix = '', string $prefix = '', bool $underline = false): void
     {
-        $label = self::etichetta($a) . $suffix;
-        $style = self::nameStyle($a['patente_max'] ?? null, !empty($a['in_straordinario']));
+        $label = $prefix . self::etichetta($a) . $suffix;
+        $style = self::nameStyle($a['patente_max'] ?? null, !empty($a['in_straordinario']), $underline);
         $this->setText($doc, $cell, $label, $style);
     }
 
     /** accoda un nome (a capo) nell'ultima cella di un mezzo pieno (overflow) */
-    private function appendName(DOMDocument $doc, DOMElement $cell, array $a): void
+    private function appendName(DOMDocument $doc, DOMElement $cell, array $a, bool $underline = false): void
     {
         $p = null;
         foreach ($cell->childNodes as $n) {
@@ -405,8 +437,8 @@ class FoglioRenderer
         }
         if ($p === null) { $p = $doc->createElementNS(self::TXT, 'text:p'); $cell->appendChild($p); }
         $p->appendChild($doc->createElementNS(self::TXT, 'text:line-break'));
-        $label = self::etichetta($a);
-        $style = self::nameStyle($a['patente_max'] ?? null, !empty($a['in_straordinario']));
+        $label = (!empty($a['sigla']) ? $a['sigla'] . ' ' : '') . self::etichetta($a);
+        $style = self::nameStyle($a['patente_max'] ?? null, !empty($a['in_straordinario']), $underline);
         if ($style) {
             $span = $doc->createElementNS(self::TXT, 'text:span');
             $span->setAttributeNS(self::TXT, 'text:style-name', $style);
@@ -587,6 +619,7 @@ class FoglioRenderer
                     $css = [];
                     $c = $p->getAttributeNS(self::FO, 'color'); if ($c) $css[] = 'color:' . $c;
                     $bg = $p->getAttributeNS(self::FO, 'background-color'); if ($bg) $css[] = 'background:' . $bg;
+                    $us = $p->getAttributeNS(self::STY, 'text-underline-style'); if ($us && $us !== 'none') $css[] = 'text-decoration:underline';
                     if ($css) $textCol[$name] = implode(';', $css);
                 }
             }
@@ -601,24 +634,29 @@ class FoglioRenderer
         $have = [];
         foreach ($auto->getElementsByTagNameNS(self::STY, 'style') as $s) $have[$s->getAttributeNS(self::STY, 'name')] = true;
         $YEL = '#FFFF66';
-        // name => [color|null, background|null]
-        $add = [
-            'ColRosso'     => ['#C00000', null],
-            'ColBlu'       => ['#0000C0', null],
-            'Straord'      => [null,      $YEL],   // straordinario, patente 1 (nero)
-            'StraordRosso' => ['#C00000', $YEL],
-            'StraordBlu'   => ['#0000C0', $YEL],
-        ];
-        foreach ($add as $name => [$col, $bg]) {
-            if (isset($have[$name])) continue;
-            $st = $doc->createElementNS(self::STY, 'style:style');
-            $st->setAttributeNS(self::STY, 'style:name', $name);
-            $st->setAttributeNS(self::STY, 'style:family', 'text');
-            $tp = $doc->createElementNS(self::STY, 'style:text-properties');
-            if ($col) $tp->setAttributeNS(self::FO, 'fo:color', $col);
-            if ($bg)  $tp->setAttributeNS(self::FO, 'fo:background-color', $bg);
-            $st->appendChild($tp);
-            $auto->appendChild($st);
+        // matrice: colore patente × straordinario (giallo) × sottolineato (fuori sede)
+        $colors = ['' => null, 'Rosso' => '#C00000', 'Blu' => '#0000C0'];
+        foreach ([false, true] as $straord) {
+            foreach ([false, true] as $und) {
+                foreach ($colors as $cName => $col) {
+                    if (!$straord && !$und && $cName === '') continue;          // nessuno stile
+                    $name = 'Nm' . ($straord ? 'S' : '') . ($und ? 'U' : '') . $cName;
+                    if (isset($have[$name])) continue;
+                    $st = $doc->createElementNS(self::STY, 'style:style');
+                    $st->setAttributeNS(self::STY, 'style:name', $name);
+                    $st->setAttributeNS(self::STY, 'style:family', 'text');
+                    $tp = $doc->createElementNS(self::STY, 'style:text-properties');
+                    if ($col)     $tp->setAttributeNS(self::FO, 'fo:color', $col);
+                    if ($straord) $tp->setAttributeNS(self::FO, 'fo:background-color', $YEL);
+                    if ($und) {
+                        $tp->setAttributeNS(self::STY, 'style:text-underline-style', 'solid');
+                        $tp->setAttributeNS(self::STY, 'style:text-underline-width', 'auto');
+                        $tp->setAttributeNS(self::STY, 'style:text-underline-color', 'font-color');
+                    }
+                    $st->appendChild($tp);
+                    $auto->appendChild($st);
+                }
+            }
         }
     }
 }
