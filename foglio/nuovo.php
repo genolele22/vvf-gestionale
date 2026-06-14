@@ -168,6 +168,18 @@ if (!$foglio) {
 }
 $foglioId = (int)$foglio['id'];
 
+// ── Servizio precedente (per il tasto "Servizio precedente") ──
+// Il più recente foglio prima di questo: stessa data ma turno D (per un N),
+// altrimenti la data anteriore più vicina (D < N nello stesso giorno).
+$stPrev = $pdo->prepare(
+    "SELECT id, data_servizio, tipo_turno FROM fogli_servizio
+      WHERE data_servizio < ? OR (data_servizio = ? AND tipo_turno < ?)
+      ORDER BY data_servizio DESC, tipo_turno DESC
+      LIMIT 1"
+);
+$stPrev->execute([$dataStr, $dataStr, $tipoParam]);
+$foglioPrec = $stPrev->fetch();
+
 // ── Stato blocco foglio (condiviso, lato server) ─────────────
 $pdo->exec(
     "CREATE TABLE IF NOT EXISTS fogli_lock (
@@ -838,6 +850,15 @@ function colorePatentePHP(?string $patente): string {
                   class="btn btn-verde btn-sm">💾 Salva</button>
           <a href="stampa.php?id=<?= $foglioId ?>" target="_blank"
              class="btn btn-grigio btn-sm">🖨️ Stampa</a>
+          <?php if ($foglioPrec):
+              $precLabel = date('d/m/Y', strtotime($foglioPrec['data_servizio']))
+                         . ' ' . ($foglioPrec['tipo_turno'] === 'N' ? 'Notturno' : 'Diurno'); ?>
+          <button type="button" class="btn btn-grigio btn-sm"
+                  onclick="window.open('stampa.php?id=<?= (int)$foglioPrec['id'] ?>','servPrec','width=1000,height=1000,scrollbars=yes,resizable=yes')"
+                  title="Apre la stampa del servizio precedente (<?= htmlspecialchars($precLabel) ?>)">
+            🕑 Servizio precedente
+          </button>
+          <?php endif; ?>
           <a href="scarica_odt.php?data=<?= $dataStr ?>&tipo=<?= $tipoParam ?>"
              class="btn btn-grigio btn-sm">📄 Scarica .odt</a>
           <a href="../index.php" class="btn btn-grigio btn-sm">← Torna</a>
