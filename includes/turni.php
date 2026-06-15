@@ -101,6 +101,57 @@ function getTurnoGiorno(string $data): array
 }
 
 /**
+ * ── Scambio salto turno: blocchi ciclici B1→B8 ──────────────────────────────
+ * Replica della logica del bot (calendar_turni.py) sul modello algoritmico.
+ * Verificata contro data/calendario.json del bot: 100% sugli slot-dates
+ * nella finestra operativa (i confini divergono solo ai bordi del json, dove
+ * l'algoritmo estrapola correttamente).
+ *
+ * Un'occorrenza di riposo dello slot S = (data_D, data_N = data_D + 1 giorno).
+ * I giorni di riposo-D del turno B ricorrono ogni 4 giorni; lo slot a riposo
+ * avanza +1 ad ogni occorrenza. Un blocco = giro completo B1→B8 (32 giorni).
+ */
+
+/**
+ * Slot (1..8) a riposo per un foglio (data,tipo). Stessa convenzione di
+ * nuovo.php: foglio D → salto del NOTTURNO; foglio N → salto del DIURNO.
+ * (NON usa getSaltoRiposo, che diverge sui giorni di confine.)
+ */
+function saltoRiposoNum(string $data, string $tipo): int
+{
+    $tg = getTurnoGiorno($data);
+    return (int)($tipo === 'D' ? $tg['notte']['salto'] : $tg['diurno']['salto']);
+}
+
+/**
+ * Confini del blocco B1→B8 che contiene $data:
+ * ['Y-m-d' di B1 (data_D), 'Y-m-d' di B8 (data_N)].
+ */
+function bloccoConfini(string $data): array
+{
+    $off   = giorniDallAncora($data);
+    $mod   = (($off % 4) + 4) % 4;                              // dist. dal rest-D corrente
+    $restD = (new DateTime($data))->modify("-{$mod} day");      // rest-D dell'occorrenza
+    $slot  = saltoRiposoNum($restD->format('Y-m-d'), 'D');      // slot di quel rest-D
+    $inizio = (clone $restD)->modify('-' . (($slot - 1) * 4) . ' day');  // B1 data_D
+    $fineN  = (clone $inizio)->modify('+29 day');               // B8 data_N (28 + 1)
+    return [$inizio->format('Y-m-d'), $fineN->format('Y-m-d')];
+}
+
+/**
+ * (data_D, data_N) dello slot dentro il blocco di $data, come ['Y-m-d','Y-m-d'],
+ * o null se slot fuori range.
+ */
+function slotDatesInBlocco(int $slot, string $data): ?array
+{
+    if ($slot < 1 || $slot > 8) return null;
+    [$inizio, ] = bloccoConfini($data);
+    $dD = (new DateTime($inizio))->modify('+' . (($slot - 1) * 4) . ' day');
+    $dN = (clone $dD)->modify('+1 day');
+    return [$dD->format('Y-m-d'), $dN->format('Y-m-d')];
+}
+
+/**
  * Restituisce label completa per un giorno: "B1 / A1"
  */
 function getLabelGiorno(string $data): string

@@ -211,7 +211,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Guardia: se il foglio è bloccato, nessuna operazione di modifica passa
     $azioniModifica = ['salva_intestazione', 'assegna', 'rimuovi', 'assenza',
                        'rimuovi_assenza', 'metti_salto', 'richiama_salto', 'reset_foglio',
-                       'ferie_ufficio', 'rimuovi_ufficio'];
+                       'ferie_ufficio', 'rimuovi_ufficio', 'scambia_salto'];
     if ($foglioBloccato && in_array($azione, $azioniModifica, true)) {
         echo json_encode(['ok' => false, 'bloccato' => true,
                           'errore' => 'Foglio bloccato. Sblocca per modificare.']);
@@ -502,6 +502,121 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
+    // ── AJAX: cambio salto turno (bidirezionale, bypass Telegram) ──
+    // Replica la logica del bot (approva_scambio): scrive bot_scambi_salto
+    // 'approvato' + 4 righe salto_override (D+N di A, D+N di B) e patcha i
+    // fogli esistenti. A = chi cede il salto (riposa su questo foglio),
+    // B = controparte di un altro slot col riposo nello stesso blocco.
+    if ($azione === 'scambia_salto') {
+        $aId = (int)($_POST['vigile_a_id'] ?? 0);
+        $bId = (int)($_POST['vigile_b_id'] ?? 0);
+        if (!$aId || !$bId || $aId === $bId) {
+            echo json_encode(['ok' => false, 'errore' => 'Selezione non valida.']); exit;
+        }
+
+        // Slot (1..8) dei due vigili
+        $stV = $pdo->prepare(
+            "SELECT v.id, v.attivo, CAST(SUBSTRING(st.codice,2) AS UNSIGNED) AS slot
+             FROM vigili v JOIN salti_turno st ON st.id = v.salto_id
+             WHERE v.id IN (?,?)"
+        );
+        $stV->execute([$aId, $bId]);
+        $info = [];
+        foreach ($stV->fetchAll() as $r) $info[(int)$r['id']] = $r;
+        if (!isset($info[$aId], $info[$bId]) || !$info[$aId]['attivo'] || !$info[$bId]['attivo']) {
+            echo json_encode(['ok' => false, 'errore' => 'Vigile inesistente o non attivo.']); exit;
+        }
+        $slotA = (int)$info[$aId]['slot'];
+        $slotB = (int)$info[$bId]['slot'];
+
+        if ($slotA !== saltoRiposoNum($dataStr, $tipoParam)) {
+            echo json_encode(['ok' => false, 'errore' => 'Il primo vigile non è a riposo su questo foglio.']); exit;
+        }
+        if ($slotA === $slotB) {
+            echo json_encode(['ok' => false, 'errore' => 'I due vigili sono dello stesso salto.']); exit;
+        }
+
+        $aOcc = slotDatesInBlocco($slotA, $dataStr);
+        $bOcc = slotDatesInBlocco($slotB, $dataStr);
+        if (!$aOcc || !$bOcc) {
+            echo json_encode(['ok' => false, 'errore' => 'Controparte fuori dal blocco.']); exit;
+        }
+        if ($bOcc[0] <= date('Y-m-d')) {
+            echo json_encode(['ok' => false, 'errore' => 'Il riposo della controparte è già passato.']); exit;
+        }
+
+        [$bloccoIni, $bloccoFin] = bloccoConfini($dataStr);
+
+        // 4 righe override: (data, tipo, vigile_out, vigile_in)
+        $rows = [
+            [$aOcc[0], 'D', $aId, $bId],
+            [$aOcc[1], 'N', $aId, $bId],
+            [$bOcc[0], 'D', $bId, $aId],
+            [$bOcc[1], 'N', $bId, $aId],
+        ];
+
+        // Guardia: nessuno scambio attivo già presente su queste righe coi due vigili
+        $stDup = $pdo->prepare(
+            "SELECT COUNT(*) FROM salto_override
+             WHERE attivo=1 AND data=? AND tipo=?
+               AND (vigile_in_id IN (?,?) OR vigile_out_id IN (?,?))"
+        );
+        foreach ($rows as [$d, $t, , ]) {
+            $stDup->execute([$d, $t, $aId, $bId, $aId, $bId]);
+            if ((int)$stDup->fetchColumn() > 0) {
+                echo json_encode(['ok' => false,
+                    'errore' => 'Esiste già uno scambio attivo per uno dei due vigili in questo blocco.']); exit;
+            }
+        }
+
+        $pdo->beginTransaction();
+        try {
+            $sid = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM bot_scambi_salto")->fetchColumn();
+            $pdo->prepare(
+                "INSERT INTO bot_scambi_salto
+                    (id, vigile_a_id, vigile_b_id, slot_a, slot_b,
+                     blocco_inizio, blocco_fine, stato, creato_da, approvato_da)
+                 VALUES (?,?,?,?,?,?,?, 'approvato', ?, ?)"
+            )->execute([$sid, $aId, $bId, $slotA, $slotB, $bloccoIni, $bloccoFin, $aId, $aId]);
+
+            $insOv  = $pdo->prepare(
+                "INSERT INTO salto_override
+                    (id, scambio_id, data, tipo, vigile_out_id, vigile_in_id, attivo)
+                 VALUES (?,?,?,?,?,?,1)"
+            );
+            $selF   = $pdo->prepare("SELECT id FROM fogli_servizio WHERE data_servizio=? AND tipo_turno=?");
+            $delSS  = $pdo->prepare("DELETE FROM salto_servizio WHERE foglio_id=? AND vigile_id=?");
+            $delAss = $pdo->prepare("DELETE FROM assegnazioni  WHERE foglio_id=? AND vigile_id=?");
+            $chkSS  = $pdo->prepare("SELECT 1 FROM salto_servizio WHERE foglio_id=? AND vigile_id=?");
+            $insSS  = $pdo->prepare("INSERT INTO salto_servizio (id, foglio_id, vigile_id, richiamato) VALUES (?,?,?,0)");
+
+            foreach ($rows as [$d, $t, $outId, $inId]) {
+                $oid = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM salto_override")->fetchColumn();
+                $insOv->execute([$oid, $sid, $d, $t, $outId, $inId]);
+
+                // Patch foglio esistente: out torna a lavorare (esce dal salto),
+                // in va a riposo (esce dalle assegnazioni, entra nel salto).
+                $selF->execute([$d, $t]);
+                $fid = $selF->fetchColumn();
+                if ($fid) {
+                    $delSS->execute([$fid, $outId]);
+                    $delAss->execute([$fid, $inId]);
+                    $chkSS->execute([$fid, $inId]);
+                    if (!$chkSS->fetchColumn()) {
+                        $nss = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM salto_servizio")->fetchColumn();
+                        $insSS->execute([$nss, $fid, $inId]);
+                    }
+                }
+            }
+            $pdo->commit();
+        } catch (Throwable $e) {
+            $pdo->rollBack();
+            echo json_encode(['ok' => false, 'errore' => 'Errore DB: ' . $e->getMessage()]); exit;
+        }
+
+        echo json_encode(['ok' => true, 'scambio_id' => $sid]); exit;
+    }
+
     // ── AJAX: reset foglio ───────────────────────────────────
     if ($azione === 'reset_foglio') {
         prepopolaAssegnazioni($pdo, $foglioId, $saltoRiposoId, resterEffettivi($pdo, $dataStr, $tipoParam, $saltoRiposoId));
@@ -734,15 +849,45 @@ $dirigenti = $pdo->query(
      ORDER BY q.id DESC, v.cognome"
 )->fetchAll();
 
-// Tipi assenza
+// Tipi assenza (RC escluso: il riposo compensativo è il salto turno → gestito
+// dal cambio salto nel riquadro Salto, non come assenza separata)
 $tipiAssenza = $pdo->query(
-    "SELECT * FROM tipo_assenza ORDER BY id"
+    "SELECT * FROM tipo_assenza WHERE codice <> 'RC' ORDER BY id"
 )->fetchAll();
 
-// Sedi per select sede distaccata (RC)
+// Sedi per select sede distaccata
 $sediSelect = $pdo->query(
     "SELECT codice, nome FROM sedi ORDER BY ordine"
 )->fetchAll();
+
+// ── Cambio salto turno (inserimento dal gestionale, bypass Telegram) ──
+// A = chi cede il salto (a riposo su questo foglio); B = controparte di un
+// altro slot col riposo (data_D) ancora futuro, nello stesso blocco B1→B8.
+$slotRiposoOggi  = saltoRiposoNum($dataStr, $tipoParam);
+$oggiStr         = date('Y-m-d');
+$contropartiSlot = [];   // slot => ['dataD','dataN']
+for ($k = 1; $k <= 8; $k++) {
+    if ($k === $slotRiposoOggi) continue;
+    $sd = slotDatesInBlocco($k, $dataStr);
+    if ($sd && $sd[0] > $oggiStr) {
+        $contropartiSlot[$k] = ['dataD' => $sd[0], 'dataN' => $sd[1]];
+    }
+}
+// Vigili attivi raggruppati per slot (per i due menu del form)
+$vigiliPerSlot = [];
+$stVPS = $pdo->query(
+    "SELECT v.id, v.cognome, v.nome, v.disambiguatore, q.codice AS qcodice,
+            CAST(SUBSTRING(st.codice,2) AS UNSIGNED) AS slot
+     FROM vigili v
+     JOIN salti_turno st ON st.id = v.salto_id
+     JOIN qualifiche  q  ON q.id  = v.qualifica_id
+     WHERE v.attivo=1
+     ORDER BY v.cognome, v.nome"
+);
+foreach ($stVPS as $r) {
+    $vigiliPerSlot[(int)$r['slot']][] = $r;
+}
+$cambioSaltoOk = !empty($contropartiSlot) && !empty($vigiliPerSlot[$slotRiposoOggi] ?? []);
 
 // Furieri del foglio
 $furieri = $pdo->prepare(
@@ -1417,6 +1562,48 @@ function colorePatentePHP(?string $patente): string {
       ⇄ Trascina qui da organico per mettere in salto
     </div>
 
+    <!-- Cambio salto turno (inserimento manuale, bypass Telegram) -->
+    <div style="margin-top:8px;border-top:1px dashed #e0c200;padding-top:8px">
+      <button type="button" class="btn btn-sm btn-grigio" style="width:100%"
+              onclick="toggleCambioSalto()">🔄 Cambia salto…</button>
+
+      <div id="cambioSaltoForm" style="display:none;flex-direction:column;gap:6px;margin-top:8px">
+        <?php if (!$cambioSaltoOk): ?>
+          <div style="font-size:.7rem;color:var(--grigio-md)">
+            Nessuna controparte disponibile nel blocco (riposi già passati o
+            nessun vigile dell'altro salto).
+          </div>
+        <?php else: ?>
+          <label style="font-size:.68rem;font-weight:700;text-transform:uppercase;
+                        color:var(--grigio-md)">Cede il salto (B<?= (int)$slotRiposoOggi ?>)</label>
+          <select id="csVigileA" style="padding:6px;border:1px solid #d5d8dc;
+                  border-radius:5px;font-size:.8rem">
+            <option value="">— seleziona —</option>
+            <?php foreach ($vigiliPerSlot[$slotRiposoOggi] as $v): ?>
+              <option value="<?= (int)$v['id'] ?>"><?= htmlspecialchars(etichettaVigile($v)) ?></option>
+            <?php endforeach; ?>
+          </select>
+
+          <label style="font-size:.68rem;font-weight:700;text-transform:uppercase;
+                        color:var(--grigio-md)">Entra in salto (riposa al suo posto)</label>
+          <select id="csVigileB" style="padding:6px;border:1px solid #d5d8dc;
+                  border-radius:5px;font-size:.8rem">
+            <option value="">— seleziona —</option>
+            <?php foreach ($contropartiSlot as $k => $occ): ?>
+              <optgroup label="B<?= (int)$k ?> — riposo <?= date('d/m', strtotime($occ['dataD'])) ?>">
+                <?php foreach ($vigiliPerSlot[$k] ?? [] as $v): ?>
+                  <option value="<?= (int)$v['id'] ?>"><?= htmlspecialchars(etichettaVigile($v)) ?></option>
+                <?php endforeach; ?>
+              </optgroup>
+            <?php endforeach; ?>
+          </select>
+
+          <button type="button" class="btn btn-rosso btn-sm"
+                  onclick="salvaCambioSalto()">✔ Esegui scambio</button>
+        <?php endif; ?>
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -1451,28 +1638,6 @@ function colorePatentePHP(?string $patente): string {
     </div>
 <?php endforeach; ?>
 
-        </div>
-      </div>
-
-      <!-- Riposo Compensativo -->
-      <!-- Riposo Compensativo -->
-<div class="assenti-col" data-drop-zone="colRC">
-  <span class="assenti-col-head ac-rc">🔄 Riposo Compensativo</span>
-  <div id="colRC">
-          <?php foreach ($assenzePerTipo['RC'] ?? [] as $a): ?>
-            <div class="assente-row">
-              <span class="qual-dot <?= htmlspecialchars($a['qcodice']) ?>"></span>
-              <span class="assente-nome">
-                <?= htmlspecialchars(etichettaVigile($a)) ?>
-              </span>
-              <span class="assente-info">
-                <?= $a['sede_distaccata'] ? htmlspecialchars($a['sede_distaccata']) : '' ?>
-              </span>
-              <button class="assente-del"
-                      onclick="rimuoviDaAssenza(<?= $a['vigile_id'] ?>)"
-                      title="Rimuovi">✕</button>
-            </div>
-          <?php endforeach; ?>
         </div>
       </div>
 
@@ -1557,7 +1722,6 @@ const TIPI_ASSENZA = {
 <?php foreach ($tipiAssenza as $ta):
     $mapCol = [
         'FER'  => 'colFerie',
-        'RC'   => 'colRC',
         'MISS' => 'colMissione',
         'PERM' => 'colMissione',
         'MAL'  => 'colMalattia',
@@ -2290,6 +2454,31 @@ async function eseguiReset() {
         location.reload();
     } else {
         showMsg('⚠️ Errore durante il reset.', 'err');
+    }
+}
+
+// ════════════════════════════════════════════════════════════
+// CAMBIO SALTO TURNO (inserimento manuale dal foglio)
+// ════════════════════════════════════════════════════════════
+function toggleCambioSalto() {
+    const f = document.getElementById('cambioSaltoForm');
+    if (!f) return;
+    f.style.display = (f.style.display === 'none' || !f.style.display) ? 'flex' : 'none';
+}
+
+async function salvaCambioSalto() {
+    if (BLOCCATO) { showMsg('🔒 Foglio bloccato.', 'err'); return; }
+    const a = parseInt(document.getElementById('csVigileA')?.value);
+    const b = parseInt(document.getElementById('csVigileB')?.value);
+    if (!a || !b) { showMsg('⚠️ Seleziona entrambi i vigili.', 'err'); return; }
+    if (a === b) { showMsg('⚠️ Sono lo stesso vigile.', 'err'); return; }
+
+    const res = await ajax({ azione: 'scambia_salto', vigile_a_id: a, vigile_b_id: b });
+    if (res.ok) {
+        showMsg('✅ Salto scambiato.');
+        setTimeout(() => location.reload(), 500);
+    } else {
+        showMsg('⚠️ ' + (res.errore || 'Errore.'), 'err');
     }
 }
 
