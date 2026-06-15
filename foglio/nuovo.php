@@ -211,7 +211,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Guardia: se il foglio è bloccato, nessuna operazione di modifica passa
     $azioniModifica = ['salva_intestazione', 'assegna', 'rimuovi', 'assenza',
                        'rimuovi_assenza', 'metti_salto', 'richiama_salto', 'reset_foglio',
-                       'ferie_ufficio', 'rimuovi_ufficio', 'scambia_salto'];
+                       'ferie_ufficio', 'rimuovi_ufficio', 'scambia_salto', 'annulla_scambio'];
     if ($foglioBloccato && in_array($azione, $azioniModifica, true)) {
         echo json_encode(['ok' => false, 'bloccato' => true,
                           'errore' => 'Foglio bloccato. Sblocca per modificare.']);
@@ -617,6 +617,57 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         echo json_encode(['ok' => true, 'scambio_id' => $sid]); exit;
     }
 
+    // ── AJAX: annulla cambio salto turno (reversibile) ──────────
+    // Inverte lo scambio: per ogni riga override attiva del scambio rimette
+    // vigile_out in salto e toglie vigile_in dai fogli esistenti, poi
+    // disattiva le righe override e marca lo scambio 'annullato'.
+    if ($azione === 'annulla_scambio') {
+        $sid = (int)($_POST['scambio_id'] ?? 0);
+        if (!$sid) {
+            echo json_encode(['ok' => false, 'errore' => 'Scambio non valido.']); exit;
+        }
+        $stO = $pdo->prepare(
+            "SELECT id, data, tipo, vigile_out_id, vigile_in_id
+             FROM salto_override WHERE scambio_id=? AND attivo=1"
+        );
+        $stO->execute([$sid]);
+        $rows = $stO->fetchAll();
+        if (!$rows) {
+            echo json_encode(['ok' => false, 'errore' => 'Scambio già annullato o inesistente.']); exit;
+        }
+
+        $pdo->beginTransaction();
+        try {
+            $selF  = $pdo->prepare("SELECT id FROM fogli_servizio WHERE data_servizio=? AND tipo_turno=?");
+            $delSS = $pdo->prepare("DELETE FROM salto_servizio WHERE foglio_id=? AND vigile_id=?");
+            $chkSS = $pdo->prepare("SELECT 1 FROM salto_servizio WHERE foglio_id=? AND vigile_id=?");
+            $insSS = $pdo->prepare("INSERT INTO salto_servizio (id, foglio_id, vigile_id, richiamato) VALUES (?,?,?,0)");
+            $offO  = $pdo->prepare("UPDATE salto_override SET attivo=0 WHERE id=?");
+
+            foreach ($rows as $r) {
+                $selF->execute([$r['data'], $r['tipo']]);
+                $fid = $selF->fetchColumn();
+                if ($fid) {
+                    // chi era entrato in salto esce; chi cedeva (rester canonico) rientra
+                    $delSS->execute([$fid, (int)$r['vigile_in_id']]);
+                    $chkSS->execute([$fid, (int)$r['vigile_out_id']]);
+                    if (!$chkSS->fetchColumn()) {
+                        $nss = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM salto_servizio")->fetchColumn();
+                        $insSS->execute([$nss, $fid, (int)$r['vigile_out_id']]);
+                    }
+                }
+                $offO->execute([(int)$r['id']]);
+            }
+            $pdo->prepare("UPDATE bot_scambi_salto SET stato='annullato' WHERE id=?")->execute([$sid]);
+            $pdo->commit();
+        } catch (Throwable $e) {
+            $pdo->rollBack();
+            echo json_encode(['ok' => false, 'errore' => 'Errore DB: ' . $e->getMessage()]); exit;
+        }
+
+        echo json_encode(['ok' => true]); exit;
+    }
+
     // ── AJAX: reset foglio ───────────────────────────────────
     if ($azione === 'reset_foglio') {
         prepopolaAssegnazioni($pdo, $foglioId, $saltoRiposoId, resterEffettivi($pdo, $dataStr, $tipoParam, $saltoRiposoId));
@@ -888,6 +939,20 @@ foreach ($stVPS as $r) {
     $vigiliPerSlot[(int)$r['slot']][] = $r;
 }
 $cambioSaltoOk = !empty($contropartiSlot) && !empty($vigiliPerSlot[$slotRiposoOggi] ?? []);
+
+// Scambi salto ATTIVI che toccano questo turno (per il tasto annulla)
+$stSA = $pdo->prepare(
+    "SELECT DISTINCT s.id, s.slot_a, s.slot_b,
+            va.cognome AS a_cognome, vb.cognome AS b_cognome
+     FROM salto_override o
+     JOIN bot_scambi_salto s ON s.id = o.scambio_id
+     JOIN vigili va ON va.id = s.vigile_a_id
+     JOIN vigili vb ON vb.id = s.vigile_b_id
+     WHERE o.data=? AND o.tipo=? AND o.attivo=1 AND s.stato='approvato'
+     ORDER BY s.id"
+);
+$stSA->execute([$dataStr, $tipoParam]);
+$scambiAttivi = $stSA->fetchAll();
 
 // Furieri del foglio
 $furieri = $pdo->prepare(
@@ -1566,6 +1631,25 @@ function colorePatentePHP(?string $patente): string {
     <div style="margin-top:8px;border-top:1px dashed #e0c200;padding-top:8px">
       <button type="button" class="btn btn-sm btn-grigio" style="width:100%"
               onclick="toggleCambioSalto()">🔄 Cambia salto…</button>
+
+      <?php if (!empty($scambiAttivi)): ?>
+      <div style="margin-top:8px;display:flex;flex-direction:column;gap:4px">
+        <div style="font-size:.66rem;font-weight:700;text-transform:uppercase;
+                    color:var(--grigio-md)">Scambi attivi su questo turno</div>
+        <?php foreach ($scambiAttivi as $sc): ?>
+          <div style="display:flex;align-items:center;gap:6px;font-size:.74rem;
+                      background:#fff7d6;border:1px solid #e0c200;border-radius:5px;padding:4px 6px">
+            <span style="flex:1">🔄 B<?= (int)$sc['slot_a'] ?> <?= htmlspecialchars(ucfirst(strtolower($sc['a_cognome']))) ?>
+                  ⇄ B<?= (int)$sc['slot_b'] ?> <?= htmlspecialchars(ucfirst(strtolower($sc['b_cognome']))) ?></span>
+            <button type="button" class="btn btn-grigio btn-sm" style="padding:2px 6px"
+                    onclick="annullaScambio(<?= (int)$sc['id'] ?>)"
+                    title="Annulla questo scambio">✖️</button>
+          </div>
+        <?php endforeach; ?>
+      </div>
+      <?php endif; ?>
+
+      <script>window.CS_SLOT_A = <?= (int)$slotRiposoOggi ?>;</script>
 
       <div id="cambioSaltoForm" style="display:none;flex-direction:column;gap:6px;margin-top:8px">
         <?php if (!$cambioSaltoOk): ?>
@@ -2468,18 +2552,56 @@ function toggleCambioSalto() {
 
 async function salvaCambioSalto() {
     if (BLOCCATO) { showMsg('🔒 Foglio bloccato.', 'err'); return; }
-    const a = parseInt(document.getElementById('csVigileA')?.value);
-    const b = parseInt(document.getElementById('csVigileB')?.value);
+    const selA = document.getElementById('csVigileA');
+    const selB = document.getElementById('csVigileB');
+    const a = parseInt(selA?.value);
+    const b = parseInt(selB?.value);
     if (!a || !b) { showMsg('⚠️ Seleziona entrambi i vigili.', 'err'); return; }
     if (a === b) { showMsg('⚠️ Sono lo stesso vigile.', 'err'); return; }
 
-    const res = await ajax({ azione: 'scambia_salto', vigile_a_id: a, vigile_b_id: b });
-    if (res.ok) {
-        showMsg('✅ Salto scambiato.');
-        setTimeout(() => location.reload(), 500);
-    } else {
-        showMsg('⚠️ ' + (res.errore || 'Errore.'), 'err');
-    }
+    // Riepilogo per la conferma
+    const nomeA = selA.options[selA.selectedIndex]?.text || '';
+    const optB  = selB.options[selB.selectedIndex];
+    const nomeB = optB?.text || '';
+    const grpB  = optB?.parentNode?.label || '';   // es. "B6 — riposo 12/07"
+    chiediConferma({
+        titolo:  'Conferma scambio salto',
+        testo:   `Stai scambiando il salto:<br><br>` +
+                 `• <b>${nomeA}</b> (B${window.CS_SLOT_A || '?'}) cede il riposo e torna in servizio<br>` +
+                 `• <b>${nomeB}</b> (${grpB}) va a riposo al suo posto<br><br>` +
+                 `E viceversa sull'altra data del blocco. Confermi?`,
+        okLabel: '🔄 Esegui scambio',
+        okStyle: 'background:var(--rosso);color:#fff',
+        onOk: async () => {
+            const res = await ajax({ azione: 'scambia_salto', vigile_a_id: a, vigile_b_id: b });
+            if (res.ok) {
+                showMsg('✅ Salto scambiato.');
+                setTimeout(() => location.reload(), 500);
+            } else {
+                showMsg('⚠️ ' + (res.errore || 'Errore.'), 'err');
+            }
+        }
+    });
+}
+
+async function annullaScambio(scambioId) {
+    if (BLOCCATO) { showMsg('🔒 Foglio bloccato.', 'err'); return; }
+    chiediConferma({
+        titolo:  'Annulla scambio salto',
+        testo:   'Annulli questo scambio? I due vigili tornano alla situazione di partenza ' +
+                 'su tutte le date interessate.',
+        okLabel: '✖️ Annulla scambio',
+        okStyle: 'background:var(--rosso);color:#fff',
+        onOk: async () => {
+            const res = await ajax({ azione: 'annulla_scambio', scambio_id: scambioId });
+            if (res.ok) {
+                showMsg('✅ Scambio annullato.');
+                setTimeout(() => location.reload(), 500);
+            } else {
+                showMsg('⚠️ ' + (res.errore || 'Errore.'), 'err');
+            }
+        }
+    });
 }
 
 async function salvaIntestazioneAjax() {
