@@ -79,7 +79,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($azione === 'set_stato') {
         $stato = $_POST['stato'] ?? '';
-        if (!in_array($stato, ['approved', 'rejected'], true)) {
+        if (!in_array($stato, ['approved', 'rejected', 'pending'], true)) {
             echo json_encode(['ok' => false, 'errore' => 'Stato non valido']); exit;
         }
         $ids = json_decode($_POST['ids'] ?? '[]', true);
@@ -97,14 +97,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute($ids);
         $rows = $stmt->fetchAll();
 
-        $processedAt = date('Y-m-d H:i:s');
+        // 'pending' = annulla approvazione: processed_at torna NULL
+        $processedAt = $stato === 'pending' ? null : date('Y-m-d H:i:s');
         $up = $pdo->prepare("UPDATE bot_requests SET stato=?, processed_at=? WHERE id=?");
+
+        // Per l'annullamento: gestione della notifica già accodata (bot_outbox)
+        $obSel = $pdo->prepare("SELECT id, stato FROM bot_outbox WHERE ctx=?");
+        $obDel = $pdo->prepare("DELETE FROM bot_outbox WHERE id=?");
+        $giaNotificati = 0;
 
         $pdo->beginTransaction();
         try {
             foreach ($rows as $r) {
                 $up->execute([$stato, $processedAt, $r['id']]);
                 feriaSyncAssenza($pdo, (int)$r['vigile_id'], $r['data_richiesta'], $r['tipo_turno'], $stato);
+
+                if ($stato === 'pending') {
+                    $obSel->execute(['ferie:' . (int)$r['id']]);
+                    $ob = $obSel->fetch();
+                    if ($ob) {
+                        if ($ob['stato'] === 'sent') {
+                            $giaNotificati++;          // vigile già avvisato: non si può disinviare
+                        } else {
+                            $obDel->execute([$ob['id']]);  // notifica non ancora partita → annullata
+                        }
+                    }
+                }
             }
             $pdo->commit();
         } catch (Throwable $e) {
@@ -112,7 +130,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             echo json_encode(['ok' => false, 'errore' => 'Errore DB']); exit;
         }
 
-        echo json_encode(['ok' => true, 'aggiornati' => count($rows), 'stato' => $stato]);
+        echo json_encode([
+            'ok' => true, 'aggiornati' => count($rows), 'stato' => $stato,
+            'gia_notificati' => $giaNotificati,
+        ]);
         exit;
     }
 
@@ -515,6 +536,9 @@ $totVigili   = count($perVigile);
         <button class="btn-mini respingi"
                 onclick='setStato(<?= htmlspecialchars(json_encode($allIds)) ?>, "rejected")'
                 title="Respingi tutto il periodo">✗ tutti</button>
+        <button class="btn-mini" style="background:#6c757d;color:#fff"
+                onclick='annullaApprovazione(<?= htmlspecialchars(json_encode($allIds)) ?>)'
+                title="Riporta in attesa (annulla approvazione/rifiuto)">↩️ attesa</button>
       </div>
     </div>
 
@@ -613,7 +637,25 @@ async function setStato(ids, stato) {
         if (riga) riga.dataset.stato = stato;
     });
     sincronizzaDOM();
-    showMsg(`✅ ${res.aggiornati} turno/i → ${STATO_LABEL[stato]}`, 'ok');
+    const extra = (stato === 'pending' && res.gia_notificati > 0)
+        ? ` — ⚠️ ${res.gia_notificati} già notificato/i: avvisa il vigile a voce`
+        : '';
+    showMsg(`✅ ${res.aggiornati} turno/i → ${STATO_LABEL[stato]}${extra}`, 'ok');
+}
+
+// Annulla approvazione/rifiuto: riporta in attesa (con conferma) e annulla
+// la notifica se non è ancora partita.
+function annullaApprovazione(ids) {
+    if (!ids || ids.length === 0) return;
+    chiediConferma({
+        titolo:  'Annulla — riporta in attesa',
+        testo:   'Riporti queste ferie in <b>attesa</b>?<br>' +
+                 'Se la notifica al vigile non è ancora partita viene annullata; ' +
+                 'se era già stata inviata dovrai avvisarlo tu.',
+        okLabel: '↩️ In attesa',
+        okStyle: 'background:#6c757d;color:#fff',
+        onOk:    () => setStato(ids, 'pending'),
+    });
 }
 
 // ── Riallinea spunte, badge blocco e contatori al DOM ────────

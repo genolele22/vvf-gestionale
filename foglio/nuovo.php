@@ -954,6 +954,21 @@ $stSA = $pdo->prepare(
 $stSA->execute([$dataStr, $tipoParam]);
 $scambiAttivi = $stSA->fetchAll();
 
+// Quante ferie PENDING verrebbero approvate generando l'ODT (per la conferma).
+// Stessa logica di finalize_ferie: vigili in FER sul foglio con richiesta pending
+// per questa data e turno (N→N/DN, D→D/DN).
+$tipiFerieAppr = $tipoParam === 'N' ? ['N', 'DN'] : ['D', 'DN'];
+$phFA = implode(',', array_fill(0, count($tipiFerieAppr), '?'));
+$stFA = $pdo->prepare(
+    "SELECT COUNT(DISTINCT a.vigile_id)
+     FROM assenze a
+     JOIN bot_requests r ON r.vigile_id = a.vigile_id AND r.data_richiesta = ?
+          AND r.stato = 'pending' AND r.tipo_turno IN ($phFA)
+     WHERE a.foglio_id = ? AND a.tipo_assenza_id = 1"
+);
+$stFA->execute(array_merge([$dataStr], $tipiFerieAppr, [$foglioId]));
+$nFerieDaApprovare = (int)$stFA->fetchColumn();
+
 // Furieri del foglio
 $furieri = $pdo->prepare(
     "SELECT v.cognome, v.disambiguatore, q.codice AS qcodice
@@ -1070,7 +1085,9 @@ function colorePatentePHP(?string $patente): string {
           </button>
           <?php endif; ?>
           <a href="scarica_odt.php?data=<?= $dataStr ?>&tipo=<?= $tipoParam ?>"
-             class="btn btn-grigio btn-sm">📄 Scarica .odt</a>
+             class="btn btn-grigio btn-sm"
+             data-nferie="<?= (int)$nFerieDaApprovare ?>"
+             onclick="return scaricaOdt(this)">📄 Scarica .odt</a>
           <a href="../index.php" class="btn btn-grigio btn-sm">← Torna</a>
           <button onclick="apriModalReset()"
                   class="btn btn-sm" style="background:#c0392b;color:#fff">↺ Reset servizio</button>
@@ -2602,6 +2619,23 @@ async function annullaScambio(scambioId) {
             }
         }
     });
+}
+
+// Scarica ODT = chiude il servizio: se ci sono ferie pending da approvare, chiede conferma.
+function scaricaOdt(a) {
+    const n = parseInt(a.dataset.nferie || '0');
+    if (n > 0) {
+        chiediConferma({
+            titolo:  'Genera ODT e approva ferie',
+            testo:   `Generando l'ODT <b>approvi ${n} fer${n === 1 ? 'ia' : 'ie'}</b> di questo turno e ` +
+                     `<b>notifichi i vigili</b> (Telegram + mail). L'operazione è registrata.<br><br>Procedere?`,
+            okLabel: '📄 Genera e approva',
+            okStyle: 'background:var(--rosso);color:#fff',
+            onOk:    () => { window.location.href = a.href; },
+        });
+        return false;   // blocca il download: parte solo dopo conferma
+    }
+    return true;        // nessuna ferie pending → download diretto
 }
 
 async function salvaIntestazioneAjax() {
