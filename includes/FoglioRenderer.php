@@ -226,6 +226,62 @@ class FoglioRenderer
 
     private function modelPath(): string { return __DIR__ . '/../templates/modello.odt'; }
 
+    /**
+     * Capienza (n. slot nome) per ogni posizione, letta dal modello.odt — stessa
+     * geometria usata dal riempimento ODT. Ritorna [codice_posizione => n_slot].
+     * Statica: dipende solo dal modulo, non dai dati del foglio.
+     */
+    public static function slotCapacities(): array
+    {
+        $path = __DIR__ . '/../templates/modello.odt';
+        $zip = new ZipArchive();
+        if ($zip->open($path) !== true) return [];
+        $xml = $zip->getFromName('content.xml');
+        $zip->close();
+        if ($xml === false) return [];
+        $doc = new DOMDocument();
+        $doc->preserveWhiteSpace = true;
+        $doc->loadXML($xml);
+        $xp = new DOMXPath($doc);
+        $xp->registerNamespace('table', self::TBL);
+        $table = $xp->query('//table:table')->item(0);
+        if (!$table) return [];
+
+        $rows = [];
+        foreach ($table->childNodes as $n) {
+            if ($n->nodeType === XML_ELEMENT_NODE && $n->localName === 'table-row') $rows[] = $n;
+        }
+        // area servizio = righe prima di "PERSONALE ASSENTE"
+        $pa = null;
+        foreach ($rows as $i => $r) {
+            if (strpos(trim($r->textContent), 'PERSONALE ASSENTE') !== false) { $pa = $i; break; }
+        }
+        $pa = $pa ?? count($rows);
+
+        $colCode = [];   // colonna → codice mezzo corrente
+        $cap = [];       // codice → n. slot
+        for ($i = 0; $i < $pa; $i++) {
+            $col = 0;
+            foreach ($rows[$i]->childNodes as $n) {
+                if ($n->nodeType !== XML_ELEMENT_NODE) continue;
+                if ($n->localName === 'covered-table-cell') {
+                    $col += max(1, (int)$n->getAttributeNS(self::TBL, 'number-columns-repeated') ?: 1);
+                    continue;
+                }
+                if ($n->localName !== 'table-cell') continue;
+                $txt = trim($n->textContent);
+                if ($txt !== '' && isset(self::HDR2CODE[$txt])) {
+                    $colCode[$col] = self::HDR2CODE[$txt];
+                } elseif ($txt === '' && isset($colCode[$col])) {
+                    $code = $colCode[$col];
+                    $cap[$code] = ($cap[$code] ?? 0) + 1;
+                }
+                $col += max(1, (int)$n->getAttributeNS(self::TBL, 'number-columns-repeated') ?: 1);
+            }
+        }
+        return $cap;
+    }
+
     /** carica content.xml del modello, lo riempie dal DB, ritorna il DOMDocument */
     private function buildFilledDoc(): DOMDocument
     {

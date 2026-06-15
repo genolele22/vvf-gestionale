@@ -2,8 +2,23 @@
 session_start();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/turni.php';
+require_once __DIR__ . '/../includes/FoglioRenderer.php';
 
 $pdo = getDB();
+
+// Capienza per posizione = slot del modello.odt (stessi spazi dell'ODT di riferimento).
+// Cache statica: il modello si parsa una volta sola.
+function capPos(int $posId): int {
+    static $map = null;
+    if ($map === null) {
+        $map = [];
+        $cap = FoglioRenderer::slotCapacities();   // codice → n. slot
+        foreach (getDB()->query("SELECT id, codice FROM posizioni") as $p) {
+            $map[(int)$p['id']] = $cap[$p['codice']] ?? 7;   // 7 = fallback se codice non nel modello
+        }
+    }
+    return $map[$posId] ?? 7;
+}
 
 // ── Parametri URL ────────────────────────────────────────────
 $dataParam = $_GET['data'] ?? date('Y-m-d');
@@ -48,12 +63,11 @@ function resterEffettivi(PDO $pdo, string $dataStr, string $tipoParam, int $salt
 }
 
 // ── Helper: pre-popola assegnazioni e salto per un foglio ────
-// Regola: max 7 vigili per posizione. Chi ha una posizione esplicita
-// (template ODT / default) ci va; gli altri vengono SPALMATI sulle
-// posizioni della loro sede, riempiendo 7 alla volta in ordine.
+// Regola: max = capienza ODT della posizione (capPos). Chi ha una posizione
+// esplicita (template ODT / default) ci va; gli altri vengono SPALMATI sulle
+// posizioni della loro sede, riempiendo fino a capienza in ordine.
 // $resters = insieme effettivo dei riposanti (default ± scambi salto).
 function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, array $resters): void {
-    if (!defined('MAX_PER_SQUADRA')) define('MAX_PER_SQUADRA', 7);
     $pdo->prepare("DELETE FROM assegnazioni WHERE foglio_id=?")->execute([$foglioId]);
 
     // Posizione da montaggio ODT per questo salto canonico
@@ -93,10 +107,10 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, arra
         $stA->execute([$nextAssId++, $foglioId, $posId, $vid, $conteggio[$posId]]);
     };
 
-    // Prima posizione libera (<7) della sede, scorrendo in ordine
+    // Prima posizione libera (sotto la sua capienza ODT) della sede, in ordine
     $primaLibera = function(int $sedeId) use (&$conteggio, $posizioniDiSede): ?int {
         foreach ($posizioniDiSede[$sedeId] ?? [] as $pid) {
-            if (($conteggio[$pid] ?? 0) < MAX_PER_SQUADRA) return $pid;
+            if (($conteggio[$pid] ?? 0) < capPos($pid)) return $pid;
         }
         return null;
     };
@@ -112,7 +126,7 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, arra
         $posEsplicita = $tmpl[$vid]
             ?? ($vp['posizione_default_id'] ? (int)$vp['posizione_default_id'] : null);
 
-        if ($posEsplicita && ($conteggio[$posEsplicita] ?? 0) < MAX_PER_SQUADRA) {
+        if ($posEsplicita && ($conteggio[$posEsplicita] ?? 0) < capPos($posEsplicita)) {
             $assegna($vid, $posEsplicita);
         } else {
             // Sede di destinazione: quella della posizione esplicita (se piena) o quella del vigile
@@ -240,17 +254,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $posizioneId = (int)($_POST['posizione_id']  ?? 0);
         $straord     = (int)($_POST['straordinario'] ?? 0);
 
-        // Limite 7 vigili per squadra: controlla PRIMA di toccare i dati,
+        // Limite = capienza ODT della posizione: controlla PRIMA di toccare i dati,
         // escludendo il vigile stesso (caso di ri-drop nella stessa squadra)
         if ($posizioneId > 0) {
+            $cap = capPos($posizioneId);
             $stCap = $pdo->prepare(
                 "SELECT COUNT(*) FROM assegnazioni
                  WHERE foglio_id=? AND posizione_id=? AND vigile_id<>?"
             );
             $stCap->execute([$foglioId, $posizioneId, $vigileId]);
-            if ((int)$stCap->fetchColumn() >= 7) {
+            if ((int)$stCap->fetchColumn() >= $cap) {
                 echo json_encode(['ok' => false, 'pieno' => true,
-                                  'errore' => 'Squadra al completo (max 7).']);
+                                  'errore' => "Posizione al completo (max $cap)."]);
                 exit;
             }
         }
@@ -1429,7 +1444,7 @@ function colorePatentePHP(?string $patente): string {
               <?= htmlspecialchars($pos['codice']) ?>
             </div>
 
-            <div class="pos-body" id="body-<?= $pos['id'] ?>">
+            <div class="pos-body" id="body-<?= $pos['id'] ?>" data-cap="<?= capPos((int)$pos['id']) ?>">
               <?php foreach ($assQui as $ass):
     $colore = colorePatentePHP($ass['patente_max'] ?? null);
     $mostraSede = (!empty($ass['sede_nome']) && $ass['sede_nome'] !== 'CENTRALE');
@@ -1469,8 +1484,8 @@ function colorePatentePHP(?string $patente): string {
                 title="Rimuovi">✕</button>
     </div>
 <?php endforeach; ?>
-              <?php // Slot vuoti fino a 7: presentazione a posti fissi
-              for ($i = count($assQui); $i < 7; $i++): ?>
+              <?php // Slot vuoti fino alla capienza ODT della posizione (stessi spazi del modulo)
+              for ($i = count($assQui); $i < capPos((int)$pos['id']); $i++): ?>
                 <div class="slot-empty"></div>
               <?php endfor; ?>
             </div>
@@ -1937,12 +1952,13 @@ function setOccupato(id, occupato, label) {
     updateRespinteCount();
 }
 
-// Mantiene esattamente 7 slot in una posizione: card + placeholder vuoti
+// Mantiene gli slot di una posizione = capienza ODT (data-cap): card + placeholder vuoti
 function sincronizzaSlot(body) {
     if (!body) return;
+    const cap = parseInt(body.dataset.cap || '7');
     body.querySelectorAll('.slot-empty').forEach(s => s.remove());
     const n = body.querySelectorAll('.ass-card').length;
-    for (let i = n; i < 7; i++) {
+    for (let i = n; i < cap; i++) {
         body.insertAdjacentHTML('beforeend', '<div class="slot-empty"></div>');
     }
 }
@@ -2208,7 +2224,7 @@ document.addEventListener('drop', async function(e) {
             posizione_id: posId, straordinario: straord
         });
         if (!res.ok) {
-            showMsg(res.pieno ? '🚫 Squadra al completo (max 7). ' + p.nome + ' resta tra i disponibili.' : '⚠️ Errore.', 'err');
+            showMsg(res.pieno ? '🚫 ' + (res.errore || 'Posizione al completo.') + ' ' + p.nome + ' resta tra i disponibili.' : '⚠️ Errore.', 'err');
             return;
         }
 
