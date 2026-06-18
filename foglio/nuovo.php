@@ -932,10 +932,13 @@ $stResp = $pdo->prepare(
 $stResp->execute(array_merge([$dataStr], $tipiRespinte));
 $idFerieRespinte = array_map('intval', array_column($stResp->fetchAll(), 'vigile_id'));
 
-// Vigili con ferie APPROVATA da richiesta per questo turno (= ferie "da flusso")
+// Vigili con ferie DA RICHIESTA bot (pending O approved) per questo turno.
+// Solo le ferie SENZA richiesta attiva sono "d'ufficio" (a mano) → coerente con
+// $isUfficio. Una ferie da richiesta sta SOLO in colonna Ferie, mai nel box ufficio
+// (la ridondanza nel box vale solo per le ferie a mano).
 $stApp = $pdo->prepare(
     "SELECT DISTINCT vigile_id FROM bot_requests
-     WHERE data_richiesta=? AND stato='approved' AND tipo_turno IN ($phResp)"
+     WHERE data_richiesta=? AND stato IN ('pending','approved') AND tipo_turno IN ($phResp)"
 );
 $stApp->execute(array_merge([$dataStr], $tipiRespinte));
 $idFerieRichiesta = array_map('intval', array_column($stApp->fetchAll(), 'vigile_id'));
