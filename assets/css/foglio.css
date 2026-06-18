@@ -344,7 +344,7 @@ body.cruscotto-bloccato .foglio-layout {
 }
 .sede-distaccamenti .sede-body {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    grid-template-columns: repeat(5, 1fr);   /* 5 distaccamenti per riga */
     gap: 6px;
     padding: 0;
 }

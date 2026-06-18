@@ -1480,11 +1480,13 @@ function colorePatentePHP(?string $patente): string {
           if ($ib === false) $ib = PHP_INT_MAX;
           return $ia <=> $ib;
       });
-      // Distaccamenti: Chiavari (CH) e Rapallo (RP) vanno in fondo; gli altri
-      // mantengono l'ordine attuale. Ordinamento stabile via [rango, indice].
+      // Distaccamenti su 2 righe da 5: in fondo (seconda riga) Busalla (BS),
+      // Chiavari (CH), Rapallo (RP) ed EL-1SMZ; sopra restano ML/GA/GE/BL.
+      // Ordinamento stabile via [rango, indice] (gli altri restano in ordine).
+      $distInFondo = ['BS', 'CH', 'RP', 'EL'];
       $i = 0;
       foreach ($posDistacc as &$pd) {
-          $inFondo = (strpos($pd['codice'], 'CH') === 0 || strpos($pd['codice'], 'RP') === 0) ? 1 : 0;
+          $inFondo = in_array(substr($pd['codice'], 0, 2), $distInFondo, true) ? 1 : 0;
           $pd['_ord'] = [$inFondo, $i++];
       }
       unset($pd);
