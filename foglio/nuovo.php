@@ -87,8 +87,21 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, arra
     }
 
     $personale = $pdo->query(
-        "SELECT v.id, v.sede_id, v.salto_id, v.posizione_default_id FROM vigili v WHERE v.attivo=1"
+        "SELECT v.id, v.sede_id, v.salto_id, v.posizione_default_id, v.cognome, v.qualifica_id,
+                (SELECT MAX(p.tipo) FROM vigili_patenti vp JOIN patenti p ON p.id=vp.patente_id
+                 WHERE vp.vigile_id=v.id) AS patente_max
+         FROM vigili v WHERE v.attivo=1"
     )->fetchAll();
+
+    // Sede Centrale (per il raggruppamento della passata 2, solo lì)
+    $centrSedeId = (int)($pdo->query("SELECT id FROM sedi WHERE codice='CENTR'")->fetchColumn() ?: 0);
+    // Gruppo colore patente: rossi (3-4)=0, blu (2)=1, neri (1/—)=2
+    $coloreGruppo = function ($pat): int {
+        $n = (int)$pat;
+        if ($n >= 3) return 0;
+        if ($n === 2) return 1;
+        return 2;
+    };
 
     // Vigili con assenza registrata per questo foglio → non vanno in servizio
     $assentiIds = [];
@@ -117,6 +130,7 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, arra
 
     // Pass 1: chi ha posizione esplicita (template/default) e c'è ancora posto
     $daSpalmare = [];
+    $idx = 0;
     foreach ($personale as $vp) {
         $vid     = (int)$vp['id'];
         $sedeId  = (int)$vp['sede_id'];
@@ -130,13 +144,34 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, arra
             $assegna($vid, $posEsplicita);
         } else {
             // Sede di destinazione: quella della posizione esplicita (se piena) o quella del vigile
-            $daSpalmare[] = ['vid' => $vid,
-                             'sede' => $posEsplicita ? ($sedeDiPos[$posEsplicita] ?? $sedeId) : $sedeId];
+            $sedeDest = $posEsplicita ? ($sedeDiPos[$posEsplicita] ?? $sedeId) : $sedeId;
+            $daSpalmare[] = [
+                'vid'  => $vid,
+                'sede' => $sedeDest,
+                'grp'  => $coloreGruppo($vp['patente_max']),   // rossi/blu/neri
+                'qual' => (int)$vp['qualifica_id'],            // rank: Cr>Cs>Vf (id più alto = più anziano)
+                'cog'  => (string)$vp['cognome'],
+                'idx'  => $idx++,
+            ];
         }
     }
 
-    // Pass 2: spalma i restanti sulle posizioni libere della loro sede
+    // Pass 2: spalma i restanti sulle posizioni libere della loro sede.
+    // SOLO la CENTRALE viene raggruppata per facilità di lettura: prima i rossi,
+    // poi i blu, poi i neri; dentro ogni gruppo per qualifica (Cr→Cs→Vf, = anzianità)
+    // e a pari qualifica per cognome. Le altre sedi mantengono l'ordine originale.
+    $spalmaCentrale = [];
+    $spalmaAltri    = [];
     foreach ($daSpalmare as $d) {
+        if ($d['sede'] === $centrSedeId) $spalmaCentrale[] = $d;
+        else                             $spalmaAltri[]    = $d;
+    }
+    usort($spalmaCentrale, fn($a, $b) =>
+        [$a['grp'], -$a['qual'], $a['cog'], $a['idx']]
+        <=> [$b['grp'], -$b['qual'], $b['cog'], $b['idx']]
+    );
+
+    foreach (array_merge($spalmaCentrale, $spalmaAltri) as $d) {
         $pid = $primaLibera($d['sede']);
         if ($pid) $assegna($d['vid'], $pid);
         // se tutte piene → resta nei disponibili (non assegnato)
