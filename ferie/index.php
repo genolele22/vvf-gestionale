@@ -259,6 +259,47 @@ foreach ($perData as &$gruppo) {
 }
 unset($gruppo);
 
+// ── Scambi salto approvati del mese → per data (insieme alle ferie) ──
+// Ogni scambio compare sotto la/le sue date di riposo (override tipo D) che
+// cadono nel mese: in quella data il "vigile_in" riposa al posto della controparte.
+$scById = [];
+foreach ($pdo->query("
+        SELECT s.id, s.slot_a, s.slot_b, s.vigile_a_id, s.vigile_b_id,
+               a.cognome AS a_cog, b.cognome AS b_cog
+        FROM bot_scambi_salto s
+        JOIN vigili a ON a.id = s.vigile_a_id
+        JOIN vigili b ON b.id = s.vigile_b_id
+        WHERE s.stato = 'approvato'
+    ")->fetchAll() as $s) {
+    $scById[(int)$s['id']] = $s;
+}
+$scambiPerData = [];
+if ($scById) {
+    $phSc = implode(',', array_fill(0, count($scById), '?'));
+    $ovQ  = $pdo->prepare("
+        SELECT scambio_id, data, vigile_in_id
+        FROM salto_override
+        WHERE tipo='D' AND attivo=1 AND scambio_id IN ($phSc)
+          AND DATE_FORMAT(data, '%Y-%m') = ?
+        ORDER BY data
+    ");
+    $ovQ->execute(array_merge(array_keys($scById), [$meseStr]));
+    foreach ($ovQ->fetchAll() as $ov) {
+        $s      = $scById[(int)$ov['scambio_id']];
+        $restaA = ((int)$ov['vigile_in_id'] === (int)$s['vigile_a_id']);
+        $scambiPerData[$ov['data']][] = [
+            'resta'  => $restaA ? $s['a_cog'] : $s['b_cog'],
+            'altro'  => $restaA ? $s['b_cog'] : $s['a_cog'],
+            'slot_a' => (int)$s['slot_a'],
+            'slot_b' => (int)$s['slot_b'],
+        ];
+    }
+}
+
+// Date da renderizzare = unione ferie + scambi, in ordine cronologico
+$tutteLeDate = array_unique(array_merge(array_keys($perData), array_keys($scambiPerData)));
+sort($tutteLeDate);
+
 $totPending  = count(array_filter($tutteRichieste, fn($r) => $r['stato'] === 'pending'));
 $totApproved = count(array_filter($tutteRichieste, fn($r) => $r['stato'] === 'approved'));
 $totRejected = count(array_filter($tutteRichieste, fn($r) => $r['stato'] === 'rejected'));
@@ -447,64 +488,45 @@ $totVigili   = count($perVigile);
     </div>
   </div>
 
-  <!-- Scambi salto approvati (traccia) -->
-  <?php
-    $scambiApprovati = $pdo->query("
-        SELECT s.id, s.vigile_a_id, s.vigile_b_id, s.slot_a, s.slot_b,
-               a.cognome AS a_cog, b.cognome AS b_cog
-        FROM bot_scambi_salto s
-        JOIN vigili a ON a.id = s.vigile_a_id
-        JOIN vigili b ON b.id = s.vigile_b_id
-        WHERE s.stato = 'approvato'
-        ORDER BY s.id DESC
-    ")->fetchAll();
-    $ovStmt = $pdo->prepare(
-        "SELECT data, vigile_in_id FROM salto_override
-         WHERE scambio_id=? AND tipo='D' AND attivo=1"
-    );
-  ?>
-  <?php if ($scambiApprovati): ?>
-  <div class="data-section">
-    <div class="data-head" style="display:flex;align-items:baseline;gap:10px;padding:6px 4px 6px 0;margin-bottom:6px;border-bottom:2px solid var(--rosso);">
-      <span class="data-label" style="font-size:.95rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--grigio-sc);">🔄 Scambi salto approvati</span>
-      <span class="data-count" style="font-size:.72rem;color:var(--grigio-md);font-weight:600;"><?= count($scambiApprovati) ?></span>
-    </div>
-    <div class="vigile-card">
-    <?php foreach ($scambiApprovati as $sc):
-        $ovStmt->execute([$sc['id']]);
-        $rest = [];
-        foreach ($ovStmt->fetchAll() as $r) { $rest[(int)$r['vigile_in_id']] = $r['data']; }
-        $aData = isset($rest[(int)$sc['vigile_a_id']]) ? date('d/m', strtotime($rest[(int)$sc['vigile_a_id']])) : '—';
-        $bData = isset($rest[(int)$sc['vigile_b_id']]) ? date('d/m', strtotime($rest[(int)$sc['vigile_b_id']])) : '—';
-    ?>
-      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;padding:6px 4px;border-bottom:1px solid #eee;font-size:.85rem;">
-        <span style="font-weight:700;">🔄 <?= htmlspecialchars($sc['a_cog']) ?> (B<?= (int)$sc['slot_a'] ?>) ⇄ <?= htmlspecialchars($sc['b_cog']) ?> (B<?= (int)$sc['slot_b'] ?>)</span>
-        <span style="color:var(--grigio-md);"><?= htmlspecialchars($sc['a_cog']) ?> riposa <?= $aData ?> · <?= htmlspecialchars($sc['b_cog']) ?> riposa <?= $bData ?></span>
-      </div>
-    <?php endforeach; ?>
-    </div>
-  </div>
+  <?php if (empty($tutteLeDate)): ?>
+    <div class="alert alert-ok">Nessuna richiesta di ferie o scambio salto per <?= $mesiNomi[$meseP] ?> <?= $annoP ?>.</div>
   <?php endif; ?>
 
-  <?php if (empty($perData)): ?>
-    <div class="alert alert-ok">Nessuna richiesta di ferie per <?= $mesiNomi[$meseP] ?> <?= $annoP ?>.</div>
-  <?php endif; ?>
-
-  <!-- Sezioni per data di inizio -->
-  <?php foreach ($perData as $dataInizio => $gruppo):
+  <!-- Sezioni per data: scambi salto + ferie insieme -->
+  <?php foreach ($tutteLeDate as $dataInizio):
+    $gruppo     = $perData[$dataInizio] ?? [];
+    $scambi     = $scambiPerData[$dataInizio] ?? [];
     $dtInizio   = new DateTime($dataInizio);
     $dataHeader = $giorniNomi[(int)$dtInizio->format('N')] . ' '
                 . $dtInizio->format('d') . ' '
                 . $mesiNomi[(int)$dtInizio->format('n')];
+    $conteggio  = [];
+    if ($gruppo) $conteggio[] = count($gruppo) . ' vigil' . (count($gruppo) === 1 ? 'e' : 'i') . ' in ferie';
+    if ($scambi) $conteggio[] = count($scambi) . (count($scambi) === 1 ? ' scambio' : ' scambi') . ' salto';
   ?>
   <div class="data-section">
 
     <!-- Intestazione data -->
     <div class="data-head" style="display:flex;align-items:baseline;gap:10px;padding:6px 4px 6px 0;margin-bottom:6px;border-bottom:2px solid var(--rosso);">
       <span class="data-label" style="font-size:.95rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--grigio-sc);"><?= $dataHeader ?></span>
-      <span class="data-count" style="font-size:.72rem;color:var(--grigio-md);font-weight:600;"><?= count($gruppo) ?> vigil<?= count($gruppo) === 1 ? 'e' : 'i' ?></span>
+      <span class="data-count" style="font-size:.72rem;color:var(--grigio-md);font-weight:600;"><?= implode(' · ', $conteggio) ?></span>
     </div>
 
+    <?php if ($scambi): ?>
+    <!-- Scambi salto di questa data -->
+    <div class="vigile-card" style="margin-bottom:8px;">
+      <?php foreach ($scambi as $sc): ?>
+      <div class="blocco-row" style="cursor:default;">
+        <span class="toggle-icon">🔄</span>
+        <span class="blocco-nome" style="color:#0a58ca;"><?= htmlspecialchars($sc['resta']) ?> riposa</span>
+        <span class="blocco-spacer"></span>
+        <span style="font-size:.78rem;color:var(--grigio-md);">scambio salto con <?= htmlspecialchars($sc['altro']) ?> (B<?= $sc['slot_a'] ?>⇄B<?= $sc['slot_b'] ?>)</span>
+      </div>
+      <?php endforeach; ?>
+    </div>
+    <?php endif; ?>
+
+    <?php if ($gruppo): ?>
     <div class="vigile-card">
     <?php foreach ($gruppo as $gi => $item):
       $meta       = $item['meta'];
@@ -578,6 +600,7 @@ $totVigili   = count($perVigile);
 
     <?php endforeach; ?>
     </div><!-- /.vigile-card -->
+    <?php endif; ?>
 
   </div><!-- /.data-section -->
   <?php endforeach; ?>
