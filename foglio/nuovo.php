@@ -684,8 +684,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     // ── AJAX: reset foglio ───────────────────────────────────
+    // Riporta il foglio allo stato CANONICO, annullando ogni modifica manuale:
+    //   - salti = salto_id ± scambi salto APPROVATI (resterEffettivi)
+    //   - ferie = richieste fatte sul bot (le respinte tornano richieste)
+    //   - assegnazioni = ripopolate da zero
+    //   - assenze manuali (ferie d'ufficio, malattia, missione, permessi) = rimosse
     if ($azione === 'reset_foglio') {
-        prepopolaAssegnazioni($pdo, $foglioId, $saltoRiposoId, resterEffettivi($pdo, $dataStr, $tipoParam, $saltoRiposoId));
+        $tipiTurno = ($tipoParam === 'D') ? ['D', 'DN'] : ['N', 'DN'];
+        $phTt      = implode(',', array_fill(0, count($tipiTurno), '?'));
+
+        // 1. Le ferie RESPINTE su questo turno tornano richieste (annulla la
+        //    decisione manuale della fureria): rejected → pending.
+        $pdo->prepare(
+            "UPDATE bot_requests SET stato='pending', processed_at=NULL
+             WHERE data_richiesta=? AND stato='rejected' AND tipo_turno IN ($phTt)"
+        )->execute(array_merge([$dataStr], $tipiTurno));
+
+        // 2. Via TUTTE le assenze del foglio (anche le manuali): vengono
+        //    ricostruite sotto solo quelle che derivano da una richiesta bot.
+        $pdo->prepare("DELETE FROM assenze WHERE foglio_id=?")->execute([$foglioId]);
+
+        // 3. Ricrea le ferie (tipo_assenza 1) da TUTTE le richieste bot attive
+        //    (pending/approved) per questo turno.
+        $stReq = $pdo->prepare(
+            "SELECT DISTINCT vigile_id FROM bot_requests
+             WHERE data_richiesta=? AND stato IN ('pending','approved') AND tipo_turno IN ($phTt)"
+        );
+        $stReq->execute(array_merge([$dataStr], $tipiTurno));
+        $reqVigili = $stReq->fetchAll(PDO::FETCH_COLUMN);
+        if ($reqVigili) {
+            $nid = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM assenze")->fetchColumn();
+            $insAss = $pdo->prepare(
+                "INSERT INTO assenze (id, foglio_id, vigile_id, tipo_assenza_id) VALUES (?,?,?,1)"
+            );
+            foreach ($reqVigili as $vid) {
+                $insAss->execute([$nid++, $foglioId, (int)$vid]);
+            }
+        }
+
+        // 4. Ricostruisci salti + assegnazioni dallo stato canonico.
+        //    prepopolaAssegnazioni salta chi è in ferie (assenze appena ricreate).
+        prepopolaFoglio($pdo, $foglioId, $saltoRiposoId,
+            resterEffettivi($pdo, $dataStr, $tipoParam, $saltoRiposoId));
+
         echo json_encode(['ok' => true]);
         exit;
     }
