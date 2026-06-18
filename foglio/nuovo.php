@@ -943,11 +943,10 @@ $stApp = $pdo->prepare(
 $stApp->execute(array_merge([$dataStr], $tipiRespinte));
 $idFerieRichiesta = array_map('intval', array_column($stApp->fetchAll(), 'vigile_id'));
 
-// Splitta le assenze FER: da richiesta (colonna Ferie) vs d'ufficio (box dedicato)
-$ferieTutte     = $assenzePerTipo['FER'] ?? [];
-$ferieRichiesta = array_values(array_filter($ferieTutte,
-    fn($a) => in_array((int)$a['vigile_id'], $idFerieRichiesta)));
-$ferieUfficio   = array_values(array_filter($ferieTutte,
+// La colonna Ferie mostra tutte le FER ($ferieTutte); il box "Ferie d'ufficio"
+// solo quelle SENZA richiesta bot attiva (= a mano).
+$ferieTutte   = $assenzePerTipo['FER'] ?? [];
+$ferieUfficio = array_values(array_filter($ferieTutte,
     fn($a) => !in_array((int)$a['vigile_id'], $idFerieRichiesta)));
 
 // Select per capo servizio e vice (solo Cr e Cs)
@@ -2334,7 +2333,7 @@ document.addEventListener('drop', async function(e) {
     }
 
     // ── Drop su colonna assenza ──────────────────────────────
-    const colId = target.id; // colFerie | colRC | colMissione | colMalattia
+    const colId = target.id; // colFerie | colMissione | colMalattia
     const tipoEntry = Object.values(TIPI_ASSENZA).find(t => t.colId === colId);
     if (!tipoEntry) return;
 
@@ -2758,7 +2757,6 @@ styleEl.textContent = `
     }
     #colSalto.drop-target,
     #colFerie.drop-target,
-    #colRC.drop-target,
     #colMissione.drop-target,
     #colMalattia.drop-target {
         background: #fff0ee !important;
