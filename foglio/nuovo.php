@@ -1442,6 +1442,18 @@ function colorePatentePHP(?string $patente): string {
           elseif  ($sede['codice'] === 'AP')    $posAeroporto = array_merge($posAeroporto, $p);
           else                                  $posDistacc   = array_merge($posDistacc,   $p);
       }
+      // Ordine esplicito Centrale (griglia 7 colonne):
+      //   riga 1 = Operativa + serie A + SMZ; riga 2 = serie B + funzionale/autorimessa.
+      // Indipendente dal campo `ordine` del DB (che mischiava A e B).
+      $ordineCentrale = ['CENTR-OP','1A','2A','3A','4A','5A','1SMZ',
+                         '1B','2B-NBCR','3B','4B','1FUN-AUTORADIO','1SOP-AUTORIM'];
+      usort($posCentrale, function ($a, $b) use ($ordineCentrale) {
+          $ia = array_search($a['codice'], $ordineCentrale, true);
+          $ib = array_search($b['codice'], $ordineCentrale, true);
+          if ($ia === false) $ia = PHP_INT_MAX;
+          if ($ib === false) $ib = PHP_INT_MAX;
+          return $ia <=> $ib;
+      });
       $blocchiGriglia = [
           ['nome' => 'Centrale',      'class' => ' sede-full sede-centrale',      'pos' => $posCentrale],
           ['nome' => 'Distaccamenti', 'class' => ' sede-full sede-distaccamenti', 'pos' => $posDistacc],
