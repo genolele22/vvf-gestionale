@@ -1531,6 +1531,8 @@ function colorePatentePHP(?string $patente): string {
     // Es. vigile di Multedo in posizione Multedo → niente sigla; in Centrale → "ML".
     // Stessa logica dell'ODT (FoglioRenderer: sigla solo se vig_sede ≠ pos_sede).
     $mostraSede = (!empty($ass['sede_codice']) && $ass['sede_codice'] !== ($pos['sede_codice'] ?? null));
+    $nomeCompleto = ucfirst(strtolower($ass['qcodice'])).' '.ucfirst(strtolower($ass['cognome'])).
+                    ($ass['disambiguatore'] ? ' '.$ass['disambiguatore'] : '');
 ?>
     <div class="ass-card"
          id="ass-<?= $ass['vigile_id'] ?>"
@@ -1540,16 +1542,11 @@ function colorePatentePHP(?string $patente): string {
 
         <span class="qual-dot <?= htmlspecialchars($ass['qcodice']) ?>"></span>
 
-        <span style="color:<?= $colore ?>;font-weight:600;
-                     display:flex;align-items:center;gap:4px;flex-wrap:wrap">
-            <?= htmlspecialchars(
-                ucfirst(strtolower($ass['qcodice'])).' '.ucfirst(strtolower($ass['cognome'])).
-                ($ass['disambiguatore'] ? ' '.$ass['disambiguatore'] : '')
-            ) ?>
+        <span class="ass-nome" style="color:<?= $colore ?>"
+              title="<?= htmlspecialchars($nomeCompleto) ?>">
+            <span class="ass-nome-txt"><?= htmlspecialchars($nomeCompleto) ?></span>
             <?php if ($mostraSede): ?>
-                <span class="persona-salto">
-                    <?= htmlspecialchars(siglaSede($ass['sede_codice'])) ?>
-                </span>
+                <span class="persona-salto"><?= htmlspecialchars(siglaSede($ass['sede_codice'])) ?></span>
             <?php endif; ?>
             <?php if (isset($scambioOut[(int)$ass['vigile_id']])): ?>
                 <span class="scambio-badge"
@@ -2166,10 +2163,8 @@ function buildAssCard(p, posId, straord) {
                  data-pos-id="${posId}"
                  draggable="true">
               <span class="qual-dot ${p.qcodice}"></span>
-              <span style="color:${colore};font-weight:600;
-                           display:flex;align-items:center;
-                           gap:4px;flex-wrap:wrap">
-                ${p.nome}${sedeBadge}${strBadge}
+              <span class="ass-nome" style="color:${colore}" title="${p.nome}">
+                <span class="ass-nome-txt">${p.nome}</span>${sedeBadge}${strBadge}
               </span>
               <button class="remove-btn"
                       onclick="rimuoviDaPosizione(${p.id})"

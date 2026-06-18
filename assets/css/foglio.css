@@ -119,7 +119,7 @@
 /* ── Pannello organico (colonna sinistra) ── */
 .foglio-layout {
     display: grid;
-    grid-template-columns: 240px 1fr;
+    grid-template-columns: 200px 1fr;
     gap: 16px;
     align-items: start;
 }
@@ -455,6 +455,24 @@ body.cruscotto-bloccato .foglio-layout {
     box-shadow: 0 1px 4px rgba(0,0,0,.1);
 }
 .ass-card.dragging { opacity: .35; cursor: grabbing; transform: scale(.95); }
+
+/* Nome + sigla su UNA riga: il nome si tronca con "…", la sigla resta sempre
+   accanto (non va più a capo). Nome completo nel tooltip della card. */
+.ass-card .ass-nome {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-weight: 600;
+}
+.ass-card .ass-nome-txt {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ass-card .ass-nome > :not(.ass-nome-txt) { flex-shrink: 0; }
 
 /* ── Riordino dentro la stessa squadra ── */
 /* Gap che mostra DOVE cadrà la card (lo "spazio" per capire l'inserimento) */
