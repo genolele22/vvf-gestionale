@@ -225,7 +225,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Guardia: se il foglio è bloccato, nessuna operazione di modifica passa
     $azioniModifica = ['salva_intestazione', 'assegna', 'rimuovi', 'assenza',
                        'rimuovi_assenza', 'metti_salto', 'richiama_salto', 'reset_foglio',
-                       'ferie_ufficio', 'rimuovi_ufficio', 'scambia_salto', 'annulla_scambio'];
+                       'ferie_ufficio', 'rimuovi_ufficio', 'scambia_salto', 'annulla_scambio',
+                       'riordina', 'copia_da_diurno'];
     if ($foglioBloccato && in_array($azione, $azioniModifica, true)) {
         echo json_encode(['ok' => false, 'bloccato' => true,
                           'errore' => 'Foglio bloccato. Sblocca per modificare.']);
@@ -753,6 +754,61 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
+    // ── AJAX: copia il servizio dal DIURNO dello STESSO SALTO (= ieri) ──
+    // Solo sul notturno: il notturno di oggi è lo stesso turno/salto del DIURNO
+    // del giorno PRECEDENTE (vedi turni.php: "il notturno è lo stesso turno del
+    // giorno precedente"). Importo assegnazioni + salti manuali da quel diurno
+    // come base. Le assenze del notturno restano; chi è assente in N non si importa.
+    if ($azione === 'copia_da_diurno') {
+        if ($tipoParam !== 'N') {
+            echo json_encode(['ok' => false, 'errore' => 'Disponibile solo sul turno notturno.']); exit;
+        }
+        $dataPrec = (new DateTime($dataStr))->modify('-1 day')->format('Y-m-d');
+        $stD = $pdo->prepare("SELECT id FROM fogli_servizio WHERE data_servizio=? AND tipo_turno='D'");
+        $stD->execute([$dataPrec]);
+        $diurnoId = (int)($stD->fetchColumn() ?: 0);
+        if ($diurnoId <= 0) {
+            echo json_encode(['ok' => false,
+                'errore' => 'Nessun diurno dello stesso salto (' . date('d/m', strtotime($dataPrec)) . ') da copiare.']); exit;
+        }
+        // Assenti nel notturno (ferie/permessi/missione/malattia di stanotte): non importarli
+        $stAbs = $pdo->prepare("SELECT vigile_id FROM assenze WHERE foglio_id=?");
+        $stAbs->execute([$foglioId]);
+        $setAssN = array_flip(array_map('intval', array_column($stAbs->fetchAll(), 'vigile_id')));
+
+        // Pulisci il notturno (assegnazioni + salti manuali); le assenze restano
+        $pdo->prepare("DELETE FROM assegnazioni  WHERE foglio_id=?")->execute([$foglioId]);
+        $pdo->prepare("DELETE FROM salto_servizio WHERE foglio_id=?")->execute([$foglioId]);
+
+        // Copia assegnazioni dal diurno (saltando chi è assente nel notturno)
+        $stSrcA = $pdo->prepare("SELECT posizione_id, vigile_id, ordine, in_straordinario
+                                 FROM assegnazioni WHERE foglio_id=?");
+        $stSrcA->execute([$diurnoId]);
+        $nextA = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM assegnazioni")->fetchColumn();
+        $insA  = $pdo->prepare("INSERT INTO assegnazioni
+                    (id,foglio_id,posizione_id,vigile_id,ordine,in_straordinario) VALUES (?,?,?,?,?,?)");
+        $nCopiati = 0;
+        foreach ($stSrcA->fetchAll() as $r) {
+            if (isset($setAssN[(int)$r['vigile_id']])) continue;
+            $insA->execute([$nextA++, $foglioId, $r['posizione_id'], $r['vigile_id'],
+                            $r['ordine'], $r['in_straordinario']]);
+            $nCopiati++;
+        }
+
+        // Copia salti manuali dal diurno (saltando assenti nel notturno)
+        $stSrcS = $pdo->prepare("SELECT vigile_id, richiamato FROM salto_servizio WHERE foglio_id=?");
+        $stSrcS->execute([$diurnoId]);
+        $nextS = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM salto_servizio")->fetchColumn();
+        $insS  = $pdo->prepare("INSERT INTO salto_servizio (id,foglio_id,vigile_id,richiamato) VALUES (?,?,?,?)");
+        foreach ($stSrcS->fetchAll() as $r) {
+            if (isset($setAssN[(int)$r['vigile_id']])) continue;
+            $insS->execute([$nextS++, $foglioId, $r['vigile_id'], $r['richiamato']]);
+        }
+
+        echo json_encode(['ok' => true, 'copiati' => $nCopiati]);
+        exit;
+    }
+
     echo json_encode(['ok' => false, 'errore' => 'Azione non riconosciuta']);
     exit;
 }
@@ -1173,6 +1229,12 @@ function colorePatentePHP(?string $patente): string {
              data-nferie="<?= (int)$nFerieDaApprovare ?>"
              onclick="return scaricaOdt(this)">📄 Scarica .odt</a>
           <a href="../index.php" class="btn btn-grigio btn-sm">← Torna</a>
+          <?php if ($tipoParam === 'N'): ?>
+          <button onclick="apriModalCopiaDiurno()"
+                  class="btn btn-sm" style="background:#1a5276;color:#fff"
+                  title="Importa le squadre dal diurno dello stesso salto (il giorno prima) come base per il notturno">
+            📋 Copia dal diurno</button>
+          <?php endif; ?>
           <button onclick="apriModalReset()"
                   class="btn btn-sm" style="background:#c0392b;color:#fff">↺ Reset servizio</button>
         </div>
@@ -1196,6 +1258,29 @@ function colorePatentePHP(?string $patente): string {
             </div>
           </div>
         </div>
+
+        <?php if ($tipoParam === 'N'): ?>
+        <!-- Modale copia dal diurno -->
+        <div id="modalCopiaDiurno" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);
+             z-index:9999;align-items:center;justify-content:center">
+          <div style="background:#fff;border-radius:10px;padding:28px 32px;max-width:380px;
+                      width:90%;box-shadow:0 8px 32px rgba(0,0,0,.25);text-align:center">
+            <div style="font-size:1.4rem;font-weight:700;margin-bottom:8px">Copia dal diurno</div>
+            <div style="color:#555;margin-bottom:24px">
+              Importo le squadre e i salti dal <strong>diurno dello stesso salto</strong>
+              (il giorno prima) come base per il notturno.<br><br>
+              Le assegnazioni attuali del notturno vengono <strong>sostituite</strong>; chi è in
+              ferie/permesso/missione stanotte <strong>non</strong> viene importato.<br><br>
+              Continuare?
+            </div>
+            <div style="display:flex;gap:12px;justify-content:center">
+              <button onclick="chiudiModalCopiaDiurno()" class="btn btn-grigio btn-sm">Annulla</button>
+              <button onclick="eseguiCopiaDiurno()"
+                      class="btn btn-sm" style="background:#1a5276;color:#fff">Sì, copia</button>
+            </div>
+          </div>
+        </div>
+        <?php endif; ?>
       </div>
     </div><!-- /.foglio-header-top -->
 
@@ -2848,6 +2933,26 @@ async function eseguiReset() {
         location.reload();
     } else {
         showMsg('⚠️ Errore durante il reset.', 'err');
+    }
+}
+
+function apriModalCopiaDiurno() {
+    if (BLOCCATO) { showMsg('🔒 Foglio bloccato.', 'err'); return; }
+    const m = document.getElementById('modalCopiaDiurno');
+    if (m) m.style.display = 'flex';
+}
+function chiudiModalCopiaDiurno() {
+    const m = document.getElementById('modalCopiaDiurno');
+    if (m) m.style.display = 'none';
+}
+async function eseguiCopiaDiurno() {
+    chiudiModalCopiaDiurno();
+    showMsg('Copia dal diurno in corso…', 'ok');
+    const res = await ajax({ azione: 'copia_da_diurno' });
+    if (res.ok) {
+        location.reload();
+    } else {
+        showMsg('⚠️ ' + (res.errore || 'Errore durante la copia.'), 'err');
     }
 }
 
