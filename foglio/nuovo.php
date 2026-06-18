@@ -1480,22 +1480,34 @@ function colorePatentePHP(?string $patente): string {
           if ($ib === false) $ib = PHP_INT_MAX;
           return $ia <=> $ib;
       });
+      // Distaccamenti: Chiavari (CH) e Rapallo (RP) vanno in fondo; gli altri
+      // mantengono l'ordine attuale. Ordinamento stabile via [rango, indice].
+      $i = 0;
+      foreach ($posDistacc as &$pd) {
+          $inFondo = (strpos($pd['codice'], 'CH') === 0 || strpos($pd['codice'], 'RP') === 0) ? 1 : 0;
+          $pd['_ord'] = [$inFondo, $i++];
+      }
+      unset($pd);
+      usort($posDistacc, fn($a, $b) => $a['_ord'] <=> $b['_ord']);
+
       $blocchiGriglia = [
-          ['nome' => 'Centrale',      'class' => ' sede-full sede-centrale',      'pos' => $posCentrale],
-          ['nome' => 'Distaccamenti', 'class' => ' sede-full sede-distaccamenti', 'pos' => $posDistacc],
-          ['nome' => 'Aeroporto',     'class' => ' sede-full sede-aeroporto',     'pos' => $posAeroporto],
+          ['nome' => 'Centrale',      'class' => ' sede-full sede-centrale',      'pos' => $posCentrale,  'head' => true],
+          ['nome' => 'Distaccamenti', 'class' => ' sede-full sede-distaccamenti', 'pos' => $posDistacc,   'head' => false],
+          ['nome' => 'Aeroporto',     'class' => ' sede-full sede-aeroporto',     'pos' => $posAeroporto, 'head' => true],
       ];
       foreach ($blocchiGriglia as $blocco):
         $posSede = $blocco['pos'];
         if (empty($posSede)) continue;
       ?>
       <div class="sede-block<?= $blocco['class'] ?>">
+        <?php if ($blocco['head']): ?>
         <div class="sede-head">
           🏠 <?= htmlspecialchars($blocco['nome']) ?>
           <span style="font-size:.72rem;opacity:.7;margin-left:auto">
             <?= count($posSede) ?> posizioni
           </span>
         </div>
+        <?php endif; ?>
         <div class="sede-body">
           <?php foreach ($posSede as $pos):
             $assQui = $assPerPosizione[$pos['id']] ?? [];
