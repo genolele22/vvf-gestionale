@@ -298,6 +298,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
+    // ── AJAX: riordina i vigili dentro UNA posizione (per anzianità) ──
+    // Riceve posizione_id e `ordine` = CSV di vigile_id nel nuovo ordine.
+    // Aggiorna solo il campo `ordine` delle righe già assegnate a quella
+    // posizione (nessun insert/delete): operazione idempotente e sicura.
+    if ($azione === 'riordina') {
+        $posizioneId = (int)($_POST['posizione_id'] ?? 0);
+        $ordineCsv   = trim($_POST['ordine'] ?? '');
+        if ($posizioneId <= 0 || $ordineCsv === '') {
+            echo json_encode(['ok' => false, 'errore' => 'Dati mancanti.']); exit;
+        }
+        $ids = array_values(array_filter(array_map('intval', explode(',', $ordineCsv))));
+        $up  = $pdo->prepare(
+            "UPDATE assegnazioni SET ordine=?
+             WHERE foglio_id=? AND posizione_id=? AND vigile_id=?"
+        );
+        foreach ($ids as $i => $vid) {
+            $up->execute([$i + 1, $foglioId, $posizioneId, $vid]);
+        }
+        echo json_encode(['ok' => true]);
+        exit;
+    }
+
     // ── AJAX: rimuovi assegnazione ────────────────────────────
     if ($azione === 'rimuovi') {
         $vigileId = (int)($_POST['vigile_id'] ?? 0);
@@ -2012,6 +2034,22 @@ function sincronizzaSlot(body) {
     }
 }
 
+// Riordino dentro una posizione: trova la card sopra cui inserire quella
+// trascinata, in base alla Y del cursore (la card il cui centro sta sotto Y).
+// Ritorna null se va in fondo.
+function getDragAfterElement(body, y) {
+    const cards = [...body.querySelectorAll('.ass-card:not(.dragging)')];
+    let closest = { offset: Number.NEGATIVE_INFINITY, element: null };
+    for (const card of cards) {
+        const box = card.getBoundingClientRect();
+        const offset = y - box.top - box.height / 2;
+        if (offset < 0 && offset > closest.offset) {
+            closest = { offset, element: card };
+        }
+    }
+    return closest.element;
+}
+
 // Rimuove dal DOM da qualsiasi posto (senza toccare la riga salto canonico)
 function rimuoviDOM(id) {
     const p = PERSONALE[id];
@@ -2269,6 +2307,25 @@ document.addEventListener('drop', async function(e) {
     // ── Drop su posizione ────────────────────────────────────
     if (target.classList.contains('pos-card')) {
         const posId   = parseInt(target.dataset.posId);
+
+        // Riordino DENTRO la stessa squadra (per anzianità): se trascino una
+        // card già in questa posizione, non riassegno — la sposto e salvo l'ordine.
+        const draggedCard = document.getElementById('ass-' + vigileId);
+        if (source === 'posizione' && draggedCard
+                && parseInt(draggedCard.dataset.posId) === posId) {
+            const body = document.getElementById('body-' + posId);
+            const after = getDragAfterElement(body, e.clientY);
+            if (after) body.insertBefore(draggedCard, after);
+            else       body.appendChild(draggedCard);
+            sincronizzaSlot(body);
+            const ordini = [...body.querySelectorAll('.ass-card')]
+                .map(c => c.dataset.vigileId).join(',');
+            const res = await ajax({ azione: 'riordina', posizione_id: posId, ordine: ordini });
+            if (!res.ok) { showMsg('⚠️ Errore riordino.', 'err'); return; }
+            showMsg('↕️ Ordine aggiornato.');
+            return;
+        }
+
         const straord = (source === 'salto' || p.saltoCanon) ? 1 : 0;
 
         const res = await ajax({
