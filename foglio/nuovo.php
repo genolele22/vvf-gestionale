@@ -1067,6 +1067,10 @@ function etichettaVigile(array $v): string {
          . ' ' . ucfirst(strtolower($v['cognome'] ?? ''))
          . ($v['disambiguatore'] ? ' ' . (int)$v['disambiguatore'] : '');
 }
+// Sigla sede per il badge (solo visualizzazione): Centrale → "C".
+function siglaSede(?string $c): string {
+    return $c === 'CENTR' ? 'C' : (string)$c;
+}
 function colorePatentePHP(?string $patente): string {
     switch ($patente) {
         case '4':
@@ -1341,7 +1345,7 @@ function colorePatentePHP(?string $patente): string {
 
         <?php if ($mostraSede): ?>
             <span class="persona-salto">
-                <?= htmlspecialchars($v['sede_codice']) ?>
+                <?= htmlspecialchars(siglaSede($v['sede_codice'])) ?>
             </span>
         <?php endif; ?>
 
@@ -1408,7 +1412,7 @@ function colorePatentePHP(?string $patente): string {
                 <small style="color:var(--rosso)">ferie respinta</small>
             </span>
             <?php if ($mostraSede): ?>
-                <span class="persona-salto"><?= htmlspecialchars($v['sede_codice']) ?></span>
+                <span class="persona-salto"><?= htmlspecialchars(siglaSede($v['sede_codice'])) ?></span>
             <?php endif; ?>
         </div>
         <?php endforeach; ?>
@@ -1435,7 +1439,7 @@ function colorePatentePHP(?string $patente): string {
             <span class="assente-nome" style="color:<?= $colore ?>">
                 <?= htmlspecialchars(etichettaVigile($a)) ?>
                 <?php if (!empty($a['sede_nome']) && $a['sede_nome'] !== 'CENTRALE'): ?>
-                    <span class="persona-salto"><?= htmlspecialchars($a['sede_codice']) ?></span>
+                    <span class="persona-salto"><?= htmlspecialchars(siglaSede($a['sede_codice'])) ?></span>
                 <?php endif; ?>
             </span>
             <button class="assente-del"
@@ -1544,7 +1548,7 @@ function colorePatentePHP(?string $patente): string {
             ) ?>
             <?php if ($mostraSede): ?>
                 <span class="persona-salto">
-                    <?= htmlspecialchars($ass['sede_codice']) ?>
+                    <?= htmlspecialchars(siglaSede($ass['sede_codice'])) ?>
                 </span>
             <?php endif; ?>
             <?php if (isset($scambioOut[(int)$ass['vigile_id']])): ?>
@@ -1711,7 +1715,7 @@ function colorePatentePHP(?string $patente): string {
         <?= htmlspecialchars($label) ?>
         <?php if ($v['sede_nome'] !== 'CENTRALE'): ?>
             <span class="persona-salto">
-                <?= htmlspecialchars($v['sede_codice']) ?>
+                <?= htmlspecialchars(siglaSede($v['sede_codice'])) ?>
             </span>
         <?php endif; ?>
         <?php if (isset($scambioIn[$vid])): ?>
@@ -1818,7 +1822,7 @@ function colorePatentePHP(?string $patente): string {
             <?= htmlspecialchars(etichettaVigile($a)) ?>
             <?php if (!empty($a['sede_nome']) && $a['sede_nome'] !== 'CENTRALE'): ?>
                 <span class="persona-salto">
-                    <?= htmlspecialchars($a['sede_codice']) ?>
+                    <?= htmlspecialchars(siglaSede($a['sede_codice'])) ?>
                 </span>
             <?php endif; ?>
         </span>
@@ -2100,6 +2104,9 @@ function colorePatente(patente) {
 
 
 
+// Sigla sede per il badge (solo visualizzazione): Centrale → "C".
+function siglaSede(c) { return c === 'CENTR' ? 'C' : (c || ''); }
+
 // ════════════════════════════════════════════════════════════
 // COSTRUTTORI HTML
 // ════════════════════════════════════════════════════════════
@@ -2108,7 +2115,7 @@ function buildAssCard(p, posId, straord) {
     // sede del vigile (p.sede) ≠ sede della posizione (data-sede della pos-card).
     const posSede   = document.getElementById('pos-' + posId)?.dataset.sede || '';
     const sedeBadge = (p.sede && p.sede !== posSede)
-        ? `<span class="persona-salto">${p.sede}</span>` : '';
+        ? `<span class="persona-salto">${siglaSede(p.sede)}</span>` : '';
     const strBadge = straord
         ? `<span style="font-size:.6rem;color:var(--giallo);
                         font-weight:700;margin-left:3px">STR</span>` : '';
@@ -2134,7 +2141,7 @@ function buildAssCard(p, posId, straord) {
 
 function buildAssenteRow(p, tipoCodice) {
     const sedeBadge = (!p.sedeCentrale && p.sede)
-        ? `<span class="persona-salto">${p.sede}</span>` : '';
+        ? `<span class="persona-salto">${siglaSede(p.sede)}</span>` : '';
     const colore = colorePatente(p.patente);
 
     return `<div class="assente-row"
@@ -2381,7 +2388,7 @@ document.addEventListener('drop', async function(e) {
                <span class="qual-dot ${p.qcodice}"></span>
                <span class="assente-nome">
                  ${p.nome}
-                 ${(!p.sedeCentrale && p.sede) ? `<span class="persona-salto">${p.sede}</span>` : ''}
+                 ${(!p.sedeCentrale && p.sede) ? `<span class="persona-salto">${siglaSede(p.sede)}</span>` : ''}
                </span>
                <button class="assente-del"
                        onclick="rimuoviDaZonaSalto(${vigileId})"
@@ -2551,7 +2558,7 @@ function aggiungiCardRespinta(vigileId) {
     if (document.getElementById('resp-' + vigileId)) return; // già presente
     list.querySelector('.ferie-respinte-vuoto')?.remove();
     const sedeBadge = (!p.sedeCentrale && p.sede)
-        ? `<span class="persona-salto">${p.sede}</span>` : '';
+        ? `<span class="persona-salto">${siglaSede(p.sede)}</span>` : '';
     list.insertAdjacentHTML('beforeend',
         `<div class="persona-card" id="resp-${p.id}" data-id="${p.id}" style="cursor:default">
             <span class="qual-dot ${p.qcodice}"></span>
@@ -2585,7 +2592,7 @@ function updateRespinteCount() {
 // ── Ferie d'ufficio ──────────────────────────────────────────
 function buildUfficioRow(p) {
     const sedeBadge = (!p.sedeCentrale && p.sede)
-        ? `<span class="persona-salto">${p.sede}</span>` : '';
+        ? `<span class="persona-salto">${siglaSede(p.sede)}</span>` : '';
     const colore = colorePatente(p.patente);
     return `<div class="assente-row" data-vigile-id="${p.id}"
                  draggable="true" style="cursor:grab">
