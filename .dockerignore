@@ -1,13 +1,14 @@
+.git
+.gitignore
 .env
 .env.*
 *.pem
 *.key
 *.log
 *.bak
-vendor/
 .DS_Store
 
-# file di riferimento caricati (non versionare, mai web-esporre)
+# file di riferimento / screenshot caricati nella root: mai nell'immagine
 content%3A*
 /*.pdf
 /*.png
