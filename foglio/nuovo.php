@@ -2373,31 +2373,7 @@ document.addEventListener('drop', async function(e) {
 
     // ── Drop su zona salto ───────────────────────────────────
     if (target.id === 'colSalto') {
-        if (p.saltoCanon) return; // già lì
-        const res = await ajax({ azione: 'metti_salto', vigile_id: vigileId });
-        if (!res.ok) { showMsg('⚠️ Errore.','err'); return; }
-
-        rimuoviDOM(vigileId);
-
-        target.insertAdjacentHTML('beforeend',
-            `<div class="assente-row"
-                  id="salto-${vigileId}"
-                  data-vigile-id="${vigileId}"
-                  draggable="true"
-                  style="cursor:grab">
-               <span class="qual-dot ${p.qcodice}"></span>
-               <span class="assente-nome">
-                 ${p.nome}
-                 ${(!p.sedeCentrale && p.sede) ? `<span class="persona-salto">${siglaSede(p.sede)}</span>` : ''}
-               </span>
-               <button class="assente-del"
-                       onclick="rimuoviDaZonaSalto(${vigileId})"
-                       title="Rimetti">✕</button>
-             </div>`
-        );
-
-        setOccupato(vigileId, true, 'in salto');
-        showMsg('😴 ' + p.nome + ' → salto.');
+        await azioneSalto(vigileId);
         return;
     }
 
@@ -2420,25 +2396,63 @@ document.addEventListener('drop', async function(e) {
 
     // ── Drop su colonna assenza ──────────────────────────────
     const colId = target.id; // colFerie | colMissione | colMalattia
-    const tipoEntry = Object.values(TIPI_ASSENZA).find(t => t.colId === colId);
-    if (!tipoEntry) return;
-
-    // Trova il codice del tipo assenza
+    // Codice tipo per quella colonna (colMissione→MISS, colMalattia→MAL: il primo
+    // che mappa la colonna, come da comportamento storico del drop).
     const tipoCodice = Object.keys(TIPI_ASSENZA).find(
         k => TIPI_ASSENZA[k].colId === colId
     );
+    if (!tipoCodice) return;
+    await azioneAssenza(vigileId, tipoCodice);
+});
+
+// ════════════════════════════════════════════════════════════
+// AZIONI VIGILE (riusate da drag&drop e dal menu tasto destro)
+// ════════════════════════════════════════════════════════════
+async function azioneSalto(vigileId) {
+    const p = PERSONALE[vigileId];
+    if (!p) return;
+    if (p.saltoCanon) { showMsg('ℹ️ ' + p.nome + ' è già a riposo (salto).'); return; }
+    const res = await ajax({ azione: 'metti_salto', vigile_id: vigileId });
+    if (!res.ok) { showMsg('⚠️ Errore.', 'err'); return; }
+
+    rimuoviDOM(vigileId);
+    document.getElementById('colSalto')?.insertAdjacentHTML('beforeend',
+        `<div class="assente-row"
+              id="salto-${vigileId}"
+              data-vigile-id="${vigileId}"
+              draggable="true"
+              style="cursor:grab">
+           <span class="qual-dot ${p.qcodice}"></span>
+           <span class="assente-nome">
+             ${p.nome}
+             ${(!p.sedeCentrale && p.sede) ? `<span class="persona-salto">${siglaSede(p.sede)}</span>` : ''}
+           </span>
+           <button class="assente-del"
+                   onclick="rimuoviDaZonaSalto(${vigileId})"
+                   title="Rimetti">✕</button>
+         </div>`
+    );
+    setOccupato(vigileId, true, 'in salto');
+    showMsg('😴 ' + p.nome + ' → salto.');
+}
+
+async function azioneAssenza(vigileId, tipoCodice) {
+    const p    = PERSONALE[vigileId];
+    const tipo = TIPI_ASSENZA[tipoCodice];
+    if (!p || !tipo) return;
+    const colId = tipo.colId;
 
     const res = await ajax({
         azione:          'assenza',
         vigile_id:       vigileId,
-        tipo_assenza_id: tipoEntry.id,
+        tipo_assenza_id: tipo.id,
         sede_distaccata: '', data_da: '', data_a: '', nr_turni: '', note: ''
     });
-    if (!res.ok) { showMsg('⚠️ Errore.','err'); return; }
+    if (!res.ok) { showMsg('⚠️ Errore.', 'err'); return; }
 
     rimuoviDOM(vigileId);
 
-    // Aggiorna riga salto se viene dal salto canonico
+    // Aggiorna riga salto se il vigile era a riposo di diritto (salto canonico)
     if (p.saltoCanon) {
         const sr = document.getElementById('salto-' + vigileId);
         if (sr) {
@@ -2474,7 +2488,75 @@ document.addEventListener('drop', async function(e) {
 
     if (!p.saltoCanon) setOccupato(vigileId, true, 'assente');
     showMsg('📋 ' + p.nome + ' → ' + tipoCodice + '.');
+}
+
+// ════════════════════════════════════════════════════════════
+// MENU TASTO DESTRO — azioni rapide su un vigile (Ferie/Permesso/
+// Missione/Salto). Riusa azioneAssenza/azioneSalto.
+// ════════════════════════════════════════════════════════════
+let _ctxVigileId = null;
+
+function buildCtxMenu() {
+    if (document.getElementById('ctxMenu')) return;
+    const m = document.createElement('div');
+    m.id = 'ctxMenu';
+    m.className = 'ctx-menu';
+    m.style.display = 'none';
+    m.innerHTML =
+        `<div class="ctx-nome" id="ctxNome"></div>
+         <button type="button" data-act="FER">🏖️ Ferie</button>
+         <button type="button" data-act="PERM">📄 Permesso</button>
+         <button type="button" data-act="MISS">✈️ Missione</button>
+         <button type="button" data-act="SALTO">😴 Salto</button>`;
+    document.body.appendChild(m);
+    m.addEventListener('click', async (e) => {
+        const btn = e.target.closest('button[data-act]');
+        if (!btn) return;
+        const act = btn.dataset.act;
+        const vid = _ctxVigileId;
+        nascondiCtxMenu();
+        if (vid == null) return;
+        if (act === 'SALTO') await azioneSalto(vid);
+        else                 await azioneAssenza(vid, act);
+    });
+}
+
+function mostraCtxMenu(x, y, vigileId) {
+    buildCtxMenu();
+    _ctxVigileId = vigileId;
+    const p = PERSONALE[vigileId];
+    const m = document.getElementById('ctxMenu');
+    const nome = document.getElementById('ctxNome');
+    if (nome) nome.textContent = p ? p.nome : '';
+    m.style.display = 'block';
+    // Tieni il menu dentro la finestra
+    const mw = m.offsetWidth, mh = m.offsetHeight;
+    m.style.left = Math.min(x, window.innerWidth  - mw - 8) + 'px';
+    m.style.top  = Math.min(y, window.innerHeight - mh - 8) + 'px';
+}
+
+function nascondiCtxMenu() {
+    const m = document.getElementById('ctxMenu');
+    if (m) m.style.display = 'none';
+    _ctxVigileId = null;
+}
+
+document.addEventListener('contextmenu', function(e) {
+    if (BLOCCATO) return;  // foglio bloccato da altri → niente azioni
+    // Solo card vigile lavorabili: disponibili in organico e assegnati in posizione.
+    // (Il box "Ferie respinte" è sola lettura → escluso.)
+    const card = e.target.closest('#organicoList .persona-card, .ass-card');
+    if (!card) return;     // fuori da una card → menu nativo del browser
+    const vid = parseInt(card.dataset.id || card.dataset.vigileId);
+    if (!vid || !PERSONALE[vid]) return;
+    e.preventDefault();
+    mostraCtxMenu(e.clientX, e.clientY, vid);
 });
+
+document.addEventListener('click', nascondiCtxMenu);
+document.addEventListener('scroll', nascondiCtxMenu, true);
+window.addEventListener('resize', nascondiCtxMenu);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') nascondiCtxMenu(); });
 
 // ════════════════════════════════════════════════════════════
 // FUNZIONE CHIAVE: identifica la zona di drop dall'elemento

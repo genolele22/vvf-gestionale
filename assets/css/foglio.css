@@ -600,3 +600,42 @@ body.cruscotto-bloccato .foglio-layout {
     .assenti-grid           { grid-template-columns: 1fr; }
     .foglio-header-fields   { grid-template-columns: 1fr; }
 }
+
+/* ── Menu tasto destro (azioni rapide su un vigile) ── */
+.ctx-menu {
+    position: fixed;
+    z-index: 9999;
+    min-width: 170px;
+    background: var(--bianco);
+    border: 1px solid #d5d8dc;
+    border-radius: 8px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.18);
+    padding: 4px;
+    overflow: hidden;
+}
+.ctx-menu .ctx-nome {
+    font-size: .72rem;
+    font-weight: 700;
+    color: var(--grigio-md);
+    text-transform: uppercase;
+    letter-spacing: .4px;
+    padding: 6px 10px 4px;
+    border-bottom: 1px solid #eee;
+    margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.ctx-menu button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    border-radius: 5px;
+    padding: 8px 10px;
+    font-size: .88rem;
+    color: var(--grigio-sc);
+    cursor: pointer;
+}
+.ctx-menu button:hover { background: var(--blu-bg); }
