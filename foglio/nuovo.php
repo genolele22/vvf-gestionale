@@ -1027,12 +1027,13 @@ $ferieTutte   = $assenzePerTipo['FER'] ?? [];
 $ferieUfficio = array_values(array_filter($ferieTutte,
     fn($a) => !in_array((int)$a['vigile_id'], $idFerieRichiesta)));
 
-// Select per capo servizio e vice (solo Cr e Cs, prima i Cr poi i Cs)
+// Select per capo servizio e vice: solo Cr e Cs della CENTRALE, prima i Cr poi i Cs
 $dirigenti = $pdo->query(
     "SELECT v.id, v.cognome, v.disambiguatore, q.codice AS qcodice
      FROM vigili v
      JOIN qualifiche q ON q.id = v.qualifica_id
-     WHERE v.attivo=1 AND q.codice IN ('Cr','Cs')
+     JOIN sedi s       ON s.id = v.sede_id
+     WHERE v.attivo=1 AND q.codice IN ('Cr','Cs') AND s.codice='CENTR'
      ORDER BY FIELD(q.codice,'Cr','Cs'), v.cognome"
 )->fetchAll();
 
