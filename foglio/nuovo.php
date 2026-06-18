@@ -1235,8 +1235,8 @@ function colorePatentePHP(?string $patente): string {
     $isAssente   = in_array($vid, $vigiliAssenti);
     $isInSalto   = in_array($vid, $idVigiliInSalto);
     $occupato    = $isAssegnato || $isAssente || $isInSalto;
-    // Ferie respinta + vigile libero → va nella casella "Ferie respinte", non in organico
-    if (!$occupato && in_array($vid, $idFerieRespinte)) continue;
+    // Il vigile con ferie respinta RESTA in organico (disponibile, trascinabile):
+    // la casella "Ferie respinte" è solo un promemoria parallelo, non lavorabile.
     $classeCard  = 'persona-card' . ($occupato ? ' assente' : '');
     $label       = etichettaVigile($v);
     $colore      = colorePatentePHP($v['patente_max'] ?? null);
@@ -1308,14 +1308,14 @@ function colorePatentePHP(?string $patente): string {
 
     <!-- ── PANNELLO FERIE RESPINTE ─────────────────────────── -->
     <?php
-      // Vigili liberi con ferie respinta per questo turno
+      // Promemoria: TUTTI i vigili con ferie respinta per questo turno (anche se
+      // poi assegnati in servizio o altrove). Escono solo se la ferie torna approvata
+      // (allora lo stato non è più 'rejected' e spariscono da $idFerieRespinte).
       $respinti = array_filter($tuttoPersonale, function ($v) use (
-          $idSaltoRiposo, $vigiliAssegnati, $vigiliAssenti, $idVigiliInSalto, $idFerieRespinte
+          $idSaltoRiposo, $idFerieRespinte
       ) {
-          $vid = $v['id'];
           if ((int)$v['salto_id'] === $idSaltoRiposo) return false;
-          $occ = in_array($vid, $vigiliAssegnati) || in_array($vid, $vigiliAssenti) || in_array($vid, $idVigiliInSalto);
-          return !$occ && in_array($vid, $idFerieRespinte);
+          return in_array($v['id'], $idFerieRespinte);
       });
     ?>
     <div class="ferie-respinte-panel">
@@ -1334,14 +1334,9 @@ function colorePatentePHP(?string $patente): string {
           $mostraSede = (!empty($v['sede_nome']) && $v['sede_nome'] !== 'CENTRALE');
         ?>
         <div class="persona-card"
-             id="pers-<?= $vid ?>"
+             id="resp-<?= $vid ?>"
              data-id="<?= $vid ?>"
-             data-nome="<?= htmlspecialchars($label) ?>"
-             data-qualifica="<?= htmlspecialchars($v['qcodice']) ?>"
-             data-salto="<?= htmlspecialchars($v['salto_codice']) ?>"
-             data-salto-id="<?= (int)$v['salto_id'] ?>"
-             data-salto-canon="0"
-             draggable="true">
+             style="cursor:default">
             <span class="qual-dot <?= htmlspecialchars($v['qcodice']) ?>"></span>
             <span class="persona-nome" style="color:<?= $colore ?>">
                 <?= htmlspecialchars($label) ?>
@@ -1937,16 +1932,8 @@ function setOccupato(id, occupato, label) {
     } else {
         c.classList.remove('assente');
         c.setAttribute('draggable','true');
-        const inRespinte = c.closest('#ferieRespinteList');
         const s = c.querySelector('small');
-        if (inRespinte) {
-            // resta nella casella respinte: mantiene l'etichetta rossa
-            const lbl = s || (() => { const e = document.createElement('small'); c.querySelector('.persona-nome').appendChild(e); return e; })();
-            lbl.style.color = 'var(--rosso)';
-            lbl.textContent = 'ferie respinta';
-        } else if (s) {
-            s.remove();
-        }
+        if (s) s.remove();
     }
     aggiornaContatore();
     updateRespinteCount();
@@ -2071,8 +2058,8 @@ function buildAssenteRow(p, tipoCodice) {
 // ════════════════════════════════════════════════════════════
 document.addEventListener('dragstart', function(e) {
     if (BLOCCATO) { e.preventDefault(); return; }
-    // 1. Da organico o da ferie respinte
-    const persCard = e.target.closest('#organicoList .persona-card, #ferieRespinteList .persona-card');
+    // 1. Da organico (il box "Ferie respinte" è sola lettura, non si trascina)
+    const persCard = e.target.closest('#organicoList .persona-card');
     if (persCard && !persCard.classList.contains('assente')) {
         _dragId     = parseInt(persCard.dataset.id);
         _dragSource = 'organico';
@@ -2353,6 +2340,9 @@ document.addEventListener('drop', async function(e) {
         updateUfficioCount();
     }
 
+    // Riapprovata una ferie respinta → esce dal box "Ferie respinte"
+    if (colId === 'colFerie') rimuoviCardRespinta(vigileId);
+
     if (!p.saltoCanon) setOccupato(vigileId, true, 'assente');
     showMsg('📋 ' + p.nome + ' → ' + tipoCodice + '.');
 });
@@ -2423,23 +2413,42 @@ async function rimuoviDaAssenza(vigileId) {
     }
 }
 
-// Sposta la card del vigile nella casella "Ferie respinte"
+// Ferie respinta (deny da foglio): il vigile torna DISPONIBILE in organico
+// (card normale, trascinabile) e compare un promemoria sola-lettura nel box.
 function spostaInFerieRespinte(vigileId) {
-    const c    = document.getElementById('pers-' + vigileId);
+    const p = PERSONALE[vigileId];
+    if (p && !p.saltoCanon) setOccupato(vigileId, false);
+    aggiungiCardRespinta(vigileId);
+}
+
+// Aggiunge la card promemoria (non trascinabile) nel box "Ferie respinte".
+function aggiungiCardRespinta(vigileId) {
     const list = document.getElementById('ferieRespinteList');
-    if (!c || !list) return;
-    c.classList.remove('assente');
-    c.setAttribute('draggable', 'true');
-    let s = c.querySelector('small');
-    if (!s) {
-        s = document.createElement('small');
-        c.querySelector('.persona-nome').appendChild(s);
-    }
-    s.style.color  = 'var(--rosso)';
-    s.textContent  = 'ferie respinta';
+    const p    = PERSONALE[vigileId];
+    if (!list || !p) return;
+    if (document.getElementById('resp-' + vigileId)) return; // già presente
     list.querySelector('.ferie-respinte-vuoto')?.remove();
-    list.appendChild(c);
-    aggiornaContatore();
+    const sedeBadge = (!p.sedeCentrale && p.sede)
+        ? `<span class="persona-salto">${p.sede}</span>` : '';
+    list.insertAdjacentHTML('beforeend',
+        `<div class="persona-card" id="resp-${p.id}" data-id="${p.id}" style="cursor:default">
+            <span class="qual-dot ${p.qcodice}"></span>
+            <span class="persona-nome" style="color:${colorePatente(p.patente)}">
+                ${p.nome}<small style="color:var(--rosso)">ferie respinta</small>
+            </span>${sedeBadge}
+         </div>`);
+    updateRespinteCount();
+}
+
+// Rimuove la card promemoria dal box (quando la ferie torna approvata).
+function rimuoviCardRespinta(vigileId) {
+    document.getElementById('resp-' + vigileId)?.remove();
+    const list = document.getElementById('ferieRespinteList');
+    if (list && !list.querySelector('.persona-card')
+            && !list.querySelector('.ferie-respinte-vuoto')) {
+        list.insertAdjacentHTML('beforeend',
+            '<div class="ferie-respinte-vuoto">Nessuna ferie respinta per questo turno.</div>');
+    }
     updateRespinteCount();
 }
 
