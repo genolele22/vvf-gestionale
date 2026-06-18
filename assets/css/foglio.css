@@ -334,11 +334,19 @@ body.cruscotto-bloccato .foglio-layout {
     gap: 6px;
 }
 
-/* DISTACCAMENTI: fascia unica, squadre in griglia densa (come ODT) */
+/* DISTACCAMENTI: fascia unica SENZA cornice (niente box/ombra/padding) così le
+   squadre usano tutta la larghezza disponibile; resta solo la testata-etichetta. */
+.sede-distaccamenti {
+    background: none;
+    box-shadow: none;
+    border-radius: 0;
+    overflow: visible;
+}
 .sede-distaccamenti .sede-body {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
     gap: 6px;
+    padding: 0;
 }
 
 /* AEROPORTO: le 5 posizioni distribuite sull'intera larghezza, una riga */
