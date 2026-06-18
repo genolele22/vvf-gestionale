@@ -2054,6 +2054,45 @@ function getDragAfterElement(body, y) {
     return closest.element;
 }
 
+// ── Placeholder di riordino: il "gap" che mostra dove cadrà la card ──
+let _ph = null;
+function ensurePlaceholder() {
+    if (!_ph) { _ph = document.createElement('div'); _ph.className = 'reorder-ph'; }
+    return _ph;
+}
+function removePlaceholder() {
+    _ph?.parentElement?.removeChild(_ph);
+    document.querySelectorAll('.pos-card.reorder-target')
+        .forEach(el => el.classList.remove('reorder-target'));
+    // Ripristina la card trascinata eventualmente nascosta durante il riordino
+    document.querySelectorAll('.ass-card.dragging')
+        .forEach(c => { c.style.display = ''; });
+}
+// Durante il dragover: se sto riordinando nella STESSA squadra, apri il gap
+// nel punto di inserimento (e nascondo la card trascinata, così resta un solo
+// spazio chiaro); altrimenti togli il placeholder.
+function gestisciPlaceholderRiordino(target, y) {
+    if (_dragSource === 'posizione' && target && target.classList?.contains('pos-card')) {
+        const dragged = document.getElementById('ass-' + _dragId);
+        if (dragged && parseInt(dragged.dataset.posId) === parseInt(target.dataset.posId)) {
+            const body  = document.getElementById('body-' + target.dataset.posId);
+            dragged.style.display = 'none';       // libera lo slot originale
+            const after = getDragAfterElement(body, y);
+            const ph    = ensurePlaceholder();
+            if (after) {
+                if (ph.nextSibling !== after) body.insertBefore(ph, after);
+            } else {
+                const firstEmpty = body.querySelector('.slot-empty');
+                if (firstEmpty) { if (ph !== firstEmpty.previousSibling) body.insertBefore(ph, firstEmpty); }
+                else if (body.lastElementChild !== ph) body.appendChild(ph);
+            }
+            target.classList.add('reorder-target');
+            return;
+        }
+    }
+    removePlaceholder();
+}
+
 // Rimuove dal DOM da qualsiasi posto (senza toccare la riga salto canonico)
 function rimuoviDOM(id) {
     const p = PERSONALE[id];
@@ -2219,6 +2258,7 @@ document.addEventListener('dragstart', function(e) {
 document.addEventListener('dragend', function() {
     document.querySelectorAll('.dragging').forEach(el => el.classList.remove('dragging'));
     document.querySelectorAll('.drop-target').forEach(el => el.classList.remove('drop-target'));
+    removePlaceholder();
     _stopAutoScroll();
     _dragId     = null;
     _dragSource = null;
@@ -2260,6 +2300,8 @@ document.addEventListener('dragover', function(e) {
             .forEach(el => { if (el !== target) el.classList.remove('drop-target'); });
         target.classList.add('drop-target');
     }
+    // Riordino stessa squadra: apri/sposta il gap di inserimento
+    gestisciPlaceholderRiordino(target, e.clientY);
 });
 
 document.addEventListener('dragleave', function(e) {
@@ -2321,9 +2363,15 @@ document.addEventListener('drop', async function(e) {
         if (source === 'posizione' && draggedCard
                 && parseInt(draggedCard.dataset.posId) === posId) {
             const body = document.getElementById('body-' + posId);
-            const after = getDragAfterElement(body, e.clientY);
-            if (after) body.insertBefore(draggedCard, after);
-            else       body.appendChild(draggedCard);
+            // Atterra esattamente dove c'è il gap mostrato; se non c'è, ricalcola.
+            if (_ph && _ph.parentElement === body) {
+                body.insertBefore(draggedCard, _ph);
+            } else {
+                const after = getDragAfterElement(body, e.clientY);
+                if (after) body.insertBefore(draggedCard, after);
+                else       body.appendChild(draggedCard);
+            }
+            removePlaceholder();
             sincronizzaSlot(body);
             const ordini = [...body.querySelectorAll('.ass-card')]
                 .map(c => c.dataset.vigileId).join(',');

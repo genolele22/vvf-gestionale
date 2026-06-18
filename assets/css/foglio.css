@@ -439,14 +439,34 @@ body.cruscotto-bloccato .foglio-layout {
     font-size: .76rem;
     font-weight: 600;
     cursor: grab;
-    transition: background .15s, box-shadow .15s;
+    transition: background .15s, box-shadow .15s, transform .12s ease;
     user-select: none;
 }
 .ass-card:hover {
     background: #f0f7ff;
     box-shadow: 0 1px 4px rgba(0,0,0,.1);
 }
-.ass-card.dragging { opacity: .4; cursor: grabbing; }
+.ass-card.dragging { opacity: .35; cursor: grabbing; transform: scale(.95); }
+
+/* ── Riordino dentro la stessa squadra ── */
+/* Gap che mostra DOVE cadrà la card (lo "spazio" per capire l'inserimento) */
+.reorder-ph {
+    height: 26px;
+    border: 2px dashed var(--blu);
+    border-radius: 4px;
+    background: var(--blu-bg);
+    margin: 2px 0;
+    animation: phpulse .9s ease-in-out infinite;
+}
+@keyframes phpulse { 0%,100% { opacity:.5 } 50% { opacity:1 } }
+/* La squadra in cui stai riordinando: si ingrandisce un filo e si evidenzia */
+.pos-card.reorder-target {
+    box-shadow: 0 0 0 2px var(--blu), 0 6px 18px rgba(0,0,0,.12);
+    transform: scale(1.02);
+    transition: transform .12s ease, box-shadow .12s ease;
+    position: relative;
+    z-index: 5;
+}
 .ass-card .remove-btn {
     margin-left: auto;
     background: none;
