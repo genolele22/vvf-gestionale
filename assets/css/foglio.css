@@ -312,16 +312,11 @@ body.cruscotto-bloccato .foglio-layout {
 .griglia-wrapper {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-    gap: 8px;
+    gap: 6px;
     align-items: start;
 }
-/* I distaccamenti riempiono il loro blocco (niente spazio sprecato a destra) */
-.sede-block:not(.sede-full) .pos-card {
-    max-width: none;
-}
-
-/* Centrale e Aeroporto: blocco full-width con posizioni in griglia
-   (niente scroll orizzontale) — come nell'ODT */
+/* Tutte le fasce (Centrale, Distaccamenti, Aeroporto) sono full-width con le
+   posizioni in griglia: niente scroll orizzontale, come nell'ODT. */
 .sede-block.sede-full {
     grid-column: 1 / -1;
 }
@@ -331,22 +326,26 @@ body.cruscotto-bloccato .foglio-layout {
     flex: none;
 }
 
-/* CENTRALE: 7 colonne. CENTR-OP occupa 2 colonne così la riga A
-   (6 posizioni) si chiude a 7 e la serie B parte in seconda riga. */
+/* CENTRALE: 7 colonne uniformi. Tutte le posizioni a larghezza piena (CENTR-OP
+   non è più "wide") → 1SMZ resta in prima riga e la Centrale operativa è sottile. */
 .sede-centrale .sede-body {
     display: grid;
     grid-template-columns: repeat(7, minmax(0, 1fr));
-    gap: 8px;
+    gap: 6px;
 }
-.sede-centrale .pos-card.pos-wide {
-    grid-column: span 2;
+
+/* DISTACCAMENTI: fascia unica, squadre in griglia densa (come ODT) */
+.sede-distaccamenti .sede-body {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 6px;
 }
 
 /* AEROPORTO: le 5 posizioni distribuite sull'intera larghezza, una riga */
 .sede-aeroporto .sede-body {
     display: grid;
     grid-template-columns: repeat(5, minmax(0, 1fr));
-    gap: 8px;
+    gap: 6px;
 }
 
 /* Blocco sede */
@@ -359,8 +358,8 @@ body.cruscotto-bloccato .foglio-layout {
 .sede-head {
     background: var(--grigio-sc);
     color: var(--bianco);
-    padding: 5px 14px;
-    font-size: .82rem;
+    padding: 4px 12px;
+    font-size: .78rem;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: .5px;
@@ -371,8 +370,8 @@ body.cruscotto-bloccato .foglio-layout {
 .sede-body {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
-    padding: 8px;
+    gap: 6px;
+    padding: 6px;
 }
 
 /* Card posizione/mezzo */
@@ -394,8 +393,8 @@ body.cruscotto-bloccato .foglio-layout {
 .pos-head {
     background: var(--grigio-md);
     color: var(--bianco);
-    padding: 5px 10px;
-    font-size: .72rem;
+    padding: 3px 8px;
+    font-size: .68rem;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: .4px;
@@ -413,15 +412,15 @@ body.cruscotto-bloccato .foglio-layout {
 .pos-head.tipo-op  { background: #7b241c; } /* Centrale Op*/
 
 .pos-body {
-    padding: 5px;
+    padding: 4px;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 2px;
 }
 
 /* Slot vuoto: posto libero della squadra (presentazione a 7 posti fissi) */
 .slot-empty {
-    height: 26px;
+    height: 20px;
     border: 1px dashed #d8dce0;
     border-radius: 4px;
     background: repeating-linear-gradient(
@@ -582,12 +581,12 @@ body.cruscotto-bloccato .foglio-layout {
 
 /* ── Responsive ── */
 @media (max-width: 1024px) {
-    /* Centrale/Aeroporto: niente griglia fissa, le card vanno a capo */
+    /* Centrale/Distaccamenti/Aeroporto: niente griglia fissa, le card vanno a capo */
     .sede-centrale .sede-body,
+    .sede-distaccamenti .sede-body,
     .sede-aeroporto .sede-body {
         grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
     }
-    .sede-centrale .pos-card.pos-wide { grid-column: span 1; }
 }
 @media (max-width: 768px) {
     .foglio-layout          { grid-template-columns: 1fr; }

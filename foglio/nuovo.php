@@ -1430,26 +1430,30 @@ function colorePatentePHP(?string $patente): string {
     <div class="griglia-wrapper" id="grigliaPosizioni">
 
       <?php
-      // Ordine: Centrale (full-width) → distaccamenti → Aeroporto (full-width)
-      $sediCentrale      = array_filter($sedi, fn($s) => $s['codice'] === 'CENTR');
-      $sediAeroporto     = array_filter($sedi, fn($s) => $s['codice'] === 'AP');
-      $sediDistaccamenti = array_filter($sedi, fn($s) => !in_array($s['codice'], ['CENTR','AP']));
-      $sediOrdinati      = array_merge(
-          array_values($sediCentrale),
-          array_values($sediDistaccamenti),
-          array_values($sediAeroporto)
-      );
-      foreach ($sediOrdinati as $sede):
-        $posSede  = $posizioniPerSede[$sede['id']] ?? [];
+      // Layout a fasce piene (come ODT): Centrale → Distaccamenti (fascia UNICA)
+      // → Aeroporto. I distaccamenti non hanno più un box ciascuno: tutte le loro
+      // squadre stanno in un'unica fascia densa (la sigla nel codice posizione
+      // identifica già il distaccamento, es. ML-1A). Recupera spazio verticale.
+      $posCentrale = []; $posDistacc = []; $posAeroporto = [];
+      foreach ($sedi as $sede) {
+          $p = $posizioniPerSede[$sede['id']] ?? [];
+          if (!$p) continue;
+          if      ($sede['codice'] === 'CENTR') $posCentrale  = array_merge($posCentrale,  $p);
+          elseif  ($sede['codice'] === 'AP')    $posAeroporto = array_merge($posAeroporto, $p);
+          else                                  $posDistacc   = array_merge($posDistacc,   $p);
+      }
+      $blocchiGriglia = [
+          ['nome' => 'Centrale',      'class' => ' sede-full sede-centrale',      'pos' => $posCentrale],
+          ['nome' => 'Distaccamenti', 'class' => ' sede-full sede-distaccamenti', 'pos' => $posDistacc],
+          ['nome' => 'Aeroporto',     'class' => ' sede-full sede-aeroporto',     'pos' => $posAeroporto],
+      ];
+      foreach ($blocchiGriglia as $blocco):
+        $posSede = $blocco['pos'];
         if (empty($posSede)) continue;
-        $sedeFull  = in_array($sede['codice'], ['CENTR','AP']);
-        $sedeClass = '';
-        if ($sede['codice'] === 'CENTR') $sedeClass = ' sede-full sede-centrale';
-        elseif ($sede['codice'] === 'AP') $sedeClass = ' sede-full sede-aeroporto';
       ?>
-      <div class="sede-block<?= $sedeClass ?>">
+      <div class="sede-block<?= $blocco['class'] ?>">
         <div class="sede-head">
-          🏠 <?= htmlspecialchars($sede['nome']) ?>
+          🏠 <?= htmlspecialchars($blocco['nome']) ?>
           <span style="font-size:.72rem;opacity:.7;margin-left:auto">
             <?= count($posSede) ?> posizioni
           </span>
@@ -1468,10 +1472,8 @@ function colorePatentePHP(?string $patente): string {
             elseif (str_contains($codPos,'el-'))  $tipoHead = 'tipo-el';
             elseif (str_contains($codPos,'op'))   $tipoHead = 'tipo-op';
             elseif (str_contains($codPos,'b'))    $tipoHead = 'tipo-b';
-            // CENTR-OP occupa 2 colonne: chiude la riga A a 7 e manda 1B in seconda riga
-            $posWide = ($pos['codice'] === 'CENTR-OP') ? ' pos-wide' : '';
           ?>
-          <div class="pos-card<?= $posWide ?>"
+          <div class="pos-card"
                id="pos-<?= $pos['id'] ?>"
                data-pos-id="<?= $pos['id'] ?>"
                ondragover="event.preventDefault();this.classList.add('drag-over')"
