@@ -1488,6 +1488,7 @@ function colorePatentePHP(?string $patente): string {
           <div class="pos-card"
                id="pos-<?= $pos['id'] ?>"
                data-pos-id="<?= $pos['id'] ?>"
+               data-sede="<?= htmlspecialchars($pos['sede_codice'] ?? '') ?>"
                ondragover="event.preventDefault();this.classList.add('drag-over')"
                ondragleave="this.classList.remove('drag-over')"
                ondrop="onDropPosizione(event,<?= $pos['id'] ?>)">
@@ -1499,7 +1500,11 @@ function colorePatentePHP(?string $patente): string {
             <div class="pos-body" id="body-<?= $pos['id'] ?>" data-cap="<?= capPos((int)$pos['id']) ?>">
               <?php foreach ($assQui as $ass):
     $colore = colorePatentePHP($ass['patente_max'] ?? null);
-    $mostraSede = (!empty($ass['sede_nome']) && $ass['sede_nome'] !== 'CENTRALE');
+    // Sigla sede SOLO se il vigile è in servizio fuori dalla propria sede:
+    // sede del vigile ($ass['sede_codice']) ≠ sede della posizione ($pos['sede_codice']).
+    // Es. vigile di Multedo in posizione Multedo → niente sigla; in Centrale → "ML".
+    // Stessa logica dell'ODT (FoglioRenderer: sigla solo se vig_sede ≠ pos_sede).
+    $mostraSede = (!empty($ass['sede_codice']) && $ass['sede_codice'] !== ($pos['sede_codice'] ?? null));
 ?>
     <div class="ass-card"
          id="ass-<?= $ass['vigile_id'] ?>"
@@ -2061,7 +2066,10 @@ function colorePatente(patente) {
 // COSTRUTTORI HTML
 // ════════════════════════════════════════════════════════════
 function buildAssCard(p, posId, straord) {
-    const sedeBadge = (!p.sedeCentrale && p.sede)
+    // Sigla sede SOLO se il vigile lavora fuori dalla propria sede:
+    // sede del vigile (p.sede) ≠ sede della posizione (data-sede della pos-card).
+    const posSede   = document.getElementById('pos-' + posId)?.dataset.sede || '';
+    const sedeBadge = (p.sede && p.sede !== posSede)
         ? `<span class="persona-salto">${p.sede}</span>` : '';
     const strBadge = straord
         ? `<span style="font-size:.6rem;color:var(--giallo);
