@@ -287,7 +287,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $azioniModifica = ['salva_intestazione', 'assegna', 'rimuovi', 'assenza',
                        'rimuovi_assenza', 'metti_salto', 'richiama_salto', 'reset_foglio',
                        'ferie_ufficio', 'rimuovi_ufficio', 'scambia_salto', 'annulla_scambio',
-                       'riordina', 'copia_da_diurno'];
+                       'riordina', 'copia_da_diurno', 'scambia_posizioni'];
     if ($foglioBloccato && in_array($azione, $azioniModifica, true)) {
         echo json_encode(['ok' => false, 'bloccato' => true,
                           'errore' => 'Foglio bloccato. Sblocca per modificare.']);
@@ -364,6 +364,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         echo json_encode(['ok' => true]);
         exit;
+    }
+
+    // ── AJAX: scambia due vigili tra le loro posizioni ──────────
+    // Trascinando una card su un'altra card (in posizione diversa) i due si
+    // scambiano di posto: A prende posto/ordine di B e viceversa. Capienza
+    // invariata (il numero per posizione non cambia), quindi nessun "pieno".
+    if ($azione === 'scambia_posizioni') {
+        $aId = (int)($_POST['vigile_a_id'] ?? 0);
+        $bId = (int)($_POST['vigile_b_id'] ?? 0);
+        if (!$aId || !$bId || $aId === $bId) {
+            echo json_encode(['ok' => false, 'errore' => 'Selezione non valida.']); exit;
+        }
+        $st = $pdo->prepare(
+            "SELECT vigile_id, posizione_id, ordine
+             FROM assegnazioni WHERE foglio_id=? AND vigile_id IN (?,?)"
+        );
+        $st->execute([$foglioId, $aId, $bId]);
+        $rows = [];
+        foreach ($st->fetchAll() as $r) $rows[(int)$r['vigile_id']] = $r;
+        if (!isset($rows[$aId], $rows[$bId])) {
+            echo json_encode(['ok' => false, 'errore' => 'Uno dei due vigili non è assegnato a una posizione.']); exit;
+        }
+        $pdo->beginTransaction();
+        try {
+            $up = $pdo->prepare(
+                "UPDATE assegnazioni SET posizione_id=?, ordine=? WHERE foglio_id=? AND vigile_id=?"
+            );
+            $up->execute([(int)$rows[$bId]['posizione_id'], (int)$rows[$bId]['ordine'], $foglioId, $aId]);
+            $up->execute([(int)$rows[$aId]['posizione_id'], (int)$rows[$aId]['ordine'], $foglioId, $bId]);
+            $pdo->commit();
+        } catch (Throwable $e) {
+            $pdo->rollBack();
+            echo json_encode(['ok' => false, 'errore' => 'Errore DB: ' . $e->getMessage()]); exit;
+        }
+        echo json_encode(['ok' => true]); exit;
     }
 
     // ── AJAX: riordina i vigili dentro UNA posizione (per anzianità) ──
@@ -2552,6 +2587,20 @@ document.addEventListener('drop', async function(e) {
     if (target.classList.contains('pos-card')) {
         const posId   = parseInt(target.dataset.posId);
 
+        // ── Scambio: card trascinata su una card-PERSONA di un'ALTRA posizione.
+        // I due si scambiano di posto (A↔B). Se è la stessa posizione → riordino.
+        const overCard      = e.target.closest?.('.ass-card');
+        const draggedCardSw = document.getElementById('ass-' + vigileId);
+        if (source === 'posizione' && overCard && draggedCardSw) {
+            const targetVid = parseInt(overCard.dataset.vigileId);
+            const fromPos   = parseInt(draggedCardSw.dataset.posId);
+            const toPos     = parseInt(overCard.dataset.posId);
+            if (targetVid && targetVid !== vigileId && fromPos !== toPos) {
+                await eseguiScambioPosizioni(vigileId, draggedCardSw, targetVid, overCard);
+                return;
+            }
+        }
+
         // Riordino DENTRO la stessa squadra (per anzianità): se trascino una
         // card già in questa posizione, non riassegno — la sposto e salvo l'ordine.
         const draggedCard = document.getElementById('ass-' + vigileId);
@@ -2741,6 +2790,24 @@ async function eseguiAssegnaPos(vigileId, posId, straord) {
     }
     if (!p.saltoCanon) setOccupato(vigileId, true, 'in servizio');
     return 'ok';
+}
+
+// Scambia due vigili tra le loro posizioni (A↔B). Salva sul server, poi
+// scambia le due card nel DOM (ognuna prende lo slot dell'altra).
+async function eseguiScambioPosizioni(aVid, aCard, bVid, bCard) {
+    const res = await ajax({ azione: 'scambia_posizioni', vigile_a_id: aVid, vigile_b_id: bVid });
+    if (!res.ok) { showMsg('⚠️ ' + (res.errore || 'Errore.'), 'err'); return; }
+
+    const aBody = aCard.parentElement, bBody = bCard.parentElement;
+    const aAfter = aCard.nextSibling;   // riferimenti catturati prima di spostare
+    const bAfter = bCard.nextSibling;
+    aBody.insertBefore(bCard, aAfter);  // B prende lo slot di A
+    bBody.insertBefore(aCard, bAfter);  // A prende lo slot di B
+    aCard.dataset.posId = bBody.id.replace('body-', '');
+    bCard.dataset.posId = aBody.id.replace('body-', '');
+    sincronizzaSlot(aBody);
+    sincronizzaSlot(bBody);
+    showMsg('🔄 Scambiati di posto.');
 }
 
 // Manda il vigile alla prima posizione libera di una sede (sigla): scorre le
