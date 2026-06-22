@@ -2123,6 +2123,8 @@ let _dragSource = null;  // 'organico' | 'posizione' | 'salto'
 // UTILITY
 // ════════════════════════════════════════════════════════════
 function showMsg(txt, tipo = 'ok') {
+    // Niente striscia di conferma ad ogni movimento: mostro solo gli errori.
+    if (tipo !== 'err') return;
     const b = document.getElementById('msgBox');
     b.innerHTML = `<div class="alert alert-${tipo}">${txt}</div>`;
     setTimeout(() => b.innerHTML = '', 3500);
@@ -2773,12 +2775,11 @@ function buildCtxMenu() {
     m.style.display = 'none';
     m.innerHTML =
         `<div class="ctx-nome" id="ctxNome"></div>
+         <button type="button" class="ctx-has-sub" data-act="SEDI">🏢 Manda a sede<span>▸</span></button>
+         <div class="ctx-sep"></div>
          <button type="button" data-act="FER">🏖️ Ferie</button>
          <button type="button" data-act="PERM">📄 Permesso</button>
-         <button type="button" data-act="MISS">✈️ Missione</button>
-         <button type="button" data-act="SALTO">😴 Salto</button>
-         <div class="ctx-sep"></div>
-         <button type="button" class="ctx-has-sub" data-act="SEDI">🏢 Manda a sede<span>▸</span></button>`;
+         <button type="button" data-act="MISS">✈️ Missione</button>`;
     document.body.appendChild(m);
 
     // Sottomenu sedi: elemento separato (la .ctx-menu ha overflow:hidden e lo taglierebbe)
@@ -2804,8 +2805,7 @@ function buildCtxMenu() {
         const vid = _ctxVigileId;
         nascondiCtxMenu();
         if (vid == null) return;
-        if (act === 'SALTO') await azioneSalto(vid);
-        else                 await azioneAssenza(vid, act);
+        await azioneAssenza(vid, act);
     });
     // Su desktop, apri il sottomenu anche passandoci sopra
     m.querySelector('.ctx-has-sub')?.addEventListener('mouseenter', apriSubSedi);
