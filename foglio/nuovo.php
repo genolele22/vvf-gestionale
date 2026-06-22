@@ -1949,15 +1949,21 @@ function colorePatentePHP(?string $patente): string {
 
           <label style="font-size:.68rem;font-weight:700;text-transform:uppercase;
                         color:var(--grigio-md)">Entra in salto (riposa al suo posto)</label>
+          <?php
+            // Tutti i disponibili del blocco (controparti di ogni altro slot),
+            // in un'unica lista alfabetica: niente suddivisione per salto.
+            $contropartiVigili = [];
+            foreach ($contropartiSlot as $k => $occ) {
+                foreach ($vigiliPerSlot[$k] ?? [] as $v) $contropartiVigili[] = $v;
+            }
+            usort($contropartiVigili, fn($a, $b) =>
+                strcmp($a['cognome'].' '.$a['nome'], $b['cognome'].' '.$b['nome']));
+          ?>
           <select id="csVigileB" style="padding:6px;border:1px solid #d5d8dc;
                   border-radius:5px;font-size:.8rem">
             <option value="">— seleziona —</option>
-            <?php foreach ($contropartiSlot as $k => $occ): ?>
-              <optgroup label="B<?= (int)$k ?> — riposo <?= date('d/m', strtotime($occ['dataD'])) ?>">
-                <?php foreach ($vigiliPerSlot[$k] ?? [] as $v): ?>
-                  <option value="<?= (int)$v['id'] ?>"><?= htmlspecialchars(etichettaVigile($v)) ?></option>
-                <?php endforeach; ?>
-              </optgroup>
+            <?php foreach ($contropartiVigili as $v): ?>
+              <option value="<?= (int)$v['id'] ?>"><?= htmlspecialchars(etichettaVigile($v)) ?></option>
             <?php endforeach; ?>
           </select>
 
@@ -3166,12 +3172,11 @@ async function salvaCambioSalto() {
     const nomeA = selA.options[selA.selectedIndex]?.text || '';
     const optB  = selB.options[selB.selectedIndex];
     const nomeB = optB?.text || '';
-    const grpB  = optB?.parentNode?.label || '';   // es. "B6 — riposo 12/07"
     chiediConferma({
         titolo:  'Conferma scambio salto',
         testo:   `Stai scambiando il salto:<br><br>` +
                  `• <b>${nomeA}</b> (B${window.CS_SLOT_A || '?'}) cede il riposo e torna in servizio<br>` +
-                 `• <b>${nomeB}</b> (${grpB}) va a riposo al suo posto<br><br>` +
+                 `• <b>${nomeB}</b> va a riposo al suo posto<br><br>` +
                  `E viceversa sull'altra data del blocco. Confermi?`,
         okLabel: '🔄 Esegui scambio',
         okStyle: 'background:var(--rosso);color:#fff',
