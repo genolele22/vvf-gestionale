@@ -301,6 +301,14 @@ if (!$foglio) {
 }
 $foglioId = (int)$foglio['id'];
 
+// Se il foglio esiste ma non ha capo (es. pool capi popolato DOPO la creazione),
+// applica ora capo/vice + furieri dal pool/set fisso, senza toccare le squadre.
+if (empty($foglio['capo_servizio_id'])) {
+    prepopolaRuoli($pdo, $foglioId, resterEffettivi($pdo, $dataStr, $tipoParam, $saltoRiposoId));
+    $stmtF->execute([$dataStr, $tipoParam]);
+    $foglio = $stmtF->fetch();
+}
+
 // ── Servizio precedente (per il tasto "Servizio precedente") ──
 // Il più recente foglio prima di questo: stessa data ma turno D (per un N),
 // altrimenti la data anteriore più vicina (D < N nello stesso giorno).
@@ -1193,16 +1201,6 @@ $ferieTutte   = $assenzePerTipo['FER'] ?? [];
 $ferieUfficio = array_values(array_filter($ferieTutte,
     fn($a) => !in_array((int)$a['vigile_id'], $idFerieRichiesta)));
 
-// Select per capo servizio e vice: solo Cr e Cs della CENTRALE, prima i Cr poi i Cs
-$dirigenti = $pdo->query(
-    "SELECT v.id, v.cognome, v.disambiguatore, q.codice AS qcodice
-     FROM vigili v
-     JOIN qualifiche q ON q.id = v.qualifica_id
-     JOIN sedi s       ON s.id = v.sede_id
-     WHERE v.attivo=1 AND q.codice IN ('Cr','Cs') AND s.codice='CENTR'
-     ORDER BY FIELD(q.codice,'Cr','Cs'), v.cognome"
-)->fetchAll();
-
 // Tipi assenza (RC escluso: il riposo compensativo è il salto turno → gestito
 // dal cambio salto nel riquadro Salto, non come assenza separata)
 $tipiAssenza = $pdo->query(
@@ -1283,6 +1281,21 @@ $furieri = $pdo->prepare(
 );
 $furieri->execute([$foglioId]);
 $furieri = $furieri->fetchAll();
+
+// Nomi capo/vice per le drop-zone (qualsiasi vigile, non solo Centrale).
+$stCV = $pdo->prepare(
+    "SELECT v.cognome, v.disambiguatore, q.codice AS qcodice
+     FROM vigili v JOIN qualifiche q ON q.id = v.qualifica_id WHERE v.id = ?"
+);
+$nomeRuolo = function ($id) use ($stCV): string {
+    $id = (int)$id;
+    if ($id <= 0) return '';
+    $stCV->execute([$id]);
+    $r = $stCV->fetch();
+    return $r ? etichettaVigile($r) : '';
+};
+$capoNome = $nomeRuolo($foglio['capo_servizio_id'] ?? 0);
+$viceNome = $nomeRuolo($foglio['vice_capo_id'] ?? 0);
 
 // Helper: etichetta vigile "CS Rossi 4"
 function etichettaVigile(array $v): string {
@@ -1469,37 +1482,27 @@ function colorePatentePHP(?string $patente): string {
         </div>
       </div>
 
-      <!-- Capo Servizio -->
+      <!-- Capo Servizio (drag: trascina qui un vigile) -->
       <div class="fh-field">
         <div class="fh-label">Capo Servizio</div>
-        <div class="fh-value fh-dropzone" id="dropCapoServizio"
-             title="Trascina qui un vigile, oppure scegli dalla tendina">
-          <select name="capo_servizio_id" id="csId">
-            <option value="">— seleziona —</option>
-            <?php foreach ($dirigenti as $d): ?>
-              <option value="<?= $d['id'] ?>"
-                <?= $foglio['capo_servizio_id']==$d['id'] ? 'selected':'' ?>>
-                <?= htmlspecialchars(etichettaVigile($d)) ?>
-              </option>
-            <?php endforeach; ?>
-          </select>
+        <div class="fh-value fh-dropzone" id="dropCapoServizio" title="Trascina qui un vigile">
+          <input type="hidden" name="capo_servizio_id" id="csId"
+                 value="<?= (int)($foglio['capo_servizio_id'] ?? 0) ?: '' ?>">
+          <span id="csNome" class="dz-nome<?= $capoNome ? '' : ' vuoto' ?>">
+            <?= $capoNome ? htmlspecialchars($capoNome) : 'Trascina qui…' ?>
+          </span>
         </div>
       </div>
 
-      <!-- Vice Capo Servizio -->
+      <!-- Vice Capo Servizio (drag: trascina qui un vigile) -->
       <div class="fh-field">
         <div class="fh-label">Vice Capo Servizio</div>
-        <div class="fh-value fh-dropzone" id="dropViceCapo"
-             title="Trascina qui un vigile, oppure scegli dalla tendina">
-          <select name="vice_capo_id" id="vcsId">
-            <option value="">— seleziona —</option>
-            <?php foreach ($dirigenti as $d): ?>
-              <option value="<?= $d['id'] ?>"
-                <?= $foglio['vice_capo_id']==$d['id'] ? 'selected':'' ?>>
-                <?= htmlspecialchars(etichettaVigile($d)) ?>
-              </option>
-            <?php endforeach; ?>
-          </select>
+        <div class="fh-value fh-dropzone" id="dropViceCapo" title="Trascina qui un vigile">
+          <input type="hidden" name="vice_capo_id" id="vcsId"
+                 value="<?= (int)($foglio['vice_capo_id'] ?? 0) ?: '' ?>">
+          <span id="vcsNome" class="dz-nome<?= $viceNome ? '' : ' vuoto' ?>">
+            <?= $viceNome ? htmlspecialchars($viceNome) : 'Trascina qui…' ?>
+          </span>
         </div>
       </div>
 
@@ -2617,15 +2620,9 @@ document.addEventListener('drop', async function(e) {
     // ── Drop su Capo Servizio / Vice Capo (barra intestazione) ─
     if (target.id === 'dropCapoServizio' || target.id === 'dropViceCapo') {
         const isCapo = (target.id === 'dropCapoServizio');
-        const sel    = document.getElementById(isCapo ? 'csId' : 'vcsId');
-        // La tendina contiene solo Cr/Cs: se manca, aggiungi l'opzione al volo
-        if (!sel.querySelector(`option[value="${vigileId}"]`)) {
-            const opt = document.createElement('option');
-            opt.value = vigileId;
-            opt.textContent = p.nome;
-            sel.appendChild(opt);
-        }
-        sel.value = String(vigileId);
+        document.getElementById(isCapo ? 'csId' : 'vcsId').value = String(vigileId);
+        const nomeEl = document.getElementById(isCapo ? 'csNome' : 'vcsNome');
+        if (nomeEl) { nomeEl.textContent = p.nome; nomeEl.classList.remove('vuoto'); }
         await salvaIntestazioneAjax();
         showMsg((isCapo ? '👤 Capo Servizio: ' : '👤 Vice Capo: ') + p.nome);
         return;

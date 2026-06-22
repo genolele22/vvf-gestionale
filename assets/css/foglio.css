@@ -106,6 +106,12 @@
 .fh-value select:focus,
 .fh-value input:focus { outline: none; }
 
+/* Drop-zone capo/vice (drag-only): nome corrente + placeholder */
+.fh-dropzone { cursor: default; transition: border-color .15s, background .15s; }
+.fh-dropzone.drop-target { border-color: var(--rosso); background: #fff0ee; box-shadow: 0 0 0 2px rgba(192,57,43,.2); }
+.dz-nome { display: block; }
+.dz-nome.vuoto { color: #bbb; font-weight: 500; font-style: italic; }
+
 /* ── Barra azioni foglio ── */
 .foglio-toolbar {
     display: flex;
