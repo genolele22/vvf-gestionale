@@ -85,6 +85,19 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, arra
         $tmpl[(int)$r['vigile_id']] = (int)$r['posizione_id'];
     }
 
+    // Assegnazioni FISSE (Amministrazione): override a priorità massima sulla
+    // posizione. Valgono per il turno corrente (tipo_turno = DN oppure D/N).
+    // Metodo 1: il vigile con regola fissa, se in servizio, ci va d'ufficio.
+    $fisse = [];
+    try {
+        $stF = $pdo->prepare(
+            "SELECT vigile_id, posizione_id FROM assegnazioni_fisse
+             WHERE tipo_turno='DN' OR tipo_turno=?"
+        );
+        $stF->execute([$tipoParam !== '' ? $tipoParam : 'DN']);
+        foreach ($stF->fetchAll() as $r) $fisse[(int)$r['vigile_id']] = (int)$r['posizione_id'];
+    } catch (Throwable $e) { /* tabella assente: nessuna regola fissa */ }
+
     // Tutte le posizioni di ogni sede, ordinate; + mappa posizione→sede
     $posizioniDiSede = [];
     $sedeDiPos       = [];
@@ -159,7 +172,8 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, arra
         if (isset($resters[$vid])) continue;
         if (isset($assentiIds[$vid])) continue;
 
-        $posEsplicita = $tmpl[$vid]
+        $posEsplicita = $fisse[$vid]
+            ?? $tmpl[$vid]
             ?? ($vp['posizione_default_id'] ? (int)$vp['posizione_default_id'] : null);
 
         if ($posEsplicita && ($conteggio[$posEsplicita] ?? 0) < capPos($posEsplicita)) {
