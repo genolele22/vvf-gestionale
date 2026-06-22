@@ -13,9 +13,10 @@ function capPos(int $posId): int {
     if ($map === null) {
         $map = [];
         $cap = FoglioRenderer::slotCapacities();   // codice → n. slot
-        // Override editor: 5A e 1SMZ stanno a 6 slot (non 7) per avere più visione
-        // a schermo. Non tocca l'ODT (il modello mantiene le sue celle).
-        $override = ['5A' => 6, '1SMZ' => 6];
+        // Override editor (non tocca l'ODT, che mantiene le sue celle):
+        //  - 5A e 1SMZ a 6 slot (più visione a schermo);
+        //  - BL-1A e RP-1A a 7 slot, uniformi agli altri distaccamenti.
+        $override = ['5A' => 6, '1SMZ' => 6, 'BL-1A' => 7, 'RP-1A' => 7];
         foreach (getDB()->query("SELECT id, codice FROM posizioni") as $p) {
             $map[(int)$p['id']] = $override[$p['codice']]
                 ?? $cap[$p['codice']]

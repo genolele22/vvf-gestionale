@@ -425,7 +425,7 @@ body.cruscotto-bloccato .foglio-layout {
 
 /* Slot vuoto: posto libero della squadra (presentazione a 7 posti fissi) */
 .slot-empty {
-    height: 20px;
+    height: 28px;   /* identica all'altezza di .ass-card (slot vuoto = slot pieno) */
     border: 1px dashed #d8dce0;
     border-radius: 4px;
     background: repeating-linear-gradient(
@@ -437,6 +437,7 @@ body.cruscotto-bloccato .foglio-layout {
     display: flex;
     align-items: center;
     gap: 6px;
+    height: 28px;   /* altezza fissa: uguale a .slot-empty */
     padding: 5px 8px;
     background: var(--bianco);
     border: 1px solid #e8e8e8;
