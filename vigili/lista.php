@@ -33,7 +33,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    if ($cognome === '' || $qualifica_id === 0 || $sede_id === 0 || $salto_id === 0) {
+    // Azioni che lavorano solo sull'id (non richiedono i campi anagrafici):
+    // disattiva (soft, reversibile), riattiva, elimina definitivo (hard).
+    // Vanno gestite PRIMA della validazione, altrimenti il check "campi
+    // obbligatori" le bloccherebbe (la form manda solo azione + id).
+    if (in_array($azione, ['elimina', 'riattiva', 'elimina_def'], true)) {
+        $id = (int)($_POST['id'] ?? 0);
+        if ($id <= 0) {
+            $errore = 'Vigile non valido.';
+        } elseif ($azione === 'elimina') {
+            $pdo->prepare("UPDATE vigili SET attivo=0 WHERE id=?")->execute([$id]);
+            $sucesso = 'Vigile disattivato.';
+        } elseif ($azione === 'riattiva') {
+            $pdo->prepare("UPDATE vigili SET attivo=1 WHERE id=?")->execute([$id]);
+            $sucesso = 'Vigile riattivato.';
+        } else {
+            // elimina_def: cancellazione DEFINITIVA dal DB. Prima tutte le righe
+            // figlie con FK senza cascade, poi il vigile (patenti/abilitazioni
+            // vanno via in cascade). Tutto in transazione: o tutto o niente.
+            $pdo->beginTransaction();
+            try {
+                $pdo->prepare("DELETE FROM salto_override  WHERE vigile_out_id=? OR vigile_in_id=?")->execute([$id, $id]);
+                $pdo->prepare("DELETE FROM bot_scambi_salto WHERE vigile_a_id=? OR vigile_b_id=?")->execute([$id, $id]);
+                $pdo->prepare("DELETE FROM assegnazioni     WHERE vigile_id=?")->execute([$id]);
+                $pdo->prepare("DELETE FROM assenze          WHERE vigile_id=?")->execute([$id]);
+                $pdo->prepare("DELETE FROM salto_servizio   WHERE vigile_id=?")->execute([$id]);
+                $pdo->prepare("DELETE FROM foglio_furieri   WHERE vigile_id=?")->execute([$id]);
+                $pdo->prepare("DELETE FROM bot_requests     WHERE vigile_id=?")->execute([$id]);
+                $pdo->prepare("DELETE FROM bot_salto        WHERE vigile_id=?")->execute([$id]);
+                $pdo->prepare("DELETE FROM bot_outbox       WHERE vigile_id=?")->execute([$id]);
+                // Riferimenti "attore" sui fogli (non FK): azzerati per pulizia.
+                $pdo->prepare("UPDATE fogli_servizio SET capo_servizio_id=NULL WHERE capo_servizio_id=?")->execute([$id]);
+                $pdo->prepare("UPDATE fogli_servizio SET vice_capo_id=NULL      WHERE vice_capo_id=?")->execute([$id]);
+                $pdo->prepare("DELETE FROM vigili WHERE id=?")->execute([$id]);
+                $pdo->commit();
+                $sucesso = 'Vigile eliminato definitivamente.';
+            } catch (Throwable $e) {
+                $pdo->rollBack();
+                $errore = 'Impossibile eliminare il vigile: ' . $e->getMessage();
+            }
+        }
+    } elseif ($cognome === '' || $qualifica_id === 0 || $sede_id === 0 || $salto_id === 0) {
         $errore = 'Cognome, qualifica, sede e salto turno sono obbligatori.';
     } elseif ($email !== null && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $errore = 'Indirizzo email non valido.';
@@ -84,16 +124,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 )->execute([$id,(int)$aid]);
             }
             $sucesso = 'Vigile aggiornato correttamente.';
-
-        } elseif ($azione === 'elimina') {
-            $id = (int)($_POST['id'] ?? 0);
-            $pdo->prepare("UPDATE vigili SET attivo=0 WHERE id=?")->execute([$id]);
-            $sucesso = 'Vigile disattivato.';
-
-        } elseif ($azione === 'riattiva') {
-            $id = (int)($_POST['id'] ?? 0);
-            $pdo->prepare("UPDATE vigili SET attivo=1 WHERE id=?")->execute([$id]);
-            $sucesso = 'Vigile riattivato.';
         }
     }
 }
@@ -582,6 +612,18 @@ if (!empty($vigili)) {
                   </button>
                 </form>
               <?php endif; ?>
+
+              <!-- Elimina DEFINITIVO (hard): rimuove dal DB con tutto lo storico.
+                   Per trasferimenti/pensionamenti. Irreversibile → doppia conferma. -->
+              <form method="POST" action="lista.php"
+                    onsubmit="return confermaSubmit(this, 'Eliminare DEFINITIVAMENTE <?= htmlspecialchars(addslashes(ucfirst(strtolower($v['cognome'])).' '.$v['nome'])) ?>? Sparisce dal database con tutto il suo storico (fogli, ferie, salti). Operazione irreversibile — per disattivare temporaneamente usa Disattiva.', {titolo:'Elimina definitivamente', okLabel:'🗑️ Elimina dal DB', okStyle:'background:var(--rosso);color:#fff'})">
+                <input type="hidden" name="azione" value="elimina_def">
+                <input type="hidden" name="id" value="<?= $v['id'] ?>">
+                <button type="submit" class="btn btn-sm"
+                        style="background:var(--rosso);color:#fff">
+                  🗑️ Elimina
+                </button>
+              </form>
 
             </div>
           </td>
