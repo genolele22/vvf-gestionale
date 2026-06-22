@@ -1707,14 +1707,12 @@ function colorePatentePHP(?string $patente): string {
       //   r1 Centrale: CENTR-OP 1A 2A 3A 4A 5A 1SMZ
       //   r2 Centrale: 1B 2B-NBCR 3B 4B 1FUN 1SOP   (Aeroporto parte in col7, sotto 1SMZ)
       //   r3 Distacc.: ML-1A GE-1A BS-1A BL-1A RP-1A CH-1A
-      //   r4         : CH-1B (sotto Chiavari)
-      //   r5         : ML-1NAU GA-1NAU EL-1SMZ
+      //   r4         : ML-1NAU GA-1NAU EL-1SMZ ... CH-1B (sotto Chiavari)
       $cellaGriglia = [
           'CENTR-OP'=>[1,1],'1A'=>[2,1],'2A'=>[3,1],'3A'=>[4,1],'4A'=>[5,1],'5A'=>[6,1],'1SMZ'=>[7,1],
           '1B'=>[1,2],'2B-NBCR'=>[2,2],'3B'=>[3,2],'4B'=>[4,2],'1FUN-AUTORADIO'=>[5,2],'1SOP-AUTORIM'=>[6,2],
           'ML-1A'=>[1,3],'GE-1A'=>[2,3],'BS-1A'=>[3,3],'BL-1A'=>[4,3],'RP-1A'=>[5,3],'CH-1A'=>[6,3],
-          'CH-1B'=>[6,4],
-          'ML-1NAU'=>[1,5],'GA-1NAU'=>[2,5],'EL-1SMZ'=>[3,5],
+          'ML-1NAU'=>[1,4],'GA-1NAU'=>[2,4],'EL-1SMZ'=>[3,4],'CH-1B'=>[6,4],
       ];
       $ordineAP = ['AP-TEL','AP-1ROS','AP-1ASA','AP-1VI','AP-2VI'];
       ?>
@@ -1739,7 +1737,7 @@ function colorePatentePHP(?string $patente): string {
           ?>
 
           <?php if ($posAeroporto): ?>
-          <div class="aeroporto-col" style="grid-column:7;grid-row:2 / span 4">
+          <div class="aeroporto-col" style="grid-column:7;grid-row:2 / span 3">
             <div class="aeroporto-head">✈️ Aeroporto</div>
             <?php
             foreach ($ordineAP as $code):
