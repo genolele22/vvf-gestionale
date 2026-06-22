@@ -1455,16 +1455,6 @@ function colorePatentePHP(?string $patente): string {
         </div>
       </div>
 
-      <!-- Note generali -->
-      <div class="fh-field" style="grid-column:1/-1">
-        <div class="fh-label">Note generali</div>
-        <div class="fh-value">
-          <input type="text" name="note_generali" id="noteGenerali"
-                 placeholder="Note sul turno…"
-                 value="<?= htmlspecialchars($foglio['note_generali'] ?? '') ?>">
-        </div>
-      </div>
-
     </div>
     </form>
 
@@ -3313,7 +3303,6 @@ async function salvaIntestazioneAjax() {
         capo_servizio_id: document.getElementById('csId').value,
         vice_capo_id:     document.getElementById('vcsId').value,
         funzionario:      document.getElementById('funzionario').value,
-        note_generali:    document.getElementById('noteGenerali').value,
     });
     showMsg(res.ok ? '✅ Intestazione salvata.' : '⚠️ Errore.', res.ok ? 'ok':'err');
 }
