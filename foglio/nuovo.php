@@ -13,8 +13,13 @@ function capPos(int $posId): int {
     if ($map === null) {
         $map = [];
         $cap = FoglioRenderer::slotCapacities();   // codice → n. slot
+        // Override editor: 5A e 1SMZ stanno a 6 slot (non 7) per avere più visione
+        // a schermo. Non tocca l'ODT (il modello mantiene le sue celle).
+        $override = ['5A' => 6, '1SMZ' => 6];
         foreach (getDB()->query("SELECT id, codice FROM posizioni") as $p) {
-            $map[(int)$p['id']] = $cap[$p['codice']] ?? 7;   // 7 = fallback se codice non nel modello
+            $map[(int)$p['id']] = $override[$p['codice']]
+                ?? $cap[$p['codice']]
+                ?? 7;   // 7 = fallback se codice non nel modello
         }
     }
     return $map[$posId] ?? 7;
@@ -1633,55 +1638,26 @@ function colorePatentePHP(?string $patente): string {
           if ($ib === false) $ib = PHP_INT_MAX;
           return $ia <=> $ib;
       });
-      // Distaccamenti su 2 righe da 5: in fondo (seconda riga) Busalla (BS),
-      // Chiavari (CH), Rapallo (RP) ed EL-1SMZ; sopra restano ML/GA/GE/BL.
-      // Ordinamento stabile via [rango, indice] (gli altri restano in ordine).
-      $distInFondo = ['BS', 'CH', 'RP', 'EL'];
-      $i = 0;
-      foreach ($posDistacc as &$pd) {
-          $inFondo = in_array(substr($pd['codice'], 0, 2), $distInFondo, true) ? 1 : 0;
-          $pd['_ord'] = [$inFondo, $i++];
-      }
-      unset($pd);
-      usort($posDistacc, fn($a, $b) => $a['_ord'] <=> $b['_ord']);
-
-      $blocchiGriglia = [
-          ['nome' => 'Centrale',      'class' => ' sede-full sede-centrale',      'pos' => $posCentrale,  'head' => true],
-          ['nome' => 'Distaccamenti', 'class' => ' sede-full sede-distaccamenti', 'pos' => $posDistacc,   'head' => false],
-          ['nome' => 'Aeroporto',     'class' => ' sede-full sede-aeroporto',     'pos' => $posAeroporto, 'head' => true],
-      ];
-      foreach ($blocchiGriglia as $blocco):
-        $posSede = $blocco['pos'];
-        if (empty($posSede)) continue;
-      ?>
-      <div class="sede-block<?= $blocco['class'] ?>">
-        <?php if ($blocco['head']): ?>
-        <div class="sede-head">
-          🏠 <?= htmlspecialchars($blocco['nome']) ?>
-          <span style="font-size:.72rem;opacity:.7;margin-left:auto">
-            <?= count($posSede) ?> posizioni
-          </span>
-        </div>
-        <?php endif; ?>
-        <div class="sede-body">
-          <?php foreach ($posSede as $pos):
-            $assQui = $assPerPosizione[$pos['id']] ?? [];
-            // Tipo per colore testata
-            $codPos = strtolower($pos['codice']);
-            $tipoHead = 'tipo-a';
-            if (str_contains($codPos,'nbcr'))    $tipoHead = 'tipo-nbcr';
-            elseif (str_contains($codPos,'nau'))  $tipoHead = 'tipo-nau';
-            elseif (str_contains($codPos,'smz'))  $tipoHead = 'tipo-smz';
-            elseif (str_contains($codPos,'fun') || str_contains($codPos,'sop')) $tipoHead = 'tipo-fun';
-            elseif (str_contains($codPos,'ap-'))  $tipoHead = 'tipo-ap';
-            elseif (str_contains($codPos,'el-'))  $tipoHead = 'tipo-el';
-            elseif (str_contains($codPos,'op'))   $tipoHead = 'tipo-op';
-            elseif (str_contains($codPos,'b'))    $tipoHead = 'tipo-b';
+      // Card-renderer condiviso (Centrale + Distaccamenti + Aeroporto).
+      // $gridStyle = posizionamento esplicito su griglia (es. "grid-column:6;grid-row:2").
+      $renderPosCard = function (array $pos, string $gridStyle = '') use (&$assPerPosizione, $scambioOut) {
+          $assQui = $assPerPosizione[$pos['id']] ?? [];
+          $codPos = strtolower($pos['codice']);
+          $tipoHead = 'tipo-a';
+          if (str_contains($codPos,'nbcr'))    $tipoHead = 'tipo-nbcr';
+          elseif (str_contains($codPos,'nau'))  $tipoHead = 'tipo-nau';
+          elseif (str_contains($codPos,'smz'))  $tipoHead = 'tipo-smz';
+          elseif (str_contains($codPos,'fun') || str_contains($codPos,'sop')) $tipoHead = 'tipo-fun';
+          elseif (str_contains($codPos,'ap-'))  $tipoHead = 'tipo-ap';
+          elseif (str_contains($codPos,'el-'))  $tipoHead = 'tipo-el';
+          elseif (str_contains($codPos,'op'))   $tipoHead = 'tipo-op';
+          elseif (str_contains($codPos,'b'))    $tipoHead = 'tipo-b';
           ?>
           <div class="pos-card"
                id="pos-<?= $pos['id'] ?>"
                data-pos-id="<?= $pos['id'] ?>"
                data-sede="<?= htmlspecialchars($pos['sede_codice'] ?? '') ?>"
+               <?= $gridStyle ? 'style="'.htmlspecialchars($gridStyle).'"' : '' ?>
                ondragover="event.preventDefault();this.classList.add('drag-over')"
                ondragleave="this.classList.remove('drag-over')"
                ondrop="onDropPosizione(event,<?= $pos['id'] ?>)">
@@ -1692,56 +1668,110 @@ function colorePatentePHP(?string $patente): string {
 
             <div class="pos-body" id="body-<?= $pos['id'] ?>" data-cap="<?= capPos((int)$pos['id']) ?>">
               <?php foreach ($assQui as $ass):
-    $colore = colorePatentePHP($ass['patente_max'] ?? null);
-    // Sigla sede SOLO se il vigile è in servizio fuori dalla propria sede:
-    // sede del vigile ($ass['sede_codice']) ≠ sede della posizione ($pos['sede_codice']).
-    // Es. vigile di Multedo in posizione Multedo → niente sigla; in Centrale → "ML".
-    // Stessa logica dell'ODT (FoglioRenderer: sigla solo se vig_sede ≠ pos_sede).
-    $mostraSede = (!empty($ass['sede_codice']) && $ass['sede_codice'] !== ($pos['sede_codice'] ?? null));
-    $nomeCompleto = ucfirst(strtolower($ass['qcodice'])).' '.ucfirst(strtolower($ass['cognome'])).
-                    ($ass['disambiguatore'] ? ' '.$ass['disambiguatore'] : '');
-?>
-    <div class="ass-card"
-         id="ass-<?= $ass['vigile_id'] ?>"
-         data-vigile-id="<?= $ass['vigile_id'] ?>"
-         data-pos-id="<?= $pos['id'] ?>"
-         draggable="true">
-
-        <span class="qual-dot <?= htmlspecialchars($ass['qcodice']) ?>"></span>
-
-        <span class="ass-nome" style="color:<?= $colore ?>"
-              title="<?= htmlspecialchars($nomeCompleto) ?>">
-            <span class="ass-nome-txt"><?= htmlspecialchars($nomeCompleto) ?></span>
-            <?php if ($mostraSede): ?>
-                <span class="persona-salto"><?= htmlspecialchars(siglaSede($ass['sede_codice'])) ?></span>
-            <?php endif; ?>
-            <?php if (isset($scambioOut[(int)$ass['vigile_id']])): ?>
-                <span class="scambio-badge"
-                      style="font-size:.6rem;color:#0a58ca;font-weight:700"
-                      title="Ha ceduto il salto per scambio turno">🔄</span>
-            <?php endif; ?>
-            <?php if ($ass['in_straordinario']): ?>
-                <span style="font-size:.6rem;color:var(--giallo);
-                             font-weight:700">STR</span>
-            <?php endif; ?>
-        </span>
-
-        <button class="remove-btn"
-                onclick="rimuoviDaPosizione(<?= $ass['vigile_id'] ?>)"
-                title="Rimuovi">✕</button>
-    </div>
-<?php endforeach; ?>
-              <?php // Slot vuoti fino alla capienza ODT della posizione (stessi spazi del modulo)
+                  $colore = colorePatentePHP($ass['patente_max'] ?? null);
+                  // Sigla sede SOLO se il vigile è fuori dalla propria sede (come ODT).
+                  $mostraSede = (!empty($ass['sede_codice']) && $ass['sede_codice'] !== ($pos['sede_codice'] ?? null));
+                  $nomeCompleto = ucfirst(strtolower($ass['qcodice'])).' '.ucfirst(strtolower($ass['cognome'])).
+                                  ($ass['disambiguatore'] ? ' '.$ass['disambiguatore'] : '');
+              ?>
+                <div class="ass-card"
+                     id="ass-<?= $ass['vigile_id'] ?>"
+                     data-vigile-id="<?= $ass['vigile_id'] ?>"
+                     data-pos-id="<?= $pos['id'] ?>"
+                     draggable="true">
+                  <span class="qual-dot <?= htmlspecialchars($ass['qcodice']) ?>"></span>
+                  <span class="ass-nome" style="color:<?= $colore ?>"
+                        title="<?= htmlspecialchars($nomeCompleto) ?>">
+                    <span class="ass-nome-txt"><?= htmlspecialchars($nomeCompleto) ?></span>
+                    <?php if ($mostraSede): ?>
+                        <span class="persona-salto"><?= htmlspecialchars(siglaSede($ass['sede_codice'])) ?></span>
+                    <?php endif; ?>
+                    <?php if (isset($scambioOut[(int)$ass['vigile_id']])): ?>
+                        <span class="scambio-badge"
+                              style="font-size:.6rem;color:#0a58ca;font-weight:700"
+                              title="Ha ceduto il salto per scambio turno">🔄</span>
+                    <?php endif; ?>
+                    <?php if ($ass['in_straordinario']): ?>
+                        <span style="font-size:.6rem;color:var(--giallo);font-weight:700">STR</span>
+                    <?php endif; ?>
+                  </span>
+                  <button class="remove-btn"
+                          onclick="rimuoviDaPosizione(<?= $ass['vigile_id'] ?>)"
+                          title="Rimuovi">✕</button>
+                </div>
+              <?php endforeach; ?>
+              <?php // Slot vuoti fino alla capienza della posizione
               for ($i = count($assQui); $i < capPos((int)$pos['id']); $i++): ?>
                 <div class="slot-empty"></div>
               <?php endfor; ?>
             </div>
-
           </div><!-- /.pos-card -->
-          <?php endforeach; ?>
-        </div><!-- /.sede-body -->
-      </div><!-- /.sede-block -->
-      <?php endforeach; ?>
+          <?php
+      };
+
+      // Indici per codice
+      $distByCode = [];
+      foreach ($posDistacc   as $pd) $distByCode[$pd['codice']] = $pd;
+      $apByCode = [];
+      foreach ($posAeroporto as $pa) $apByCode[$pa['codice']] = $pa;
+      ?>
+
+      <!-- CENTRALE: griglia 7 colonne -->
+      <?php if ($posCentrale): ?>
+      <div class="sede-block sede-full sede-centrale">
+        <div class="sede-head">
+          🏠 Centrale
+          <span style="font-size:.72rem;opacity:.7;margin-left:auto"><?= count($posCentrale) ?> posizioni</span>
+        </div>
+        <div class="sede-body">
+          <?php foreach ($posCentrale as $pos) $renderPosCard($pos); ?>
+        </div>
+      </div>
+      <?php endif; ?>
+
+      <!-- DISTACCAMENTI + AEROPORTO: griglia 7 colonne, posizionamento esplicito.
+           r1: ML-1A GE-1A BS-1A BL-1A RP-1A CH-1A | col7 = Aeroporto (verticale)
+           r2: CH-1B (sotto CH-1A)
+           r3 (ultima riga): ML-1NAU GA-1NAU EL-1SMZ -->
+      <?php
+      $cellaDist = [
+          'ML-1A'=>[1,1], 'GE-1A'=>[2,1], 'BS-1A'=>[3,1], 'BL-1A'=>[4,1], 'RP-1A'=>[5,1], 'CH-1A'=>[6,1],
+          'CH-1B'=>[6,2],
+          'ML-1NAU'=>[1,3], 'GA-1NAU'=>[2,3], 'EL-1SMZ'=>[3,3],
+      ];
+      $ordineAP = ['AP-TEL','AP-1ROS','AP-1ASA','AP-1VI','AP-2VI'];
+      ?>
+      <?php if ($posDistacc || $posAeroporto): ?>
+      <div class="sede-block sede-full sede-distaccamenti">
+        <div class="sede-body sede-distacc-grid">
+          <?php
+          foreach ($cellaDist as $code => [$c, $r]):
+              if (isset($distByCode[$code])) $renderPosCard($distByCode[$code], "grid-column:$c;grid-row:$r");
+          endforeach;
+          // Fallback: distaccamenti non mappati (se il DB ne aggiunge) → riga 4
+          $leftCol = 1;
+          foreach ($posDistacc as $pd):
+              if (isset($cellaDist[$pd['codice']])) continue;
+              $renderPosCard($pd, "grid-column:".($leftCol++).";grid-row:4");
+          endforeach;
+          ?>
+
+          <?php if ($posAeroporto): ?>
+          <div class="aeroporto-col" style="grid-column:7;grid-row:1 / span 3">
+            <div class="aeroporto-head">✈️ Aeroporto</div>
+            <?php
+            foreach ($ordineAP as $code):
+                if (isset($apByCode[$code])) $renderPosCard($apByCode[$code]);
+            endforeach;
+            foreach ($posAeroporto as $pa):
+                if (!in_array($pa['codice'], $ordineAP, true)) $renderPosCard($pa);
+            endforeach;
+            ?>
+          </div>
+          <?php endif; ?>
+        </div>
+      </div>
+      <?php endif; ?>
 
     </div><!-- /.griglia-wrapper -->
 

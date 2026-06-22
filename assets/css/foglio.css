@@ -342,18 +342,29 @@ body.cruscotto-bloccato .foglio-layout {
     border-radius: 0;
     overflow: visible;
 }
-.sede-distaccamenti .sede-body {
+/* DISTACCAMENTI + AEROPORTO: stessa griglia a 7 colonne della Centrale.
+   I distaccamenti sono posizionati esplicitamente (grid-column/grid-row inline),
+   l'Aeroporto occupa la 7ª colonna (sotto 1SMZ) in verticale. */
+.sede-distaccamenti .sede-body.sede-distacc-grid {
     display: grid;
-    grid-template-columns: repeat(5, 1fr);   /* 5 distaccamenti per riga */
+    grid-template-columns: repeat(7, minmax(0, 1fr));
     gap: 6px;
     padding: 0;
+    align-items: start;
 }
-
-/* AEROPORTO: le 5 posizioni distribuite sull'intera larghezza, una riga */
-.sede-aeroporto .sede-body {
-    display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+/* AEROPORTO: colonna verticale a destra, senza cornice (solo l'etichetta) */
+.aeroporto-col {
+    display: flex;
+    flex-direction: column;
     gap: 6px;
+}
+.aeroporto-head {
+    font-size: .68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .4px;
+    color: var(--grigio-md);
+    padding: 1px 2px;
 }
 
 /* Blocco sede */
@@ -627,10 +638,11 @@ body.cruscotto-bloccato .foglio-layout {
 
 /* ── Responsive ── */
 @media (max-width: 1024px) {
-    /* Centrale/Distaccamenti/Aeroporto: niente griglia fissa, le card vanno a capo */
+    /* Centrale/Distaccamenti: niente griglia fissa, le card vanno a capo.
+       (Sui distaccamenti il posizionamento esplicito inline resta, ma con
+       auto-fit le righe extra si compattano comunque su schermi stretti.) */
     .sede-centrale .sede-body,
-    .sede-distaccamenti .sede-body,
-    .sede-aeroporto .sede-body {
+    .sede-distaccamenti .sede-body.sede-distacc-grid {
         grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
     }
 }
