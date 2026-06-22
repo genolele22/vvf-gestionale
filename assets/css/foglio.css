@@ -330,7 +330,9 @@ body.cruscotto-bloccato .foglio-layout {
    colonne, posizionate esplicitamente (grid-column/grid-row inline). Tutto
    impacchettato in alto (align-items:start). L'Aeroporto occupa la 7ª colonna
    partendo direttamente sotto 1SMZ (riga 2). */
-.griglia-unica {
+/* .sede-body.griglia-unica → specificità (0,2,0) per battere la regola
+   generica .sede-body (display:flex) definita più sotto nel file. */
+.sede-body.griglia-unica {
     display: grid;
     grid-template-columns: repeat(7, minmax(0, 1fr));
     gap: 6px;
@@ -624,7 +626,7 @@ body.cruscotto-bloccato .foglio-layout {
 @media (max-width: 1024px) {
     /* Griglia unica: niente griglia fissa su schermi stretti, le card vanno a
        capo (il posizionamento esplicito inline resta ma auto-fit compatta). */
-    .griglia-unica {
+    .sede-body.griglia-unica {
         grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
     }
 }
