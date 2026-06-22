@@ -67,7 +67,8 @@ function resterEffettivi(PDO $pdo, string $dataStr, string $tipoParam, int $salt
 // esplicita (template ODT / default) ci va; gli altri vengono SPALMATI sulle
 // posizioni della loro sede, riempiendo fino a capienza in ordine.
 // $resters = insieme effettivo dei riposanti (default ± scambi salto).
-function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, array $resters): void {
+function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, array $resters,
+                               string $dataStr = '', string $tipoParam = ''): void {
     $pdo->prepare("DELETE FROM assegnazioni WHERE foglio_id=?")->execute([$foglioId]);
 
     // Posizione da montaggio ODT per questo salto canonico
@@ -102,6 +103,21 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, arra
         if ($n === 2) return 1;
         return 2;
     };
+
+    // Chi era in SALTO TURNO il turno PRECEDENTE: questi (in centrale) vanno in 1A.
+    // Turno prima: per un N = il D dello stesso giorno; per un D = l'N del giorno prima.
+    // Sono i riposanti effettivi (salto ± scambi approvati) di quel turno.
+    $eraInSaltoPrima = [];
+    if ($dataStr !== '' && $tipoParam !== '') {
+        if ($tipoParam === 'N') { $pd = $dataStr; $pt = 'D'; }
+        else { $pd = (new DateTime($dataStr))->modify('-1 day')->format('Y-m-d'); $pt = 'N'; }
+        $stPrevS = $pdo->prepare("SELECT id FROM salti_turno WHERE codice=?");
+        $stPrevS->execute(['B' . saltoRiposoNum($pd, $pt)]);
+        $prevSaltoId = (int)($stPrevS->fetchColumn() ?: 0);
+        if ($prevSaltoId > 0) {
+            $eraInSaltoPrima = resterEffettivi($pdo, $pd, $pt, $prevSaltoId);  // [vid => true]
+        }
+    }
 
     // Vigili con assenza registrata per questo foglio → non vanno in servizio
     $assentiIds = [];
@@ -148,6 +164,7 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, arra
             $daSpalmare[] = [
                 'vid'  => $vid,
                 'sede' => $sedeDest,
+                'prev' => isset($eraInSaltoPrima[$vid]) ? 0 : 1,  // 0 = era in salto il turno prima → in 1A
                 'grp'  => $coloreGruppo($vp['patente_max']),   // rossi/blu/neri
                 'qual' => (int)$vp['qualifica_id'],            // rank: Cr>Cs>Vf (id più alto = più anziano)
                 'cog'  => (string)$vp['cognome'],
@@ -157,9 +174,11 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, arra
     }
 
     // Pass 2: spalma i restanti sulle posizioni libere della loro sede.
-    // SOLO la CENTRALE viene raggruppata per facilità di lettura: prima i rossi,
-    // poi i blu, poi i neri; dentro ogni gruppo per qualifica (Cr→Cs→Vf, = anzianità)
-    // e a pari qualifica per cognome. Le altre sedi mantengono l'ordine originale.
+    // SOLO la CENTRALE viene raggruppata per facilità di lettura:
+    //   1) chi era in SALTO TURNO il turno prima → riempie per primo (la 1A);
+    //   2) poi gli altri: prima i rossi, poi i blu, poi i neri; dentro ogni gruppo
+    //      per qualifica (Cr→Cs→Vf, = anzianità) e a pari qualifica per cognome.
+    // Le altre sedi mantengono l'ordine originale.
     $spalmaCentrale = [];
     $spalmaAltri    = [];
     foreach ($daSpalmare as $d) {
@@ -167,8 +186,8 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, arra
         else                             $spalmaAltri[]    = $d;
     }
     usort($spalmaCentrale, fn($a, $b) =>
-        [$a['grp'], -$a['qual'], $a['cog'], $a['idx']]
-        <=> [$b['grp'], -$b['qual'], $b['cog'], $b['idx']]
+        [$a['prev'], $a['grp'], -$a['qual'], $a['cog'], $a['idx']]
+        <=> [$b['prev'], $b['grp'], -$b['qual'], $b['cog'], $b['idx']]
     );
 
     foreach (array_merge($spalmaCentrale, $spalmaAltri) as $d) {
@@ -178,7 +197,8 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, arra
     }
 }
 
-function prepopolaFoglio(PDO $pdo, int $foglioId, int $saltoRiposoId, array $resters): void {
+function prepopolaFoglio(PDO $pdo, int $foglioId, int $saltoRiposoId, array $resters,
+                         string $dataStr = '', string $tipoParam = ''): void {
     $pdo->prepare("DELETE FROM salto_servizio WHERE foglio_id=?")->execute([$foglioId]);
 
     $personale   = $pdo->query("SELECT v.id FROM vigili v WHERE v.attivo=1")->fetchAll();
@@ -191,7 +211,7 @@ function prepopolaFoglio(PDO $pdo, int $foglioId, int $saltoRiposoId, array $res
         }
     }
 
-    prepopolaAssegnazioni($pdo, $foglioId, $saltoRiposoId, $resters);
+    prepopolaAssegnazioni($pdo, $foglioId, $saltoRiposoId, $resters, $dataStr, $tipoParam);
 }
 
 // ── Recupera o crea il foglio ────────────────────────────────
@@ -306,12 +326,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
-        // Rimuove assegnazioni e salto precedenti dello stesso vigile
+        // Rimuove assegnazioni, salto e assenze precedenti dello stesso vigile.
+        // Assegnare a una squadra supera lo stato precedente OVUNQUE fosse:
+        // in posizione, in salto, o in ferie/permesso/missione/malattia
+        // (simmetrico ad assenza/ferie_ufficio/metti_salto, che già fanno così).
         $pdo->prepare(
             "DELETE FROM assegnazioni WHERE foglio_id=? AND vigile_id=?"
         )->execute([$foglioId, $vigileId]);
         $pdo->prepare(
             "DELETE FROM salto_servizio WHERE foglio_id=? AND vigile_id=?"
+        )->execute([$foglioId, $vigileId]);
+        $pdo->prepare(
+            "DELETE FROM assenze WHERE foglio_id=? AND vigile_id=?"
         )->execute([$foglioId, $vigileId]);
 
         if ($posizioneId > 0) {
@@ -359,11 +385,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // ── AJAX: rimuovi assegnazione ────────────────────────────
     if ($azione === 'rimuovi') {
         $vigileId = (int)($_POST['vigile_id'] ?? 0);
+        // Libera il vigile da QUALUNQUE stato sul foglio → torna disponibile
+        // (posizione, salto e anche assenze: usato da "Centrale (disponibili)"
+        //  del menu tasto destro su chi è in ferie/missione/ecc.).
         $pdo->prepare(
             "DELETE FROM assegnazioni WHERE foglio_id=? AND vigile_id=?"
         )->execute([$foglioId, $vigileId]);
         $pdo->prepare(
             "DELETE FROM salto_servizio WHERE foglio_id=? AND vigile_id=?"
+        )->execute([$foglioId, $vigileId]);
+        $pdo->prepare(
+            "DELETE FROM assenze WHERE foglio_id=? AND vigile_id=?"
         )->execute([$foglioId, $vigileId]);
 
         echo json_encode(['ok' => true]);
@@ -2048,6 +2080,21 @@ const PERSONALE = {
 <?php endforeach; ?>
 };
 
+// Distaccamenti per il menu "Manda a sede": esclusi Centrale, Reparto Volo (EL)
+// e Multedo Nautica (MN); in ordine alfabetico per nome. La Centrale è aggiunta
+// a parte dal sottomenu, sempre in fondo.
+<?php
+$sediMenu = array_values(array_filter($sediSelect, function ($s) {
+    return !in_array($s['codice'] ?? '', ['CENTR', 'EL', 'MN'], true);
+}));
+usort($sediMenu, function ($a, $b) { return strcasecmp($a['nome'], $b['nome']); });
+?>
+const SEDI_DISTACCATE = [
+<?php foreach ($sediMenu as $s): ?>
+  { codice: <?= json_encode($s['codice']) ?>, nome: <?= json_encode($s['nome']) ?> },
+<?php endforeach; ?>
+];
+
 
 const TIPI_ASSENZA = {
 <?php foreach ($tipiAssenza as $ta):
@@ -2513,38 +2560,12 @@ document.addEventListener('drop', async function(e) {
 
         const straord = (source === 'salto' || p.saltoCanon) ? 1 : 0;
 
-        const res = await ajax({
-            azione: 'assegna', vigile_id: vigileId,
-            posizione_id: posId, straordinario: straord
-        });
-        if (!res.ok) {
-            showMsg(res.pieno ? '🚫 ' + (res.errore || 'Posizione al completo.') + ' ' + p.nome + ' resta tra i disponibili.' : '⚠️ Errore.', 'err');
+        const esito = await eseguiAssegnaPos(vigileId, posId, straord);
+        if (esito === 'pieno') {
+            showMsg('🚫 Posizione al completo. ' + p.nome + ' resta tra i disponibili.', 'err');
             return;
         }
-
-        rimuoviDOM(vigileId);
-
-        const body = document.getElementById('body-' + posId);
-        if (body) { body.insertAdjacentHTML('beforeend', buildAssCard(p, posId, straord)); sincronizzaSlot(body); }
-
-        // Aggiorna riga salto se STR
-        if (p.saltoCanon) {
-            const sr = document.getElementById('salto-' + vigileId);
-            if (sr) {
-                sr.removeAttribute('draggable');
-                sr.style.cursor = 'default';
-                sr.querySelector('.drag-icon-salto')?.remove();
-                const nome = sr.querySelector('.assente-nome');
-                if (nome && !nome.querySelector('.str-badge')) {
-                    nome.insertAdjacentHTML('beforeend',
-                        `<span class="str-badge"
-                               style="font-size:.65rem;color:var(--giallo);
-                                      font-weight:700;margin-left:4px">★ STR</span>`);
-                }
-            }
-        }
-
-        if (!p.saltoCanon) setOccupato(vigileId, true, 'in servizio');
+        if (esito === 'err') { showMsg('⚠️ Errore.', 'err'); return; }
         showMsg('✅ ' + p.nome + (straord ? ' (STR)':'' ) + ' assegnato.');
         return;
     }
@@ -2669,8 +2690,78 @@ async function azioneAssenza(vigileId, tipoCodice) {
 }
 
 // ════════════════════════════════════════════════════════════
-// MENU TASTO DESTRO — azioni rapide su un vigile (Ferie/Permesso/
-// Missione/Salto). Riusa azioneAssenza/azioneSalto.
+// ASSEGNAZIONE A POSIZIONE / SEDE (riusata da drag&drop e menu)
+// ════════════════════════════════════════════════════════════
+// Assegna un vigile a una posizione precisa: ajax + aggiornamento DOM.
+// Ritorna 'ok' | 'pieno' | 'err'. Il toast lo fa il chiamante (messaggi diversi).
+async function eseguiAssegnaPos(vigileId, posId, straord) {
+    const p = PERSONALE[vigileId];
+    if (!p) return 'err';
+    const res = await ajax({ azione: 'assegna', vigile_id: vigileId,
+                             posizione_id: posId, straordinario: straord });
+    if (!res.ok) return res.pieno ? 'pieno' : 'err';
+
+    rimuoviDOM(vigileId);
+    const body = document.getElementById('body-' + posId);
+    if (body) { body.insertAdjacentHTML('beforeend', buildAssCard(p, posId, straord)); sincronizzaSlot(body); }
+
+    // Vigile a riposo canonico messo in servizio → straordinario: aggiorna la riga salto
+    if (p.saltoCanon) {
+        const sr = document.getElementById('salto-' + vigileId);
+        if (sr) {
+            sr.removeAttribute('draggable');
+            sr.style.cursor = 'default';
+            sr.querySelector('.drag-icon-salto')?.remove();
+            const nome = sr.querySelector('.assente-nome');
+            if (nome && !nome.querySelector('.str-badge')) {
+                nome.insertAdjacentHTML('beforeend',
+                    `<span class="str-badge"
+                           style="font-size:.65rem;color:var(--giallo);
+                                  font-weight:700;margin-left:4px">★ STR</span>`);
+            }
+        }
+    }
+    if (!p.saltoCanon) setOccupato(vigileId, true, 'in servizio');
+    return 'ok';
+}
+
+// Manda il vigile alla prima posizione libera di una sede (sigla): scorre le
+// squadre di quella sede in ordine, la prima non piena = es. RP-1A.
+async function assegnaASedeDaMenu(vigileId, sedeCodice) {
+    const p = PERSONALE[vigileId];
+    if (!p) return;
+    const cards = [...document.querySelectorAll('.pos-card')]
+        .filter(c => c.dataset.sede === sedeCodice);
+    if (!cards.length) { showMsg('⚠️ Nessuna squadra per ' + sedeCodice + '.', 'err'); return; }
+    const straord = p.saltoCanon ? 1 : 0;
+    for (const card of cards) {
+        const body = document.getElementById('body-' + card.dataset.posId);
+        const cap  = parseInt(body?.dataset.cap || '0');
+        const occ  = body ? body.querySelectorAll('.ass-card').length : cap;
+        if (occ >= cap) continue;                      // piena → prova la prossima
+        const esito = await eseguiAssegnaPos(vigileId, parseInt(card.dataset.posId), straord);
+        if (esito === 'err') { showMsg('⚠️ Errore.', 'err'); return; }
+        if (esito === 'pieno') continue;               // presa in contemporanea → prossima
+        const nomePos = card.querySelector('.pos-head')?.textContent.trim() || sedeCodice;
+        showMsg('✅ ' + p.nome + ' → ' + nomePos + (straord ? ' (STR)' : ''));
+        return;
+    }
+    showMsg('🚫 Tutte le posizioni di ' + sedeCodice + ' sono al completo.', 'err');
+}
+
+// "Centrale": toglie dalla posizione e rimette tra i disponibili (pool centrale).
+async function mandaInCentraleDisponibili(vigileId) {
+    const p = PERSONALE[vigileId];
+    const res = await ajax({ azione: 'rimuovi', vigile_id: vigileId });
+    if (!res.ok) { showMsg('⚠️ Errore.', 'err'); return; }
+    rimuoviDOM(vigileId);
+    if (p && !p.saltoCanon) setOccupato(vigileId, false);
+    showMsg('🏠 ' + (p ? p.nome : 'Vigile') + ' → Centrale (disponibili).');
+}
+
+// ════════════════════════════════════════════════════════════
+// MENU TASTO DESTRO — azioni rapide su un vigile: Ferie/Permesso/
+// Missione/Salto + "Manda a sede" (sottomenu distaccamenti/Centrale).
 // ════════════════════════════════════════════════════════════
 let _ctxVigileId = null;
 
@@ -2685,18 +2776,71 @@ function buildCtxMenu() {
          <button type="button" data-act="FER">🏖️ Ferie</button>
          <button type="button" data-act="PERM">📄 Permesso</button>
          <button type="button" data-act="MISS">✈️ Missione</button>
-         <button type="button" data-act="SALTO">😴 Salto</button>`;
+         <button type="button" data-act="SALTO">😴 Salto</button>
+         <div class="ctx-sep"></div>
+         <button type="button" class="ctx-has-sub" data-act="SEDI">🏢 Manda a sede<span>▸</span></button>`;
     document.body.appendChild(m);
+
+    // Sottomenu sedi: elemento separato (la .ctx-menu ha overflow:hidden e lo taglierebbe)
+    const sub = document.createElement('div');
+    sub.id = 'ctxSubSedi';
+    sub.className = 'ctx-menu ctx-submenu';
+    sub.style.display = 'none';
+    let html = '';
+    SEDI_DISTACCATE.forEach(s => {
+        html += `<button type="button" data-sede="${s.codice}"><b>${s.codice}</b> · ${s.nome}</button>`;
+    });
+    html += `<div class="ctx-sep"></div>`
+          + `<button type="button" data-sede="__CENTR__">🏠 Centrale (disponibili)</button>`;
+    sub.innerHTML = html;
+    document.body.appendChild(sub);
+
+    // Click sul menu principale
     m.addEventListener('click', async (e) => {
         const btn = e.target.closest('button[data-act]');
         if (!btn) return;
         const act = btn.dataset.act;
+        if (act === 'SEDI') { e.stopPropagation(); apriSubSedi(); return; }
         const vid = _ctxVigileId;
         nascondiCtxMenu();
         if (vid == null) return;
         if (act === 'SALTO') await azioneSalto(vid);
         else                 await azioneAssenza(vid, act);
     });
+    // Su desktop, apri il sottomenu anche passandoci sopra
+    m.querySelector('.ctx-has-sub')?.addEventListener('mouseenter', apriSubSedi);
+
+    // Click su una sede nel sottomenu
+    sub.addEventListener('click', async (e) => {
+        const btn = e.target.closest('button[data-sede]');
+        if (!btn) return;
+        const sede = btn.dataset.sede;
+        const vid  = _ctxVigileId;
+        nascondiCtxMenu();
+        if (vid == null) return;
+        if (sede === '__CENTR__') await mandaInCentraleDisponibili(vid);
+        else                      await assegnaASedeDaMenu(vid, sede);
+    });
+}
+
+// Posiziona e mostra il sottomenu sedi accanto al menu principale
+function apriSubSedi() {
+    const m = document.getElementById('ctxMenu');
+    const sub = document.getElementById('ctxSubSedi');
+    if (!m || !sub) return;
+    sub.style.visibility = 'hidden';
+    sub.style.display = 'block';
+    const mr = m.getBoundingClientRect();
+    const sw = sub.offsetWidth, sh = sub.offsetHeight;
+    let left = mr.right + 2;
+    if (left + sw > window.innerWidth - 4) left = mr.left - sw - 2;  // niente spazio a destra → a sinistra
+    if (left < 4) left = 4;
+    let top = mr.top;
+    if (top + sh > window.innerHeight - 4) top = window.innerHeight - sh - 6;
+    if (top < 4) top = 4;
+    sub.style.left = left + 'px';
+    sub.style.top  = top + 'px';
+    sub.style.visibility = 'visible';
 }
 
 function mostraCtxMenu(x, y, vigileId) {
@@ -2704,6 +2848,8 @@ function mostraCtxMenu(x, y, vigileId) {
     _ctxVigileId = vigileId;
     const p = PERSONALE[vigileId];
     const m = document.getElementById('ctxMenu');
+    const sub = document.getElementById('ctxSubSedi');
+    if (sub) sub.style.display = 'none';   // reset sottomenu a ogni apertura
     const nome = document.getElementById('ctxNome');
     if (nome) nome.textContent = p ? p.nome : '';
     m.style.display = 'block';
@@ -2716,16 +2862,22 @@ function mostraCtxMenu(x, y, vigileId) {
 function nascondiCtxMenu() {
     const m = document.getElementById('ctxMenu');
     if (m) m.style.display = 'none';
+    const sub = document.getElementById('ctxSubSedi');
+    if (sub) sub.style.display = 'none';
     _ctxVigileId = null;
 }
 
 document.addEventListener('contextmenu', function(e) {
     if (BLOCCATO) return;  // foglio bloccato da altri → niente azioni
-    // Solo card vigile lavorabili: disponibili in organico e assegnati in posizione.
-    // (Il box "Ferie respinte" è sola lettura → escluso.)
-    const card = e.target.closest('#organicoList .persona-card, .ass-card');
+    // Tutto il personale, ovunque sia sul foglio: disponibili, assegnati,
+    // in salto, in ferie/permesso/missione/malattia, ferie d'ufficio.
+    // (Stesso insieme della ricerca. Il box "Ferie respinte" è sola lettura,
+    //  ma quella persona è comunque disponibile in organico → la si raggiunge lì.)
+    const card = e.target.closest(
+        '.ass-card[data-vigile-id], .assente-row[data-vigile-id], #organicoList .persona-card'
+    );
     if (!card) return;     // fuori da una card → menu nativo del browser
-    const vid = parseInt(card.dataset.id || card.dataset.vigileId);
+    const vid = parseInt(card.dataset.vigileId || card.dataset.id);
     if (!vid || !PERSONALE[vid]) return;
     e.preventDefault();
     mostraCtxMenu(e.clientX, e.clientY, vid);

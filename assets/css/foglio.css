@@ -685,3 +685,13 @@ body.cruscotto-bloccato .foglio-layout {
     cursor: pointer;
 }
 .ctx-menu button:hover { background: var(--blu-bg); }
+.ctx-menu .ctx-sep { height: 1px; background: #eee; margin: 4px 6px; }
+.ctx-menu button.ctx-has-sub {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+}
+/* Sottomenu sedi: elemento separato (la .ctx-menu ha overflow:hidden) */
+.ctx-submenu { min-width: 190px; max-height: 70vh; overflow-y: auto; }
+.ctx-submenu button b { color: var(--grigio-sc); margin-right: 3px; }
