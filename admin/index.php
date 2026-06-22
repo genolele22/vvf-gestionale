@@ -12,6 +12,8 @@ $nSedi    = contaTab($pdo, "SELECT COUNT(*) FROM sedi");
 $nPos     = contaTab($pdo, "SELECT COUNT(*) FROM posizioni");
 $nAssFix  = contaTab($pdo, "SELECT COUNT(*) FROM assegnazioni_fisse");
 $nParam   = contaTab($pdo, "SELECT COUNT(*) FROM parametri");
+$nCapi    = contaTab($pdo, "SELECT COUNT(*) FROM capi_pool");
+$nFur     = contaTab($pdo, "SELECT COUNT(*) FROM furieri_fissi");
 ?>
 <!DOCTYPE html>
 <html lang="it">
@@ -75,6 +77,13 @@ $nParam   = contaTab($pdo, "SELECT COUNT(*) FROM parametri");
       <h3>Assegnazioni fisse</h3>
       <p>Personale che va sempre in una certa posizione, da pre-caricare sui fogli.</p>
       <div class="ac-meta"><?= $nAssFix ?> regole</div>
+    </a>
+
+    <a href="ruoli.php" class="admin-card">
+      <div class="ac-ico">👷</div>
+      <h3>Capi servizio &amp; Furieri</h3>
+      <p>Pool ordinato per capo/vice (primo presente = capo) e set fisso dei furieri.</p>
+      <div class="ac-meta"><?= $nCapi ?> nel pool · <?= $nFur ?> furieri</div>
     </a>
 
     <a href="parametri.php" class="admin-card">

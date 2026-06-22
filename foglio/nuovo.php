@@ -232,6 +232,50 @@ function prepopolaFoglio(PDO $pdo, int $foglioId, int $saltoRiposoId, array $res
     }
 
     prepopolaAssegnazioni($pdo, $foglioId, $saltoRiposoId, $resters, $dataStr, $tipoParam);
+    prepopolaRuoli($pdo, $foglioId, $resters);
+}
+
+// ── Helper: capo/vice (pool ordinato) + furieri (set fisso) ──
+// Capo = primo del pool presente in servizio; vice = secondo presente.
+// Furieri = tutti i furieri fissi presenti. "Presente" = attivo, non in salto
+// (resters) e senza assenza registrata sul foglio. Metodo 1: impostati d'ufficio
+// alla creazione/reset del foglio (poi modificabili a mano dall'intestazione).
+function prepopolaRuoli(PDO $pdo, int $foglioId, array $resters): void {
+    $assenti = [];
+    $stAb = $pdo->prepare("SELECT vigile_id FROM assenze WHERE foglio_id=?");
+    $stAb->execute([$foglioId]);
+    foreach ($stAb->fetchAll(PDO::FETCH_COLUMN) as $aid) $assenti[(int)$aid] = true;
+    $presente = fn(int $vid): bool => !isset($resters[$vid]) && !isset($assenti[$vid]);
+
+    // Capo / Vice dal pool ordinato (solo attivi)
+    try {
+        $pool = $pdo->query(
+            "SELECT cp.vigile_id FROM capi_pool cp JOIN vigili v ON v.id = cp.vigile_id
+             WHERE v.attivo = 1 ORDER BY cp.ordine, cp.id"
+        )->fetchAll(PDO::FETCH_COLUMN);
+        $capo = null; $vice = null;
+        foreach ($pool as $vid) {
+            $vid = (int)$vid;
+            if (!$presente($vid)) continue;
+            if      ($capo === null) $capo = $vid;
+            elseif  ($vice === null) { $vice = $vid; break; }
+        }
+        $pdo->prepare("UPDATE fogli_servizio SET capo_servizio_id=?, vice_capo_id=? WHERE id=?")
+            ->execute([$capo, $vice, $foglioId]);
+    } catch (Throwable $e) { /* tabella capi_pool assente: nessun automatismo */ }
+
+    // Furieri dal set fisso (solo attivi e presenti)
+    try {
+        $pdo->prepare("DELETE FROM foglio_furieri WHERE foglio_id=?")->execute([$foglioId]);
+        $fur = $pdo->query(
+            "SELECT ff.vigile_id FROM furieri_fissi ff JOIN vigili v ON v.id = ff.vigile_id
+             WHERE v.attivo = 1 ORDER BY v.cognome"
+        )->fetchAll(PDO::FETCH_COLUMN);
+        $ins = $pdo->prepare("INSERT IGNORE INTO foglio_furieri (foglio_id, vigile_id) VALUES (?,?)");
+        foreach ($fur as $vid) {
+            if ($presente((int)$vid)) $ins->execute([$foglioId, (int)$vid]);
+        }
+    } catch (Throwable $e) { /* tabella furieri_fissi assente */ }
 }
 
 // ── Recupera o crea il foglio ────────────────────────────────
