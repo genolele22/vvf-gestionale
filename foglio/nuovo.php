@@ -1582,16 +1582,6 @@ function colorePatentePHP(?string $patente): string {
                      padding:1px 5px;border-radius:3px">
           Salto <?= htmlspecialchars($codSaltoRip) ?>
         </span> = riposo canonico
-        <br>
-        <span class="qual-dot Cr"
-              style="display:inline-block;width:8px;height:8px;border-radius:50%;
-                     background:var(--rosso)"></span> Cr &nbsp;
-        <span class="qual-dot Cs"
-              style="display:inline-block;width:8px;height:8px;border-radius:50%;
-                     background:var(--blu)"></span> Cs &nbsp;
-        <span class="qual-dot Vp"
-              style="display:inline-block;width:8px;height:8px;border-radius:50%;
-                     background:var(--verde)"></span> Vp
       </div>
 
     </div><!-- /.organico-panel -->

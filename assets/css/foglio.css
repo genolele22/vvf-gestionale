@@ -286,18 +286,20 @@ body.cruscotto-bloccato .foglio-layout {
     display: none;
 }
 
-/* Pallino qualifica */
-.qual-dot {
-    width: 10px; height: 10px;
-    border-radius: 50%;
-    flex-shrink: 0;
-}
-.qual-dot.Cr { background: var(--rosso); }
-.qual-dot.Cs { background: var(--blu); }
-.qual-dot.Vp { background: var(--verde); }
+/* Pallino qualifica — rimosso (ritenuto inutile), si tiene il colore sul nome */
+.qual-dot { display: none !important; }
 
 .persona-nome { flex: 1; font-weight: 600; line-height: 1.2; }
 .persona-nome small { font-weight: 400; color: var(--grigio-md); font-size: .7rem; display: block; }
+
+/* Nomi sempre MAIUSCOLI nel gestionale (più leggibili). Solo display:
+   l'ODT/anteprima stampa.php restano con la sola iniziale maiuscola. */
+.persona-nome,
+.ass-nome-txt,
+.assente-nome,
+.dz-nome,
+.ctx-nome { text-transform: uppercase; }
+.persona-nome small { text-transform: none; } /* la qualifica non è un nome */
 
 /* Badge salto nell'organico */
 .persona-salto {
