@@ -606,8 +606,9 @@ $totVigili   = count($perVigile);
     $conteggio  = [];
     if ($gruppo) $conteggio[] = count($gruppo) . ' vigil' . (count($gruppo) === 1 ? 'e' : 'i') . ' in ferie';
     if ($scambi) $conteggio[] = count($scambi) . (count($scambi) === 1 ? ' scambio' : ' scambi') . ' salto';
-    // Salto a riposo del giorno + link al foglio diurno
+    // Salto a riposo del giorno (diurno ☀️ / notturno 🌙) + link ai due fogli
     $saltoD    = saltoRiposoNum($dataInizio, 'D');
+    $saltoN    = saltoRiposoNum($dataInizio, 'N');
     $urlFoglio = fn(string $t) => '../foglio/nuovo.php?data=' . urlencode($dataInizio) . '&tipo=' . $t;
   ?>
   <div class="data-section">
@@ -618,8 +619,10 @@ $totVigili   = count($perVigile);
          title="Apri il foglio di servizio di questo giorno"
          style="font-size:.95rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--rosso);text-decoration:none;">📋 <?= $dataHeader ?></a>
       <span class="data-count" style="font-size:.72rem;color:var(--grigio-md);font-weight:600;"><?= implode(' · ', $conteggio) ?></span>
-      <span style="margin-left:auto;font-size:.74rem;font-weight:700;color:var(--grigio-sc);white-space:nowrap;">
-        Salto a riposo: B<?= $saltoD ?>
+      <span style="margin-left:auto;font-size:.8rem;font-weight:700;color:var(--grigio-sc);white-space:nowrap;">
+        <a href="<?= $urlFoglio('D') ?>" title="Foglio diurno" style="color:inherit;text-decoration:none;">☀️ B<?= $saltoD ?></a>
+        ·
+        <a href="<?= $urlFoglio('N') ?>" title="Foglio notturno" style="color:inherit;text-decoration:none;">🌙 B<?= $saltoN ?></a>
       </span>
     </div>
 
