@@ -264,7 +264,8 @@ function prepopolaRuoli(PDO $pdo, int $foglioId, array $resters): void {
             ->execute([$capo, $vice, $foglioId]);
     } catch (Throwable $e) { /* tabella capi_pool assente: nessun automatismo */ }
 
-    // Furieri dal set fisso (solo attivi e presenti)
+    // Furieri dal set fisso: sull'ODT vanno SEMPRE segnati tutti (anche se in
+    // ferie/salto), sono un ruolo amministrativo. Solo attivi.
     try {
         $pdo->prepare("DELETE FROM foglio_furieri WHERE foglio_id=?")->execute([$foglioId]);
         $fur = $pdo->query(
@@ -273,7 +274,7 @@ function prepopolaRuoli(PDO $pdo, int $foglioId, array $resters): void {
         )->fetchAll(PDO::FETCH_COLUMN);
         $ins = $pdo->prepare("INSERT IGNORE INTO foglio_furieri (foglio_id, vigile_id) VALUES (?,?)");
         foreach ($fur as $vid) {
-            if ($presente((int)$vid)) $ins->execute([$foglioId, (int)$vid]);
+            $ins->execute([$foglioId, (int)$vid]);
         }
     } catch (Throwable $e) { /* tabella furieri_fissi assente */ }
 }
@@ -1271,17 +1272,6 @@ $stFA->execute(array_merge([$dataStr], $tipiFerieAppr, [$foglioId]));
 $nFerieDaApprovare = (int)$stFA->fetchColumn();
 
 // Furieri del foglio
-$furieri = $pdo->prepare(
-    "SELECT v.cognome, v.disambiguatore, q.codice AS qcodice
-     FROM foglio_furieri ff
-     JOIN vigili v     ON v.id = ff.vigile_id
-     JOIN qualifiche q ON q.id = v.qualifica_id
-     WHERE ff.foglio_id = ?
-     ORDER BY v.cognome"
-);
-$furieri->execute([$foglioId]);
-$furieri = $furieri->fetchAll();
-
 // Nomi capo/vice per le drop-zone (qualsiasi vigile, non solo Centrale).
 $stCV = $pdo->prepare(
     "SELECT v.cognome, v.disambiguatore, q.codice AS qcodice
@@ -1467,20 +1457,6 @@ function colorePatentePHP(?string $patente): string {
     <!-- Campi intestazione -->
     <form id="formIntestazione">
     <div class="foglio-header-fields">
-
-      <!-- Furieri (sola lettura se già salvati) -->
-      <div class="fh-field">
-        <div class="fh-label">Furieri</div>
-        <div class="fh-value" style="font-size:.78rem">
-          <?php if (!empty($furieri)): ?>
-            <?php foreach ($furieri as $f): ?>
-              <span><?= htmlspecialchars(etichettaVigile($f)) ?></span><br>
-            <?php endforeach; ?>
-          <?php else: ?>
-            <span style="color:#bbb">— non impostati —</span>
-          <?php endif; ?>
-        </div>
-      </div>
 
       <!-- Capo Servizio (drag: trascina qui un vigile) -->
       <div class="fh-field">
