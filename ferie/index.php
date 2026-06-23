@@ -606,24 +606,29 @@ $totVigili   = count($perVigile);
     $conteggio  = [];
     if ($gruppo) $conteggio[] = count($gruppo) . ' vigil' . (count($gruppo) === 1 ? 'e' : 'i') . ' in ferie';
     if ($scambi) $conteggio[] = count($scambi) . (count($scambi) === 1 ? ' scambio' : ' scambi') . ' salto';
-    // Salto a riposo del giorno (diurno ☀️ / notturno 🌙) + link ai due fogli
-    $saltoD    = saltoRiposoNum($dataInizio, 'D');
-    $saltoN    = saltoRiposoNum($dataInizio, 'N');
-    $urlFoglio = fn(string $t) => '../foglio/nuovo.php?data=' . urlencode($dataInizio) . '&tipo=' . $t;
+    // Quel giorno il turno B è in servizio diurno (☀️) o notturno (🌙):
+    // mostro un'icona sola, col salto a riposo del foglio corrispondente.
+    $tgB = getTurnoGiorno($dataInizio);
+    if ($tgB['diurno']['turno'] === 'B') {
+        $saltoTipo = 'D'; $saltoIco = '☀️';
+    } elseif ($tgB['notte']['turno'] === 'B') {
+        $saltoTipo = 'N'; $saltoIco = '🌙';
+    } else {
+        $saltoTipo = 'D'; $saltoIco = '';
+    }
+    $saltoNum  = saltoRiposoNum($dataInizio, $saltoTipo);
+    $urlFoglio = '../foglio/nuovo.php?data=' . urlencode($dataInizio) . '&tipo=' . $saltoTipo;
   ?>
   <div class="data-section">
 
     <!-- Intestazione data: data cliccabile (apre il foglio) + salto a riposo a destra -->
     <div class="data-head" style="display:flex;align-items:baseline;gap:10px;padding:6px 4px 6px 0;margin-bottom:6px;border-bottom:2px solid var(--rosso);">
-      <a class="data-label" href="<?= $urlFoglio('D') ?>"
+      <a class="data-label" href="<?= $urlFoglio ?>"
          title="Apri il foglio di servizio di questo giorno"
          style="font-size:.95rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--rosso);text-decoration:none;">📋 <?= $dataHeader ?></a>
       <span class="data-count" style="font-size:.72rem;color:var(--grigio-md);font-weight:600;"><?= implode(' · ', $conteggio) ?></span>
-      <span style="margin-left:auto;font-size:.8rem;font-weight:700;color:var(--grigio-sc);white-space:nowrap;">
-        <a href="<?= $urlFoglio('D') ?>" title="Foglio diurno" style="color:inherit;text-decoration:none;">☀️ B<?= $saltoD ?></a>
-        ·
-        <a href="<?= $urlFoglio('N') ?>" title="Foglio notturno" style="color:inherit;text-decoration:none;">🌙 B<?= $saltoN ?></a>
-      </span>
+      <a href="<?= $urlFoglio ?>" title="Apri il foglio di servizio di questo giorno"
+         style="margin-left:auto;font-size:.8rem;font-weight:700;color:var(--grigio-sc);text-decoration:none;white-space:nowrap;"><?= $saltoIco ?> B<?= $saltoNum ?></a>
     </div>
 
     <?php if ($scambi): ?>
