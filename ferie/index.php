@@ -1,6 +1,7 @@
 <?php
 session_start();
 require_once __DIR__ . '/../config/db.php';
+require_once __DIR__ . '/../includes/scambio_salto.php';
 
 $pdo = getDB();
 
@@ -162,6 +163,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
+    // ── Scambi salto nati dal bot: approva / rifiuta dall'Agenda ──
+    // Molte approvazioni avvengono al computer invece che dal bot. Replica la
+    // stessa logica del bot (override + patch fogli) e avvisa i due vigili via
+    // bot_outbox (Telegram + mail dal bot).
+    if ($azione === 'scambio_set_stato') {
+        $sid   = (int)($_POST['scambio_id'] ?? 0);
+        $stato = $_POST['stato'] ?? '';
+        if ($sid <= 0 || !in_array($stato, ['approved', 'rejected'], true)) {
+            echo json_encode(['ok' => false, 'errore' => 'Parametri non validi']); exit;
+        }
+
+        $pdo->beginTransaction();
+        try {
+            if ($stato === 'approved') {
+                $sc = scambioApprovaEsistente($pdo, $sid);
+                scambioEnqueueOutbox($pdo, (int)$sc['vigile_a_id'],
+                    'scambio_approvato', "scambio:$sid:approvato");
+            } else {
+                $sc = scambioRifiuta($pdo, $sid);
+                scambioEnqueueOutbox($pdo, (int)$sc['vigile_a_id'],
+                    'scambio_rifiutato', "scambio:$sid:rifiutato");
+            }
+            $pdo->commit();
+        } catch (ScambioConflitto $e) {
+            $pdo->rollBack();
+            echo json_encode(['ok' => false, 'errore' => $e->getMessage()]); exit;
+        } catch (Throwable $e) {
+            $pdo->rollBack();
+            echo json_encode(['ok' => false, 'errore' => $e->getMessage()]); exit;
+        }
+
+        echo json_encode(['ok' => true, 'stato' => $stato]); exit;
+    }
+
     echo json_encode(['ok' => false, 'errore' => 'Azione non riconosciuta']);
     exit;
 }
@@ -294,6 +329,32 @@ if ($scById) {
             'slot_b' => (int)$s['slot_b'],
         ];
     }
+}
+
+// ── Scambi salto DA APPROVARE (nati dal bot: proposto/confermato) ──
+// Non filtrati per mese: il furiere deve vederli tutti per agire, a prescindere
+// dal mese in vista. Le date di riposo si ricavano dai due slot + il blocco.
+$scambiPending = [];
+foreach ($pdo->query("
+        SELECT s.id, s.slot_a, s.slot_b, s.blocco_inizio, s.stato,
+               s.vigile_a_id, s.vigile_b_id,
+               a.cognome AS a_cog, a.disambiguatore AS a_dis, qa.codice AS a_q,
+               b.cognome AS b_cog, b.disambiguatore AS b_dis, qb.codice AS b_q
+        FROM bot_scambi_salto s
+        JOIN vigili a     ON a.id = s.vigile_a_id
+        JOIN vigili b     ON b.id = s.vigile_b_id
+        JOIN qualifiche qa ON qa.id = a.qualifica_id
+        JOIN qualifiche qb ON qb.id = b.qualifica_id
+        WHERE s.stato IN ('proposto', 'confermato')
+        ORDER BY s.blocco_inizio, s.id
+    ")->fetchAll() as $s) {
+    $etic = fn($q, $c, $d) => ucfirst(strtolower($q)) . ' ' . ucfirst(strtolower($c))
+                            . ($d ? ' ' . (int)$d : '');
+    $s['a_label'] = $etic($s['a_q'], $s['a_cog'], $s['a_dis']);
+    $s['b_label'] = $etic($s['b_q'], $s['b_cog'], $s['b_dis']);
+    $s['a_occ']   = slotDatesInBlocco((int)$s['slot_a'], $s['blocco_inizio']);
+    $s['b_occ']   = slotDatesInBlocco((int)$s['slot_b'], $s['blocco_inizio']);
+    $scambiPending[] = $s;
 }
 
 // Date da renderizzare = unione ferie + scambi, in ordine cronologico
@@ -488,7 +549,49 @@ $totVigili   = count($perVigile);
     </div>
   </div>
 
-  <?php if (empty($tutteLeDate)): ?>
+  <?php
+  // Formatta un'occorrenza di riposo (data_D, data_N) → "12/06 ☀️ + 13/06 🌙"
+  $fmtOcc = function (?array $occ): string {
+      if (!$occ) return '—';
+      $d = (new DateTime($occ[0]))->format('d/m');
+      $n = (new DateTime($occ[1]))->format('d/m');
+      return "$d ☀️ + $n 🌙";
+  };
+  ?>
+  <?php if ($scambiPending): ?>
+  <!-- Scambi salto in attesa di approvazione (da bot) -->
+  <div class="data-section" id="scambiDaApprovare">
+    <div class="data-head" style="display:flex;align-items:baseline;gap:10px;padding:6px 4px 6px 0;margin-bottom:6px;border-bottom:2px solid #0a58ca;">
+      <span class="data-label" style="font-size:.95rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#0a58ca;">🔄 Scambi salto da approvare</span>
+      <span class="data-count" style="font-size:.72rem;color:var(--grigio-md);font-weight:600;"><?= count($scambiPending) ?> in attesa</span>
+    </div>
+    <div class="vigile-card">
+      <?php foreach ($scambiPending as $s): ?>
+      <div class="blocco-row" id="scambio-<?= (int)$s['id'] ?>" style="cursor:default;flex-wrap:wrap;">
+        <span class="toggle-icon">🔄</span>
+        <span class="blocco-nome"><?= htmlspecialchars($s['a_label']) ?> <span style="color:var(--grigio-md);">(B<?= (int)$s['slot_a'] ?>)</span> ⇄ <?= htmlspecialchars($s['b_label']) ?> <span style="color:var(--grigio-md);">(B<?= (int)$s['slot_b'] ?>)</span></span>
+        <span class="blocco-spacer"></span>
+        <span style="font-size:.74rem;color:var(--grigio-md);white-space:nowrap;">
+          <?= htmlspecialchars($s['a_label']) ?> → riposa <?= $fmtOcc($s['b_occ']) ?>
+          &nbsp;·&nbsp;
+          <?= htmlspecialchars($s['b_label']) ?> → riposa <?= $fmtOcc($s['a_occ']) ?>
+        </span>
+        <span class="stato-badge stato-pending" style="margin-left:8px;"><?= $s['stato'] === 'proposto' ? 'in attesa conferma' : 'da approvare' ?></span>
+        <div class="blocco-azioni" onclick="event.stopPropagation()">
+          <button class="btn-mini accetta"
+                  onclick='approvaScambio(<?= (int)$s['id'] ?>)'
+                  title="Approva lo scambio (scrive il foglio e avvisa i due vigili)">✓ approva</button>
+          <button class="btn-mini respingi"
+                  onclick='rifiutaScambio(<?= (int)$s['id'] ?>)'
+                  title="Rifiuta lo scambio e avvisa i due vigili">✗ rifiuta</button>
+        </div>
+      </div>
+      <?php endforeach; ?>
+    </div>
+  </div>
+  <?php endif; ?>
+
+  <?php if (empty($tutteLeDate) && empty($scambiPending)): ?>
     <div class="alert alert-ok">Nessuna richiesta di ferie o scambio salto per <?= $mesiNomi[$meseP] ?> <?= $annoP ?>.</div>
   <?php endif; ?>
 
@@ -503,13 +606,21 @@ $totVigili   = count($perVigile);
     $conteggio  = [];
     if ($gruppo) $conteggio[] = count($gruppo) . ' vigil' . (count($gruppo) === 1 ? 'e' : 'i') . ' in ferie';
     if ($scambi) $conteggio[] = count($scambi) . (count($scambi) === 1 ? ' scambio' : ' scambi') . ' salto';
+    // Salto a riposo del giorno + link al foglio diurno
+    $saltoD    = saltoRiposoNum($dataInizio, 'D');
+    $urlFoglio = fn(string $t) => '../foglio/nuovo.php?data=' . urlencode($dataInizio) . '&tipo=' . $t;
   ?>
   <div class="data-section">
 
-    <!-- Intestazione data -->
+    <!-- Intestazione data: data cliccabile (apre il foglio) + salto a riposo a destra -->
     <div class="data-head" style="display:flex;align-items:baseline;gap:10px;padding:6px 4px 6px 0;margin-bottom:6px;border-bottom:2px solid var(--rosso);">
-      <span class="data-label" style="font-size:.95rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--grigio-sc);"><?= $dataHeader ?></span>
+      <a class="data-label" href="<?= $urlFoglio('D') ?>"
+         title="Apri il foglio di servizio di questo giorno"
+         style="font-size:.95rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--rosso);text-decoration:none;">📋 <?= $dataHeader ?></a>
       <span class="data-count" style="font-size:.72rem;color:var(--grigio-md);font-weight:600;"><?= implode(' · ', $conteggio) ?></span>
+      <span style="margin-left:auto;font-size:.74rem;font-weight:700;color:var(--grigio-sc);white-space:nowrap;">
+        Salto a riposo: B<?= $saltoD ?>
+      </span>
     </div>
 
     <?php if ($scambi): ?>
@@ -752,6 +863,51 @@ async function eseguiEliminaTurno(id, btn) {
     }
     sincronizzaDOM();
     showMsg('🗑️ Richiesta eliminata.', 'ok');
+}
+
+// ── Scambi salto: approva / rifiuta (richieste nate dal bot) ──
+function approvaScambio(sid) {
+    chiediConferma({
+        titolo:  'Approva scambio salto',
+        testo:   'Approvi questo scambio?<br>Verrà scritto sul foglio di servizio ' +
+                 'e i due vigili saranno avvisati (Telegram + mail).',
+        okLabel: '✓ Approva',
+        okStyle: 'background:#198754;color:#fff',
+        onOk:    () => eseguiScambio(sid, 'approved'),
+    });
+}
+
+function rifiutaScambio(sid) {
+    chiediConferma({
+        titolo:  'Rifiuta scambio salto',
+        testo:   'Rifiuti questo scambio?<br>I due vigili saranno avvisati e ' +
+                 'resteranno sul loro riposo originale.',
+        okLabel: '✗ Rifiuta',
+        okStyle: 'background:var(--rosso);color:#fff',
+        onOk:    () => eseguiScambio(sid, 'rejected'),
+    });
+}
+
+async function eseguiScambio(sid, stato) {
+    const fd = new FormData();
+    fd.append('azione', 'scambio_set_stato');
+    fd.append('scambio_id', sid);
+    fd.append('stato', stato);
+
+    let res;
+    try {
+        res = await fetch('', { method: 'POST', body: fd }).then(r => r.json());
+    } catch (e) {
+        showMsg('⚠️ Errore di rete', 'err');
+        return;
+    }
+    if (!res.ok) {
+        showMsg('⚠️ ' + (res.errore || 'Errore'), 'err');
+        return;
+    }
+    // Ricarico: l'approvato deve comparire nell'elenco per data e sparire dai pending
+    showMsg(stato === 'approved' ? '✅ Scambio approvato.' : '✅ Scambio rifiutato.', 'ok');
+    setTimeout(() => location.reload(), 700);
 }
 
 sincronizzaDOM();

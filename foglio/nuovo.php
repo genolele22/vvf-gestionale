@@ -2,6 +2,7 @@
 session_start();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/turni.php';
+require_once __DIR__ . '/../includes/scambio_salto.php';
 require_once __DIR__ . '/../includes/FoglioRenderer.php';
 
 $pdo = getDB();
@@ -792,35 +793,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                  VALUES (?,?,?,?,?,?,?, 'approvato', ?, ?)"
             )->execute([$sid, $aId, $bId, $slotA, $slotB, $bloccoIni, $bloccoFin, $aId, $aId]);
 
-            $insOv  = $pdo->prepare(
-                "INSERT INTO salto_override
-                    (id, scambio_id, data, tipo, vigile_out_id, vigile_in_id, attivo)
-                 VALUES (?,?,?,?,?,?,1)"
-            );
-            $selF   = $pdo->prepare("SELECT id FROM fogli_servizio WHERE data_servizio=? AND tipo_turno=?");
-            $delSS  = $pdo->prepare("DELETE FROM salto_servizio WHERE foglio_id=? AND vigile_id=?");
-            $delAss = $pdo->prepare("DELETE FROM assegnazioni  WHERE foglio_id=? AND vigile_id=?");
-            $chkSS  = $pdo->prepare("SELECT 1 FROM salto_servizio WHERE foglio_id=? AND vigile_id=?");
-            $insSS  = $pdo->prepare("INSERT INTO salto_servizio (id, foglio_id, vigile_id, richiamato) VALUES (?,?,?,0)");
-
-            foreach ($rows as [$d, $t, $outId, $inId]) {
-                $oid = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM salto_override")->fetchColumn();
-                $insOv->execute([$oid, $sid, $d, $t, $outId, $inId]);
-
-                // Patch foglio esistente: out torna a lavorare (esce dal salto),
-                // in va a riposo (esce dalle assegnazioni, entra nel salto).
-                $selF->execute([$d, $t]);
-                $fid = $selF->fetchColumn();
-                if ($fid) {
-                    $delSS->execute([$fid, $outId]);
-                    $delAss->execute([$fid, $inId]);
-                    $chkSS->execute([$fid, $inId]);
-                    if (!$chkSS->fetchColumn()) {
-                        $nss = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM salto_servizio")->fetchColumn();
-                        $insSS->execute([$nss, $fid, $inId]);
-                    }
-                }
-            }
+            scambioScriviOverride($pdo, $sid, $rows);
             $pdo->commit();
         } catch (Throwable $e) {
             $pdo->rollBack();
@@ -839,43 +812,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!$sid) {
             echo json_encode(['ok' => false, 'errore' => 'Scambio non valido.']); exit;
         }
-        $stO = $pdo->prepare(
-            "SELECT id, data, tipo, vigile_out_id, vigile_in_id
-             FROM salto_override WHERE scambio_id=? AND attivo=1"
-        );
-        $stO->execute([$sid]);
-        $rows = $stO->fetchAll();
-        if (!$rows) {
-            echo json_encode(['ok' => false, 'errore' => 'Scambio già annullato o inesistente.']); exit;
-        }
-
         $pdo->beginTransaction();
         try {
-            $selF  = $pdo->prepare("SELECT id FROM fogli_servizio WHERE data_servizio=? AND tipo_turno=?");
-            $delSS = $pdo->prepare("DELETE FROM salto_servizio WHERE foglio_id=? AND vigile_id=?");
-            $chkSS = $pdo->prepare("SELECT 1 FROM salto_servizio WHERE foglio_id=? AND vigile_id=?");
-            $insSS = $pdo->prepare("INSERT INTO salto_servizio (id, foglio_id, vigile_id, richiamato) VALUES (?,?,?,0)");
-            $offO  = $pdo->prepare("UPDATE salto_override SET attivo=0 WHERE id=?");
-
-            foreach ($rows as $r) {
-                $selF->execute([$r['data'], $r['tipo']]);
-                $fid = $selF->fetchColumn();
-                if ($fid) {
-                    // chi era entrato in salto esce; chi cedeva (rester canonico) rientra
-                    $delSS->execute([$fid, (int)$r['vigile_in_id']]);
-                    $chkSS->execute([$fid, (int)$r['vigile_out_id']]);
-                    if (!$chkSS->fetchColumn()) {
-                        $nss = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM salto_servizio")->fetchColumn();
-                        $insSS->execute([$nss, $fid, (int)$r['vigile_out_id']]);
-                    }
-                }
-                $offO->execute([(int)$r['id']]);
-            }
-            $pdo->prepare("UPDATE bot_scambi_salto SET stato='annullato' WHERE id=?")->execute([$sid]);
+            $fatto = scambioAnnulla($pdo, $sid);
             $pdo->commit();
         } catch (Throwable $e) {
             $pdo->rollBack();
             echo json_encode(['ok' => false, 'errore' => 'Errore DB: ' . $e->getMessage()]); exit;
+        }
+        if (!$fatto) {
+            echo json_encode(['ok' => false, 'errore' => 'Scambio già annullato o inesistente.']); exit;
         }
 
         echo json_encode(['ok' => true]); exit;
