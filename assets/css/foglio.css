@@ -67,22 +67,28 @@
 /* Campi intestazione (furieri, CS, VCS, funzionario) */
 .foglio-header-fields {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 12px;
+    grid-template-columns: 1fr;
+    gap: 8px;
 }
+/* Label + casella sulla stessa riga (c'è spazio): etichetta a larghezza fissa
+   così le tre caselle restano allineate. */
 .fh-field {
     display: flex;
-    flex-direction: column;
-    gap: 3px;
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
 }
 .fh-label {
+    flex: 0 0 160px;
     font-size: .68rem;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: .5px;
     color: var(--grigio-md);
+    white-space: nowrap;
 }
 .fh-value {
+    flex: 1;
     font-size: .88rem;
     font-weight: 600;
     color: var(--grigio-sc);
@@ -645,7 +651,6 @@ body.cruscotto-bloccato .foglio-layout {
     .organico-list          { max-height: 200px; }
     .pos-card               { min-width: 140px; }
     .assenti-grid           { grid-template-columns: 1fr 1fr; }
-    .foglio-header-fields   { grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 480px) {
     .assenti-grid           { grid-template-columns: 1fr; }

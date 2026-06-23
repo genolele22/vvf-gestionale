@@ -1232,6 +1232,8 @@ $nomeRuolo = function ($id) use ($stCV): string {
 };
 $capoNome = $nomeRuolo($foglio['capo_servizio_id'] ?? 0);
 $viceNome = $nomeRuolo($foglio['vice_capo_id'] ?? 0);
+$capoId   = (int)($foglio['capo_servizio_id'] ?? 0);
+$viceId   = (int)($foglio['vice_capo_id'] ?? 0);
 
 // Helper: etichetta vigile "CS Rossi 4"
 function etichettaVigile(array $v): string {
@@ -1470,7 +1472,9 @@ function colorePatentePHP(?string $patente): string {
     $isAssegnato = in_array($vid, $vigiliAssegnati);
     $isAssente   = in_array($vid, $vigiliAssenti);
     $isInSalto   = in_array($vid, $idVigiliInSalto);
-    $occupato    = $isAssegnato || $isAssente || $isInSalto;
+    $isCapoR     = ((int)$vid === $capoId && $capoId > 0);
+    $isViceR     = ((int)$vid === $viceId && $viceId > 0);
+    $occupato    = $isAssegnato || $isAssente || $isInSalto || $isCapoR || $isViceR;
     // Il vigile con ferie respinta RESTA in organico (disponibile, trascinabile):
     // la casella "Ferie respinte" è solo un promemoria parallelo, non lavorabile.
     $classeCard  = 'persona-card' . ($occupato ? ' assente' : '');
@@ -1496,7 +1500,11 @@ function colorePatentePHP(?string $patente): string {
         <span class="persona-nome"
               style="color:<?= $colore ?>">
             <?= htmlspecialchars($label) ?>
-            <?php if ($isAssegnato): ?>
+            <?php if ($isCapoR): ?>
+                <small style="color:var(--grigio-md)">capo servizio</small>
+            <?php elseif ($isViceR): ?>
+                <small style="color:var(--grigio-md)">vice capo</small>
+            <?php elseif ($isAssegnato): ?>
                 <small style="color:var(--grigio-md)">in servizio</small>
             <?php elseif ($isAssente): ?>
                 <small style="color:var(--grigio-md)">assente</small>
@@ -2222,6 +2230,15 @@ function setOccupato(id, occupato, label) {
     updateRespinteCount();
 }
 
+// Un ex capo/vice è ancora "occupato" (e quindi NON torna disponibile) se sta
+// in una posizione, in salto, o ricopre l'altro ruolo di intestazione.
+function _ruoloOccupatoAltrove(id, isCapo) {
+    if (document.getElementById('ass-' + id))   return true;
+    if (document.getElementById('salto-' + id)) return true;
+    const altroId = parseInt(document.getElementById(isCapo ? 'vcsId' : 'csId').value) || 0;
+    return altroId === id;
+}
+
 // Mantiene gli slot di una posizione = capienza ODT (data-cap): card + placeholder vuoti
 function sincronizzaSlot(body) {
     if (!body) return;
@@ -2531,11 +2548,19 @@ document.addEventListener('drop', async function(e) {
 
     // ── Drop su Capo Servizio / Vice Capo (barra intestazione) ─
     if (target.id === 'dropCapoServizio' || target.id === 'dropViceCapo') {
-        const isCapo = (target.id === 'dropCapoServizio');
-        document.getElementById(isCapo ? 'csId' : 'vcsId').value = String(vigileId);
+        const isCapo  = (target.id === 'dropCapoServizio');
+        const inputEl = document.getElementById(isCapo ? 'csId' : 'vcsId');
+        const prevId  = parseInt(inputEl.value) || 0;
+        inputEl.value = String(vigileId);
         const nomeEl = document.getElementById(isCapo ? 'csNome' : 'vcsNome');
         if (nomeEl) { nomeEl.textContent = p.nome; nomeEl.classList.remove('vuoto'); }
         await salvaIntestazioneAjax();
+        // Il nuovo capo/vice esce dai disponibili; il precedente rientra (se non
+        // è occupato altrove: posizione, salto o l'altro ruolo).
+        setOccupato(vigileId, true, isCapo ? 'capo servizio' : 'vice capo');
+        if (prevId && prevId !== vigileId && !_ruoloOccupatoAltrove(prevId, isCapo)) {
+            setOccupato(prevId, false);
+        }
         showMsg((isCapo ? '👤 Capo Servizio: ' : '👤 Vice Capo: ') + p.nome);
         return;
     }
