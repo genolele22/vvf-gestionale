@@ -61,7 +61,7 @@ function finalizeFerie(PDO $pdo, int $foglioId, string $dataStr, string $tipo): 
         $hasCtx->execute([$ctx]);
         if ($hasCtx->fetchColumn()) continue;      // già notificato → idempotente
 
-        $nextId = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM bot_outbox")->fetchColumn();
+        $nextId = nextId($pdo, 'bot_outbox');
         $insOut->execute([$nextId, $vid, 'ferie_approvata', $dataStr, $req['tipo_turno'], $ctx]);
     }
 }

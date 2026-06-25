@@ -147,7 +147,7 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, arra
         $assentiIds[(int)$aid] = true;
     }
 
-    $nextAssId = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM assegnazioni")->fetchColumn();
+    $nextAssId = nextId($pdo, 'assegnazioni');
     $stA       = $pdo->prepare("INSERT IGNORE INTO assegnazioni (id,foglio_id,posizione_id,vigile_id,ordine,in_straordinario) VALUES (?,?,?,?,?,0)");
 
     $conteggio = [];  // posId => n attuale
@@ -223,7 +223,7 @@ function prepopolaFoglio(PDO $pdo, int $foglioId, int $saltoRiposoId, array $res
     $pdo->prepare("DELETE FROM salto_servizio WHERE foglio_id=?")->execute([$foglioId]);
 
     $personale   = $pdo->query("SELECT v.id FROM vigili v WHERE v.attivo=1")->fetchAll();
-    $nextSaltoId = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM salto_servizio")->fetchColumn();
+    $nextSaltoId = nextId($pdo, 'salto_servizio');
     $stS         = $pdo->prepare("INSERT IGNORE INTO salto_servizio (id,foglio_id,vigile_id,richiamato) VALUES (?,?,?,0)");
 
     foreach ($personale as $vp) {
@@ -316,7 +316,7 @@ $stSalto->execute([$codSaltoRip]);
 $saltoRiposoId = (int)($stSalto->fetchColumn() ?: 1);
 
 if (!$foglio) {
-    $nextId = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM fogli_servizio")->fetchColumn();
+    $nextId = nextId($pdo, 'fogli_servizio');
     $pdo->prepare(
         "INSERT INTO fogli_servizio (id,data_servizio,tipo_turno,salto_riposo_id,creato_da) VALUES (?,?,?,?,?)"
     )->execute([$nextId, $dataStr, $tipoParam, $saltoRiposoId, 'sistema']);
@@ -497,7 +497,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stOrd->execute([$foglioId, $posizioneId]);
             $ordine = (int)$stOrd->fetchColumn();
 
-            $nextAssId = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM assegnazioni")->fetchColumn();
+            $nextAssId = nextId($pdo, 'assegnazioni');
             $pdo->prepare(
                 "INSERT INTO assegnazioni
                  (id, foglio_id, posizione_id, vigile_id, ordine, in_straordinario)
@@ -621,7 +621,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                  WHERE id=? AND foglio_id=?"
             )->execute([$posizioneId, $ordine, $straord, $extId, $foglioId]);
         } else {            // crea
-            $extId = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM assegnazioni_esterni")->fetchColumn();
+            $extId = nextId($pdo, 'assegnazioni_esterni');
             $pdo->prepare(
                 "INSERT INTO assegnazioni_esterni (id, foglio_id, posizione_id, nome, in_straordinario, ordine)
                  VALUES (?,?,?,?,?,?)"
@@ -663,7 +663,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             "DELETE FROM assenze WHERE foglio_id=? AND vigile_id=?"
         )->execute([$foglioId, $vigileId]);
 
-        $nextAssenzaId = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM assenze")->fetchColumn();
+        $nextAssenzaId = nextId($pdo, 'assenze');
         $pdo->prepare(
             "INSERT INTO assenze
              (id, foglio_id, vigile_id, tipo_assenza_id,
@@ -700,7 +700,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stF->execute([$dataStr, $tipoPaired]);
                     $fidPaired = $stF->fetchColumn();
                     if (!$fidPaired) {
-                        $fidPaired = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM fogli_servizio")->fetchColumn();
+                        $fidPaired = nextId($pdo, 'fogli_servizio');
                         $pdo->prepare(
                             "INSERT INTO fogli_servizio (id,data_servizio,tipo_turno,salto_riposo_id,creato_da)
                              VALUES (?,?,?,1,'ferie')"
@@ -711,7 +711,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     );
                     $stChk->execute([$fidPaired, $vigileId]);
                     if (!$stChk->fetchColumn()) {
-                        $nid = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM assenze")->fetchColumn();
+                        $nid = nextId($pdo, 'assenze');
                         $pdo->prepare(
                             "INSERT INTO assenze (id,foglio_id,vigile_id,tipo_assenza_id) VALUES (?,?,?,1)"
                         )->execute([$nid, $fidPaired, $vigileId]);
@@ -747,7 +747,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pdo->prepare("DELETE FROM assenze        WHERE foglio_id=? AND vigile_id=?")->execute([$foglioId, $vigileId]);
 
         // Crea assenza FERIE (tipo=1) — nessun bot_request
-        $nid = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM assenze")->fetchColumn();
+        $nid = nextId($pdo, 'assenze');
         $pdo->prepare(
             "INSERT INTO assenze (id, foglio_id, vigile_id, tipo_assenza_id) VALUES (?, ?, ?, 1)"
         )->execute([$nid, $foglioId, $vigileId]);
@@ -823,7 +823,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             "DELETE FROM salto_servizio WHERE foglio_id=? AND vigile_id=?"
         )->execute([$foglioId, $vigileId]);
 
-        $nextSaltoId = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM salto_servizio")->fetchColumn();
+        $nextSaltoId = nextId($pdo, 'salto_servizio');
         $pdo->prepare(
             "INSERT INTO salto_servizio (id, foglio_id, vigile_id, richiamato)
              VALUES (?,?,?,0)"
@@ -914,7 +914,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $pdo->beginTransaction();
         try {
-            $sid = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM bot_scambi_salto")->fetchColumn();
+            $sid = nextId($pdo, 'bot_scambi_salto');
             $pdo->prepare(
                 "INSERT INTO bot_scambi_salto
                     (id, vigile_a_id, vigile_b_id, slot_a, slot_b,
@@ -986,7 +986,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stReq->execute(array_merge([$dataStr], $tipiTurno));
         $reqVigili = $stReq->fetchAll(PDO::FETCH_COLUMN);
         if ($reqVigili) {
-            $nid = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM assenze")->fetchColumn();
+            $nid = nextId($pdo, 'assenze');
             $insAss = $pdo->prepare(
                 "INSERT INTO assenze (id, foglio_id, vigile_id, tipo_assenza_id) VALUES (?,?,?,1)"
             );
@@ -1034,7 +1034,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stSrcA = $pdo->prepare("SELECT posizione_id, vigile_id, ordine, in_straordinario
                                  FROM assegnazioni WHERE foglio_id=?");
         $stSrcA->execute([$diurnoId]);
-        $nextA = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM assegnazioni")->fetchColumn();
+        $nextA = nextId($pdo, 'assegnazioni');
         $insA  = $pdo->prepare("INSERT INTO assegnazioni
                     (id,foglio_id,posizione_id,vigile_id,ordine,in_straordinario) VALUES (?,?,?,?,?,?)");
         $nCopiati = 0;
@@ -1048,7 +1048,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Copia salti manuali dal diurno (saltando assenti nel notturno)
         $stSrcS = $pdo->prepare("SELECT vigile_id, richiamato FROM salto_servizio WHERE foglio_id=?");
         $stSrcS->execute([$diurnoId]);
-        $nextS = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM salto_servizio")->fetchColumn();
+        $nextS = nextId($pdo, 'salto_servizio');
         $insS  = $pdo->prepare("INSERT INTO salto_servizio (id,foglio_id,vigile_id,richiamato) VALUES (?,?,?,?)");
         foreach ($stSrcS->fetchAll() as $r) {
             if (isset($setAssN[(int)$r['vigile_id']])) continue;

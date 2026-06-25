@@ -28,7 +28,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $errore = 'Seleziona vigile e posizione.';
         } else {
             try {
-                $newId = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM assegnazioni_fisse")->fetchColumn();
+                $newId = nextId($pdo, 'assegnazioni_fisse');
                 $pdo->prepare("INSERT INTO assegnazioni_fisse (id, vigile_id, posizione_id, tipo_turno) VALUES (?,?,?,?)")
                     ->execute([$newId, $vigileId, $posId, $turno]);
                 $sucesso = 'Regola aggiunta.';

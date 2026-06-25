@@ -79,7 +79,7 @@ function scambioScriviOverride(PDO $pdo, int $sid, array $rows): void
     $insSS  = $pdo->prepare("INSERT INTO salto_servizio (id, foglio_id, vigile_id, richiamato) VALUES (?,?,?,0)");
 
     foreach ($rows as [$d, $t, $outId, $inId]) {
-        $oid = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM salto_override")->fetchColumn();
+        $oid = nextId($pdo, 'salto_override');
         $insOv->execute([$oid, $sid, $d, $t, $outId, $inId]);
 
         $selF->execute([$d, $t]);
@@ -89,7 +89,7 @@ function scambioScriviOverride(PDO $pdo, int $sid, array $rows): void
             $delAss->execute([$fid, $inId]);
             $chkSS->execute([$fid, $inId]);
             if (!$chkSS->fetchColumn()) {
-                $nss = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM salto_servizio")->fetchColumn();
+                $nss = nextId($pdo, 'salto_servizio');
                 $insSS->execute([$nss, $fid, $inId]);
             }
         }
@@ -176,7 +176,7 @@ function scambioAnnulla(PDO $pdo, int $sid): bool
             $delSS->execute([$fid, (int)$r['vigile_in_id']]);
             $chkSS->execute([$fid, (int)$r['vigile_out_id']]);
             if (!$chkSS->fetchColumn()) {
-                $nss = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM salto_servizio")->fetchColumn();
+                $nss = nextId($pdo, 'salto_servizio');
                 $insSS->execute([$nss, $fid, (int)$r['vigile_out_id']]);
             }
         }
@@ -198,7 +198,7 @@ function scambioEnqueueOutbox(PDO $pdo, int $vigileId, string $tipo, string $ctx
     if ($has->fetchColumn()) {
         return;
     }
-    $nextId = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM bot_outbox")->fetchColumn();
+    $nextId = nextId($pdo, 'bot_outbox');
     $pdo->prepare("INSERT INTO bot_outbox (id, vigile_id, tipo, ctx) VALUES (?,?,?,?)")
         ->execute([$nextId, $vigileId, $tipo, $ctx]);
 }

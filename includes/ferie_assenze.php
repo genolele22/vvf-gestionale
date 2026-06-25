@@ -14,7 +14,7 @@ function feriaGetOrCreateFoglio(PDO $pdo, string $data, string $tipo): int {
     $st->execute([$data, $tipo]);
     $id = $st->fetchColumn();
     if ($id) return (int)$id;
-    $next = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM fogli_servizio")->fetchColumn();
+    $next = nextId($pdo, 'fogli_servizio');
     $pdo->prepare(
         "INSERT INTO fogli_servizio (id, data_servizio, tipo_turno, salto_riposo_id, creato_da)
          VALUES (?, ?, ?, 1, 'ferie')"
@@ -28,7 +28,7 @@ function feriaInsertAssenza(PDO $pdo, int $vigileId, int $foglioId): void {
     );
     $st->execute([$foglioId, $vigileId]);
     if ($st->fetchColumn()) return;
-    $next = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM assenze")->fetchColumn();
+    $next = nextId($pdo, 'assenze');
     $pdo->prepare(
         "INSERT INTO assenze (id, foglio_id, vigile_id, tipo_assenza_id) VALUES (?, ?, ?, 1)"
     )->execute([$next, $foglioId, $vigileId]);

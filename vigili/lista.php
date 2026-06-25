@@ -80,7 +80,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } else {
 
         if ($azione === 'inserisci') {
-            $vid = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM vigili")->fetchColumn();
+            $vid = nextId($pdo, 'vigili');
             $pdo->prepare(
                 "INSERT INTO vigili
                  (id,cognome,nome,disambiguatore,email,qualifica_id,sede_id,salto_id,attivo,note)

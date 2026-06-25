@@ -20,3 +20,14 @@ function getDB(): PDO {
     }
     return $pdo;
 }
+
+/**
+ * Prossimo id per una tabella (TiDB non ha AUTO_INCREMENT implicito → id calcolato
+ * a mano). $table deve essere un nome di tabella fidato (mai input utente diretto).
+ * NB: a bassissima concorrenza com'è questo gestionale va bene; sotto scritture
+ * simultanee sullo stesso table c'è una race teorica (due MAX+1 uguali).
+ */
+function nextId(PDO $pdo, string $table): int {
+    $table = str_replace('`', '', $table);   // hardening
+    return (int) $pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM `$table`")->fetchColumn();
+}

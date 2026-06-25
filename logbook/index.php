@@ -31,7 +31,7 @@ if ($azione === 'add') {
     if ($testo !== '') {
         // id esplicito via MAX+1: TiDB non garantisce AUTO_INCREMENT affidabile
         $pdo->beginTransaction();
-        $nextId = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM bot_logbook")->fetchColumn();
+        $nextId = nextId($pdo, 'bot_logbook');
         $st = $pdo->prepare("INSERT INTO bot_logbook (id, testo, autore) VALUES (?, ?, ?)");
         $st->execute([$nextId, $testo, $autore !== '' ? $autore : null]);
         $pdo->commit();

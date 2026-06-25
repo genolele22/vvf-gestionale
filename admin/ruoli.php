@@ -27,7 +27,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $vid = (int)($_POST['vigile_id'] ?? 0);
             if ($vid <= 0) { $errore = 'Seleziona un vigile.'; }
             else {
-                $newId = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM capi_pool")->fetchColumn();
+                $newId = nextId($pdo, 'capi_pool');
                 $ord   = (int)$pdo->query("SELECT COALESCE(MAX(ordine),0)+1 FROM capi_pool")->fetchColumn();
                 $pdo->prepare("INSERT INTO capi_pool (id, vigile_id, ordine) VALUES (?,?,?)")->execute([$newId, $vid, $ord]);
                 $sucesso = 'Aggiunto al pool capi/vice.';
@@ -54,7 +54,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $vid = (int)($_POST['vigile_id'] ?? 0);
             if ($vid <= 0) { $errore = 'Seleziona un vigile.'; }
             else {
-                $newId = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM furieri_fissi")->fetchColumn();
+                $newId = nextId($pdo, 'furieri_fissi');
                 $pdo->prepare("INSERT INTO furieri_fissi (id, vigile_id) VALUES (?,?)")->execute([$newId, $vid]);
                 $sucesso = 'Aggiunto ai furieri fissi.';
             }

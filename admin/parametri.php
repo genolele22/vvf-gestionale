@@ -31,7 +31,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         ->execute([$chiave, $valore, $descr, $id]);
                     $sucesso = 'Parametro aggiornato.';
                 } else {
-                    $newId = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM parametri")->fetchColumn();
+                    $newId = nextId($pdo, 'parametri');
                     $pdo->prepare("INSERT INTO parametri (id, chiave, valore, descrizione) VALUES (?,?,?,?)")
                         ->execute([$newId, $chiave, $valore, $descr]);
                     $sucesso = 'Parametro aggiunto.';

@@ -84,7 +84,7 @@ $saltoOggi = $turnoOggi['diurno']['turno'] . $turnoOggi['diurno']['salto']
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>VVF Genova – Gestionale Turno B</title>
-<link rel="stylesheet" href="assets/css/stile.css">
+<link rel="stylesheet" href="assets/css/stile.css?v=<?= @filemtime(__DIR__.'/assets/css/stile.css') ?>">
 </head>
 
 <body>

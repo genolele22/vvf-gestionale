@@ -69,7 +69,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $pdo->prepare($sql)->execute([...array_values($vals), $id]);
                         $sucesso = 'Voce aggiornata.';
                     } else {
-                        $newId = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM `$tab`")->fetchColumn();
+                        $newId = nextId($pdo, $tab);   // $tab whitelisted ($TABELLE)
                         $campi = '`id`, ' . implode(', ', array_map(fn($c) => "`$c`", array_keys($cols)));
                         $ph    = implode(', ', array_fill(0, count($cols) + 1, '?'));
                         $pdo->prepare("INSERT INTO `$tab` ($campi) VALUES ($ph)")
