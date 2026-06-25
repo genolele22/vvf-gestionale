@@ -183,10 +183,12 @@ class FoglioRenderer
             }
         }
 
-        // escludi chi è assegnato (in servizio) o assente (ferie/missione/...)
+        // escludi chi è assegnato (in servizio) o assente (ferie/missione/...).
+        // assByCode può contenere esterni al turno (nome_libero, senza vigile_id):
+        // non sono vigili del salto, vanno ignorati qui.
         $occupati = [];
-        foreach ($this->assByCode as $list) foreach ($list as $a) $occupati[(int)$a['vigile_id']] = true;
-        foreach ($this->perTipo as $list) foreach ($list as $a) $occupati[(int)$a['vigile_id']] = true;
+        foreach ($this->assByCode as $list) foreach ($list as $a) { if (!empty($a['vigile_id'])) $occupati[(int)$a['vigile_id']] = true; }
+        foreach ($this->perTipo as $list) foreach ($list as $a) { if (!empty($a['vigile_id'])) $occupati[(int)$a['vigile_id']] = true; }
 
         foreach ($resters as $vid => $r) {
             if (isset($occupati[$vid])) continue;
