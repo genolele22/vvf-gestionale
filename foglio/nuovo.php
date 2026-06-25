@@ -2944,17 +2944,23 @@ async function azioneAssenza(vigileId, tipoCodice) {
     if (p.saltoCanon) {
         const sr = document.getElementById('salto-' + vigileId);
         if (sr) {
-            sr.removeAttribute('draggable');
-            sr.style.cursor = 'default';
-            sr.querySelector('.drag-icon-salto')?.remove();
-            const nome = sr.querySelector('.assente-nome');
-            if (nome && !nome.querySelector('.abil-badge')) {
-                nome.insertAdjacentHTML('beforeend',
-                    `<span class="abil-badge"
-                           style="font-size:.65rem;color:#e67e22;
-                                  font-weight:700;margin-left:4px">
-                       ${tipoCodice}
-                     </span>`);
+            // Missione/malattia: non è più a riposo → via dalla lista salti
+            // (il server esclude gli assenti dai salti: così resta coerente col reload).
+            if (tipoCodice === 'MISS' || tipoCodice === 'MAL') {
+                sr.remove();
+            } else {
+                sr.removeAttribute('draggable');
+                sr.style.cursor = 'default';
+                sr.querySelector('.drag-icon-salto')?.remove();
+                const nome = sr.querySelector('.assente-nome');
+                if (nome && !nome.querySelector('.abil-badge')) {
+                    nome.insertAdjacentHTML('beforeend',
+                        `<span class="abil-badge"
+                               style="font-size:.65rem;color:#e67e22;
+                                      font-weight:700;margin-left:4px">
+                           ${tipoCodice}
+                         </span>`);
+                }
             }
         }
     }
