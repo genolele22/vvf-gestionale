@@ -1472,7 +1472,7 @@ function colorePatentePHP(?string $patente): string {
         <!-- Pulsanti -->
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button id="btnBlocco" onclick="toggleBlocco()" class="btn btn-sm"></button>
-          <button onclick="salvaIntestazioneAjax()"
+          <button onclick="salvaIntestazioneAjax(true)"
                   class="btn btn-verde btn-sm">💾 Salva</button>
           <a href="stampa.php?id=<?= $foglioId ?>" target="_blank"
              class="btn btn-grigio btn-sm">🖨️ Stampa</a>
@@ -3600,7 +3600,9 @@ function scaricaOdt(a) {
     return true;
 }
 
-async function salvaIntestazioneAjax() {
+// proponiFerie: solo il tasto "💾 Salva" propone di approvare le ferie pending.
+// Drag/svuota di capo/vice salvano in silenzio (niente popup approva ferie).
+async function salvaIntestazioneAjax(proponiFerie = false) {
     if (BLOCCATO) { showMsg('🔒 Foglio bloccato.', 'err'); return; }
     const res = await ajax({
         azione:           'salva_intestazione',
@@ -3613,7 +3615,7 @@ async function salvaIntestazioneAjax() {
 
     // Se restano ferie pending sul foglio, proponi di approvarle + notificare.
     const n = parseInt(res.ferie_pending || 0);
-    if (n > 0) {
+    if (proponiFerie && n > 0) {
         chiediConferma({
             titolo:  'Approva ferie e notifica',
             testo:   `Su questo turno ci sono <b>${n} fer${n === 1 ? 'ia' : 'ie'}</b> da approvare. ` +
