@@ -93,6 +93,13 @@ $nFur     = contaTab($pdo, "SELECT COUNT(*) FROM furieri_fissi");
       <div class="ac-meta"><?= $nParam ?> parametri</div>
     </a>
 
+    <a href="ferie_simulate.php" class="admin-card">
+      <div class="ac-ico">🏖️</div>
+      <h3>Caricamento ferie <span style="background:#b9770e;color:#fff;font-size:.6rem;font-weight:800;padding:1px 6px;border-radius:5px;vertical-align:middle;">BETA</span></h3>
+      <p>Carica ferie (estive / agenda cartacea) come richieste bot: voce in Agenda + assenza sul foglio giusto. Niente mail.</p>
+      <div class="ac-meta">strumento interno di test</div>
+    </a>
+
   </div>
 </main>
 </body>

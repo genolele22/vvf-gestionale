@@ -263,6 +263,14 @@ function prepopolaRuoli(PDO $pdo, int $foglioId, array $resters): void {
         }
         $pdo->prepare("UPDATE fogli_servizio SET capo_servizio_id=?, vice_capo_id=? WHERE id=?")
             ->execute([$capo, $vice, $foglioId]);
+
+        // prepopolaAssegnazioni li ha già messi in squadra: capo/vice non stanno
+        // anche nelle squadre, vanno tolti (come al salvataggio manuale).
+        foreach ([$capo, $vice] as $rid) {
+            if (!$rid) continue;
+            $pdo->prepare("DELETE FROM assegnazioni  WHERE foglio_id=? AND vigile_id=?")->execute([$foglioId, $rid]);
+            $pdo->prepare("DELETE FROM salto_servizio WHERE foglio_id=? AND vigile_id=?")->execute([$foglioId, $rid]);
+        }
     } catch (Throwable $e) { /* tabella capi_pool assente: nessun automatismo */ }
 
     // Furieri dal set fisso: sull'ODT vanno SEMPRE segnati tutti (anche se in
@@ -278,6 +286,22 @@ function prepopolaRuoli(PDO $pdo, int $foglioId, array $resters): void {
             $ins->execute([$foglioId, (int)$vid]);
         }
     } catch (Throwable $e) { /* tabella furieri_fissi assente */ }
+}
+
+// Ferie PENDING ancora da approvare su questo foglio (vigili in FER con richiesta
+// bot pending per questa data/turno: N→N/DN, D→D/DN). Stessa logica di finalize_ferie.
+function contaFeriePending(PDO $pdo, int $foglioId, string $dataStr, string $tipoParam): int {
+    $tipi = $tipoParam === 'N' ? ['N', 'DN'] : ['D', 'DN'];
+    $ph   = implode(',', array_fill(0, count($tipi), '?'));
+    $st = $pdo->prepare(
+        "SELECT COUNT(DISTINCT a.vigile_id)
+           FROM assenze a
+           JOIN bot_requests r ON r.vigile_id = a.vigile_id AND r.data_richiesta = ?
+                AND r.stato = 'pending' AND r.tipo_turno IN ($ph)
+          WHERE a.foglio_id = ? AND a.tipo_assenza_id = 1"
+    );
+    $st->execute(array_merge([$dataStr], $tipi, [$foglioId]));
+    return (int)$st->fetchColumn();
 }
 
 // ── Recupera o crea il foglio ────────────────────────────────
@@ -335,6 +359,34 @@ $stLock = $pdo->prepare("SELECT bloccato FROM fogli_lock WHERE foglio_id=?");
 $stLock->execute([$foglioId]);
 $foglioBloccato = (bool)$stLock->fetchColumn();
 
+// ── Personale esterno al turno (turno C in straordinario, sommozzatori,
+// nautici in prestito): nomi liberi NON in `vigili`, legati a foglio+posizione.
+// Tabella a parte perché assegnazioni.vigile_id ha FK su vigili(id). ──────────
+$pdo->exec(
+    "CREATE TABLE IF NOT EXISTS assegnazioni_esterni (
+        id               INT UNSIGNED NOT NULL PRIMARY KEY,
+        foglio_id        INT UNSIGNED NOT NULL,
+        posizione_id     SMALLINT UNSIGNED NOT NULL,
+        nome             VARCHAR(80) NOT NULL,
+        in_straordinario TINYINT(1) NOT NULL DEFAULT 1,
+        ordine           TINYINT UNSIGNED NOT NULL DEFAULT 0,
+        KEY idx_foglio (foglio_id),
+        KEY idx_foglio_pos (foglio_id, posizione_id)
+     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+);
+
+// Occupanti di una posizione = vigili assegnati + esterni (per la capienza).
+function countOccupanti(PDO $pdo, int $foglioId, int $posId, int $exclVigile = 0): int {
+    $st = $pdo->prepare(
+        "SELECT (SELECT COUNT(*) FROM assegnazioni
+                  WHERE foglio_id=? AND posizione_id=? AND vigile_id<>?)
+              + (SELECT COUNT(*) FROM assegnazioni_esterni
+                  WHERE foglio_id=? AND posizione_id=?)"
+    );
+    $st->execute([$foglioId, $posId, $exclVigile, $foglioId, $posId]);
+    return (int)$st->fetchColumn();
+}
+
 // ── AJAX: salva intestazione ─────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $azione = $_POST['azione'] ?? '';
@@ -355,7 +407,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $azioniModifica = ['salva_intestazione', 'assegna', 'rimuovi', 'assenza',
                        'rimuovi_assenza', 'metti_salto', 'richiama_salto', 'reset_foglio',
                        'ferie_ufficio', 'rimuovi_ufficio', 'scambia_salto', 'annulla_scambio',
-                       'riordina', 'copia_da_diurno', 'scambia_posizioni'];
+                       'riordina', 'copia_da_diurno', 'scambia_posizioni',
+                       'assegna_esterno', 'rimuovi_esterno'];
     if ($foglioBloccato && in_array($azione, $azioniModifica, true)) {
         echo json_encode(['ok' => false, 'bloccato' => true,
                           'errore' => 'Foglio bloccato. Sblocca per modificare.']);
@@ -374,7 +427,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
              WHERE id=?"
         )->execute([$csId, $vcsId, $fun, $note, $foglioId]);
 
-        echo json_encode(['ok' => true]);
+        // Capo e vice non possono stare anche in squadra/salto/assenza: chi finisce
+        // in un riquadro dell'intestazione sparisce dal resto del servizio.
+        foreach ([$csId, $vcsId] as $rid) {
+            if (!$rid) continue;
+            $pdo->prepare("DELETE FROM assegnazioni   WHERE foglio_id=? AND vigile_id=?")->execute([$foglioId, $rid]);
+            $pdo->prepare("DELETE FROM salto_servizio  WHERE foglio_id=? AND vigile_id=?")->execute([$foglioId, $rid]);
+            $pdo->prepare("DELETE FROM assenze         WHERE foglio_id=? AND vigile_id=?")->execute([$foglioId, $rid]);
+        }
+
+        // Quante ferie pending ci sono ancora su questo foglio (per proporre
+        // l'approvazione+invio dal tasto Salva, con conferma lato client).
+        echo json_encode(['ok' => true, 'ferie_pending' => contaFeriePending($pdo, $foglioId, $dataStr, $tipoParam)]);
+        exit;
+    }
+
+    // ── AJAX: approva le ferie del foglio + accoda notifiche (Telegram+mail) ──
+    // Sostituisce il vecchio automatismo alla generazione ODT: ora avviene solo
+    // qui, dal tasto Salva, dopo conferma esplicita dell'operatore.
+    if ($azione === 'finalizza_ferie') {
+        require_once __DIR__ . '/../includes/finalize_ferie.php';
+        $n = contaFeriePending($pdo, $foglioId, $dataStr, $tipoParam);
+        try {
+            finalizeFerie($pdo, $foglioId, $dataStr, $tipoParam);
+        } catch (Throwable $e) {
+            echo json_encode(['ok' => false, 'errore' => 'Errore approvazione: ' . $e->getMessage()]);
+            exit;
+        }
+        echo json_encode(['ok' => true, 'approvate' => $n]);
         exit;
     }
 
@@ -388,12 +468,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // escludendo il vigile stesso (caso di ri-drop nella stessa squadra)
         if ($posizioneId > 0) {
             $cap = capPos($posizioneId);
-            $stCap = $pdo->prepare(
-                "SELECT COUNT(*) FROM assegnazioni
-                 WHERE foglio_id=? AND posizione_id=? AND vigile_id<>?"
-            );
-            $stCap->execute([$foglioId, $posizioneId, $vigileId]);
-            if ((int)$stCap->fetchColumn() >= $cap) {
+            if (countOccupanti($pdo, $foglioId, $posizioneId, $vigileId) >= $cap) {
                 echo json_encode(['ok' => false, 'pieno' => true,
                                   'errore' => "Posizione al completo (max $cap)."]);
                 exit;
@@ -507,6 +582,60 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             "DELETE FROM assenze WHERE foglio_id=? AND vigile_id=?"
         )->execute([$foglioId, $vigileId]);
 
+        echo json_encode(['ok' => true]);
+        exit;
+    }
+
+    // ── AJAX: assegna un NOME ESTERNO a una posizione ─────────
+    // Crea (o sposta) un nome libero non presente in `vigili`. Default STR.
+    if ($azione === 'assegna_esterno') {
+        $posizioneId = (int)($_POST['posizione_id'] ?? 0);
+        $nome        = trim($_POST['nome'] ?? '');
+        $straord     = (int)($_POST['straordinario'] ?? 1) ? 1 : 0;
+        $extId       = (int)($_POST['ext_id'] ?? 0);   // >0 = sposta esistente
+        $nome        = mb_substr($nome, 0, 80);
+        if ($posizioneId <= 0 || $nome === '') {
+            echo json_encode(['ok' => false, 'errore' => 'Nome o posizione mancanti.']); exit;
+        }
+        // Capienza: escludi sé stesso se è uno spostamento nella stessa posizione
+        $cap = capPos($posizioneId);
+        $occ = countOccupanti($pdo, $foglioId, $posizioneId, 0);
+        if ($extId > 0) {
+            $stP = $pdo->prepare("SELECT posizione_id FROM assegnazioni_esterni WHERE id=? AND foglio_id=?");
+            $stP->execute([$extId, $foglioId]);
+            if ((int)$stP->fetchColumn() === $posizioneId) $occ--;   // già qui dentro
+        }
+        if ($occ >= $cap) {
+            echo json_encode(['ok' => false, 'pieno' => true, 'errore' => "Posizione al completo (max $cap)."]); exit;
+        }
+
+        $stOrd = $pdo->prepare(
+            "SELECT COALESCE(MAX(ordine),0)+1 FROM assegnazioni_esterni WHERE foglio_id=? AND posizione_id=?"
+        );
+        $stOrd->execute([$foglioId, $posizioneId]);
+        $ordine = (int)$stOrd->fetchColumn();
+
+        if ($extId > 0) {   // sposta
+            $pdo->prepare(
+                "UPDATE assegnazioni_esterni SET posizione_id=?, ordine=?, in_straordinario=?
+                 WHERE id=? AND foglio_id=?"
+            )->execute([$posizioneId, $ordine, $straord, $extId, $foglioId]);
+        } else {            // crea
+            $extId = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM assegnazioni_esterni")->fetchColumn();
+            $pdo->prepare(
+                "INSERT INTO assegnazioni_esterni (id, foglio_id, posizione_id, nome, in_straordinario, ordine)
+                 VALUES (?,?,?,?,?,?)"
+            )->execute([$extId, $foglioId, $posizioneId, $nome, $straord, $ordine]);
+        }
+        echo json_encode(['ok' => true, 'ext_id' => $extId]);
+        exit;
+    }
+
+    // ── AJAX: rimuovi un NOME ESTERNO ─────────────────────────
+    if ($azione === 'rimuovi_esterno') {
+        $extId = (int)($_POST['ext_id'] ?? 0);
+        $pdo->prepare("DELETE FROM assegnazioni_esterni WHERE id=? AND foglio_id=?")
+            ->execute([$extId, $foglioId]);
         echo json_encode(['ok' => true]);
         exit;
     }
@@ -1014,10 +1143,34 @@ $assegnazioni = $pdo->prepare(
 $assegnazioni->execute([$foglioId]);
 $assegnazioni = $assegnazioni->fetchAll();
 
+// Capo/vice non compaiono nelle squadre anche se un vecchio foglio li avesse
+// ancora assegnati (creato prima del fix che li rimuove al salvataggio).
+$ruoliIntestazione = array_filter([
+    (int)($foglio['capo_servizio_id'] ?? 0),
+    (int)($foglio['vice_capo_id']     ?? 0),
+]);
+if ($ruoliIntestazione) {
+    $assegnazioni = array_values(array_filter(
+        $assegnazioni,
+        fn($a) => !in_array((int)$a['vigile_id'], $ruoliIntestazione, true)
+    ));
+}
+
 // Raggruppa assegnazioni per posizione
 $assPerPosizione = [];
 foreach ($assegnazioni as $ass) {
     $assPerPosizione[$ass['posizione_id']][] = $ass;
+}
+
+// Nomi esterni (turno C/sommozzatori/nautici) per posizione
+$esterniPerPosizione = [];
+$stE = $pdo->prepare(
+    "SELECT id, posizione_id, nome, in_straordinario
+       FROM assegnazioni_esterni WHERE foglio_id=? ORDER BY posizione_id, ordine"
+);
+$stE->execute([$foglioId]);
+foreach ($stE->fetchAll() as $e) {
+    $esterniPerPosizione[(int)$e['posizione_id']][] = $e;
 }
 
 // Vigili assegnati (set di id)
@@ -1205,17 +1358,7 @@ $scambiAttivi = $stSA->fetchAll();
 // Quante ferie PENDING verrebbero approvate generando l'ODT (per la conferma).
 // Stessa logica di finalize_ferie: vigili in FER sul foglio con richiesta pending
 // per questa data e turno (N→N/DN, D→D/DN).
-$tipiFerieAppr = $tipoParam === 'N' ? ['N', 'DN'] : ['D', 'DN'];
-$phFA = implode(',', array_fill(0, count($tipiFerieAppr), '?'));
-$stFA = $pdo->prepare(
-    "SELECT COUNT(DISTINCT a.vigile_id)
-     FROM assenze a
-     JOIN bot_requests r ON r.vigile_id = a.vigile_id AND r.data_richiesta = ?
-          AND r.stato = 'pending' AND r.tipo_turno IN ($phFA)
-     WHERE a.foglio_id = ? AND a.tipo_assenza_id = 1"
-);
-$stFA->execute(array_merge([$dataStr], $tipiFerieAppr, [$foglioId]));
-$nFerieDaApprovare = (int)$stFA->fetchColumn();
+$nFerieDaApprovare = contaFeriePending($pdo, $foglioId, $dataStr, $tipoParam);
 
 // Furieri del foglio
 // Nomi capo/vice per le drop-zone (qualsiasi vigile, non solo Centrale).
@@ -1415,6 +1558,8 @@ function colorePatentePHP(?string $patente): string {
           <span id="csNome" class="dz-nome<?= $capoNome ? '' : ' vuoto' ?>">
             <?= $capoNome ? htmlspecialchars($capoNome) : 'Trascina qui…' ?>
           </span>
+          <button type="button" class="fh-clear" id="csClear" title="Togli capo servizio"
+                  onclick="svuotaRuolo(true)"<?= $capoNome ? '' : ' style="display:none"' ?>>×</button>
         </div>
       </div>
 
@@ -1427,6 +1572,8 @@ function colorePatentePHP(?string $patente): string {
           <span id="vcsNome" class="dz-nome<?= $viceNome ? '' : ' vuoto' ?>">
             <?= $viceNome ? htmlspecialchars($viceNome) : 'Trascina qui…' ?>
           </span>
+          <button type="button" class="fh-clear" id="vcsClear" title="Togli vice capo"
+                  onclick="svuotaRuolo(false)"<?= $viceNome ? '' : ' style="display:none"' ?>>×</button>
         </div>
       </div>
 
@@ -1463,6 +1610,20 @@ function colorePatentePHP(?string $patente): string {
              id="cercaOrganico"
              placeholder="🔍 Trova vigile nel foglio…"
              oninput="filtraOrganico(this.value)">
+
+      <!-- Aggiungi un nome NON del turno (turno C in straord., sommozzatori, nautici) -->
+      <div class="aggiungi-esterno">
+        <input type="text" id="esternoNome" maxlength="80"
+               placeholder="➕ Aggiungi esterno (es. CS MICELI)"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();aggiungiEsterno();}">
+        <div class="aggiungi-esterno-row">
+          <label title="Segna come straordinario (giallo sull'ODT)">
+            <input type="checkbox" id="esternoStr" checked> straordinario
+          </label>
+          <button type="button" class="btn btn-sm btn-verde" onclick="aggiungiEsterno()">Aggiungi</button>
+        </div>
+      </div>
+
       <div class="organico-list" id="organicoList">
   <?php foreach ($tuttoPersonale as $v):
     $vid          = $v['id'];
@@ -1634,8 +1795,9 @@ function colorePatentePHP(?string $patente): string {
       }
       // Card-renderer condiviso (Centrale + Distaccamenti + Aeroporto).
       // $gridStyle = posizionamento esplicito su griglia (es. "grid-column:6;grid-row:2").
-      $renderPosCard = function (array $pos, string $gridStyle = '') use (&$assPerPosizione, $scambioOut) {
+      $renderPosCard = function (array $pos, string $gridStyle = '') use (&$assPerPosizione, &$esterniPerPosizione, $scambioOut) {
           $assQui = $assPerPosizione[$pos['id']] ?? [];
+          $extQui = $esterniPerPosizione[$pos['id']] ?? [];
           $codPos = strtolower($pos['codice']);
           $tipoHead = 'tipo-a';
           if (str_contains($codPos,'nbcr'))    $tipoHead = 'tipo-nbcr';
@@ -1694,8 +1856,29 @@ function colorePatentePHP(?string $patente): string {
                           title="Rimuovi">✕</button>
                 </div>
               <?php endforeach; ?>
-              <?php // Slot vuoti fino alla capienza della posizione
-              for ($i = count($assQui); $i < capPos((int)$pos['id']); $i++): ?>
+              <?php // Nomi esterni al turno (non in `vigili`)
+              foreach ($extQui as $e): ?>
+                <div class="ass-card esterno"
+                     id="extass-<?= (int)$e['id'] ?>"
+                     data-ext-id="<?= (int)$e['id'] ?>"
+                     data-ext-nome="<?= htmlspecialchars($e['nome']) ?>"
+                     data-straord="<?= (int)$e['in_straordinario'] ?>"
+                     data-pos-id="<?= $pos['id'] ?>"
+                     draggable="true">
+                  <span class="esterno-dot" title="Personale esterno al turno">★</span>
+                  <span class="ass-nome" title="<?= htmlspecialchars($e['nome']) ?> (esterno)">
+                    <span class="ass-nome-txt"><?= htmlspecialchars($e['nome']) ?></span>
+                    <?php if ((int)$e['in_straordinario']): ?>
+                        <span style="font-size:.6rem;color:var(--giallo);font-weight:700">STR</span>
+                    <?php endif; ?>
+                  </span>
+                  <button class="remove-btn"
+                          onclick="rimuoviEsternoPos(<?= (int)$e['id'] ?>)"
+                          title="Rimuovi">✕</button>
+                </div>
+              <?php endforeach; ?>
+              <?php // Slot vuoti fino alla capienza della posizione (vigili + esterni)
+              for ($i = count($assQui) + count($extQui); $i < capPos((int)$pos['id']); $i++): ?>
                 <div class="slot-empty"></div>
               <?php endfor; ?>
             </div>
@@ -2140,6 +2323,7 @@ const ID_SALTO_RIPOSO = <?= $idSaltoRiposo ?>;
 // ── Stato drag ───────────────────────────────────────────────
 let _dragId     = null;  // vigile_id corrente
 let _dragSource = null;  // 'organico' | 'posizione' | 'salto'
+let _dragExt    = null;  // nome esterno trascinato: {extId, nome, str, source, el}
 
 // ════════════════════════════════════════════════════════════
 // UTILITY
@@ -2417,6 +2601,24 @@ function buildAssenteRow(p, tipoCodice) {
 // ════════════════════════════════════════════════════════════
 document.addEventListener('dragstart', function(e) {
     if (BLOCCATO) { e.preventDefault(); return; }
+
+    // 0. Nome ESTERNO (non in `vigili`): card nei disponibili o in posizione.
+    const extCard = e.target.closest('.esterno');
+    if (extCard) {
+        const inPos = extCard.classList.contains('ass-card');
+        _dragExt = {
+            extId:  inPos ? parseInt(extCard.dataset.extId) : 0,
+            nome:   extCard.dataset.extNome,
+            str:    extCard.dataset.straord === '1' ? 1 : 0,
+            source: inPos ? 'esterno_pos' : 'esterno_disp',
+            el:     extCard,
+        };
+        extCard.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', 'ext');
+        return;
+    }
+
     // 1. Da organico (il box "Ferie respinte" è sola lettura, non si trascina)
     const persCard = e.target.closest('#organicoList .persona-card');
     if (persCard && !persCard.classList.contains('assente')) {
@@ -2472,6 +2674,7 @@ document.addEventListener('dragend', function() {
     _stopAutoScroll();
     _dragId     = null;
     _dragSource = null;
+    _dragExt    = null;
 });
 
 // ════════════════════════════════════════════════════════════
@@ -2529,6 +2732,43 @@ document.addEventListener('drop', async function(e) {
     e.preventDefault();
     target.classList.remove('drop-target');
 
+    // ── Drop di un NOME ESTERNO (non in `vigili`) ────────────
+    if (_dragExt) {
+        const ext = _dragExt;
+        _dragExt = null;
+        // Su una posizione → persiste (crea o sposta)
+        if (target.classList.contains('pos-card')) {
+            const posId = parseInt(target.dataset.posId);
+            const res = await ajax({
+                azione:        'assegna_esterno',
+                posizione_id:  posId,
+                nome:          ext.nome,
+                straordinario: ext.str,
+                ext_id:        ext.extId || 0,
+            });
+            if (!res.ok) { showMsg(res.errore || '⚠️ Errore.', 'err'); return; }
+            const oldBody = (ext.source === 'esterno_pos') ? ext.el.parentElement : null;
+            ext.el.remove();                                    // toglie card sorgente
+            const body = document.getElementById('body-' + posId);
+            body.insertBefore(cardEsternoPos(res.ext_id, ext.nome, ext.str, posId),
+                              body.querySelector('.slot-empty'));
+            sincronizzaSlot(body);
+            if (oldBody && oldBody !== body) sincronizzaSlot(oldBody);
+            showMsg('➕ ' + ext.nome + ' aggiunto.');
+            return;
+        }
+        // Da posizione → trascinato nei disponibili: rimuovi dal servizio
+        if (target.id === 'organicoList' && ext.source === 'esterno_pos') {
+            const res = await ajax({ azione: 'rimuovi_esterno', ext_id: ext.extId });
+            if (!res.ok) { showMsg(res.errore || '⚠️ Errore.', 'err'); return; }
+            const oldBody = ext.el.parentElement;
+            ext.el.remove();
+            sincronizzaSlot(oldBody);
+            aggiungiCardEsternoDisp(ext.nome, ext.str);        // torna disponibile
+        }
+        return;
+    }
+
     const vigileId = _dragId;
     const source   = _dragSource;
     _dragId        = null;
@@ -2554,7 +2794,12 @@ document.addEventListener('drop', async function(e) {
         inputEl.value = String(vigileId);
         const nomeEl = document.getElementById(isCapo ? 'csNome' : 'vcsNome');
         if (nomeEl) { nomeEl.textContent = p.nome; nomeEl.classList.remove('vuoto'); }
+        const clearEl = document.getElementById(isCapo ? 'csClear' : 'vcsClear');
+        if (clearEl) clearEl.style.display = '';
         await salvaIntestazioneAjax();
+        // Il nuovo capo/vice esce dalle squadre/salto/assenze (il server le cancella):
+        // toglie subito la sua card dal resto del servizio.
+        rimuoviDOM(vigileId);
         // Il nuovo capo/vice esce dai disponibili; il precedente rientra (se non
         // è occupato altrove: posizione, salto o l'altro ruolo).
         setOccupato(vigileId, true, isCapo ? 'capo servizio' : 'vice capo');
@@ -2566,6 +2811,7 @@ document.addEventListener('drop', async function(e) {
     }
 
     // ── Drop su posizione ────────────────────────────────────
+    // (svuotaRuolo definita più sotto vicino a salvaIntestazioneAjax)
     if (target.classList.contains('pos-card')) {
         const posId   = parseInt(target.dataset.posId);
 
@@ -2991,6 +3237,83 @@ function getDropTarget(el) {
 }
 
 // ════════════════════════════════════════════════════════════
+// NOMI ESTERNI (non in `vigili`)
+// ════════════════════════════════════════════════════════════
+function escHtml(s) {
+    return String(s).replace(/[&<>"']/g, c =>
+        ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+// Crea una card esterna trascinabile nei DISPONIBILI (non persistita finché
+// non viene trascinata su una posizione). La ✕ qui la elimina e basta.
+function aggiungiCardEsternoDisp(nome, str) {
+    const list = document.getElementById('organicoList');
+    const card = document.createElement('div');
+    card.className = 'persona-card esterno';
+    card.dataset.extNome = nome;
+    card.dataset.straord = str ? '1' : '0';
+    card.dataset.nome    = nome.toLowerCase();   // per il filtro ricerca
+    card.setAttribute('draggable', 'true');
+    card.innerHTML =
+        '<span class="esterno-dot" title="Personale esterno al turno">★</span>' +
+        '<span class="persona-nome">' + escHtml(nome) +
+            (str ? ' <small style="color:var(--giallo);font-weight:700">STR</small>' : '') +
+        '</span>' +
+        '<button class="remove-btn" title="Elimina" ' +
+                'onclick="this.parentElement.remove()">✕</button>';
+    list.insertBefore(card, list.firstChild);
+}
+
+// Card esterna DENTRO una posizione (persistita: ext_id reale)
+function cardEsternoPos(extId, nome, str, posId) {
+    const card = document.createElement('div');
+    card.className = 'ass-card esterno';
+    card.id = 'extass-' + extId;
+    card.dataset.extId   = extId;
+    card.dataset.extNome = nome;
+    card.dataset.straord = str ? '1' : '0';
+    card.dataset.posId   = posId;
+    card.setAttribute('draggable', 'true');
+    card.innerHTML =
+        '<span class="esterno-dot" title="Personale esterno al turno">★</span>' +
+        '<span class="ass-nome" title="' + escHtml(nome) + ' (esterno)">' +
+            '<span class="ass-nome-txt">' + escHtml(nome) + '</span>' +
+            (str ? '<span style="font-size:.6rem;color:var(--giallo);font-weight:700">STR</span>' : '') +
+        '</span>' +
+        '<button class="remove-btn" title="Rimuovi" ' +
+                'onclick="rimuoviEsternoPos(' + extId + ')">✕</button>';
+    return card;
+}
+
+function aggiungiEsterno() {
+    if (BLOCCATO) { showMsg('🔒 Foglio bloccato.', 'err'); return; }
+    const inp = document.getElementById('esternoNome');
+    const nome = inp.value.trim();
+    if (!nome) { inp.focus(); return; }
+    const str = document.getElementById('esternoStr').checked ? 1 : 0;
+    aggiungiCardEsternoDisp(nome, str);
+    inp.value = '';
+    inp.focus();
+    showMsg('➕ "' + nome + '" creato: trascinalo su una posizione.');
+}
+
+// ✕ su una card esterna in posizione → la rimuove dal servizio e la rimette
+// tra i disponibili (così non perdi il nome digitato).
+async function rimuoviEsternoPos(extId) {
+    const card = document.getElementById('extass-' + extId);
+    const res = await ajax({ azione: 'rimuovi_esterno', ext_id: extId });
+    if (!res.ok) { showMsg('⚠️ Errore.', 'err'); return; }
+    if (card) {
+        const body = card.parentElement;
+        const nome = card.dataset.extNome, str = card.dataset.straord === '1' ? 1 : 0;
+        card.remove();
+        sincronizzaSlot(body);
+        aggiungiCardEsternoDisp(nome, str);
+    }
+    showMsg('↩️ Esterno rimosso dalla posizione.');
+}
+
+// ════════════════════════════════════════════════════════════
 // RIMOZIONI
 // ════════════════════════════════════════════════════════════
 async function rimuoviDaPosizione(vigileId) {
@@ -3271,21 +3594,10 @@ async function annullaScambio(scambioId) {
     });
 }
 
-// Scarica ODT = chiude il servizio: se ci sono ferie pending da approvare, chiede conferma.
+// Scarica ODT = solo export del documento. NON approva ferie né notifica:
+// quello avviene dal tasto Salva (con conferma). Download diretto.
 function scaricaOdt(a) {
-    const n = parseInt(a.dataset.nferie || '0');
-    if (n > 0) {
-        chiediConferma({
-            titolo:  'Genera ODT e approva ferie',
-            testo:   `Generando l'ODT <b>approvi ${n} fer${n === 1 ? 'ia' : 'ie'}</b> di questo turno e ` +
-                     `<b>notifichi i vigili</b> (Telegram + mail). L'operazione è registrata.<br><br>Procedere?`,
-            okLabel: '📄 Genera e approva',
-            okStyle: 'background:var(--rosso);color:#fff',
-            onOk:    () => { window.location.href = a.href; },
-        });
-        return false;   // blocca il download: parte solo dopo conferma
-    }
-    return true;        // nessuna ferie pending → download diretto
+    return true;
 }
 
 async function salvaIntestazioneAjax() {
@@ -3296,7 +3608,44 @@ async function salvaIntestazioneAjax() {
         vice_capo_id:     document.getElementById('vcsId').value,
         funzionario:      document.getElementById('funzionario').value,
     });
-    showMsg(res.ok ? '✅ Intestazione salvata.' : '⚠️ Errore.', res.ok ? 'ok':'err');
+    if (!res.ok) { showMsg('⚠️ Errore.', 'err'); return; }
+    showMsg('✅ Salvato.', 'ok');
+
+    // Se restano ferie pending sul foglio, proponi di approvarle + notificare.
+    const n = parseInt(res.ferie_pending || 0);
+    if (n > 0) {
+        chiediConferma({
+            titolo:  'Approva ferie e notifica',
+            testo:   `Su questo turno ci sono <b>${n} fer${n === 1 ? 'ia' : 'ie'}</b> da approvare. ` +
+                     `Confermando le <b>approvi</b> e <b>invii le notifiche</b> ai vigili (Telegram + mail).<br><br>` +
+                     `Solo salvato? Annulla e le ferie restano in attesa.`,
+            okLabel: '✅ Approva e invia',
+            okStyle: 'background:var(--rosso);color:#fff',
+            onOk:    async () => {
+                const r2 = await ajax({ azione: 'finalizza_ferie' });
+                showMsg(r2.ok ? `✅ ${r2.approvate} fer${r2.approvate === 1 ? 'ia approvata' : 'ie approvate'} e notificate.`
+                              : '⚠️ ' + (r2.errore || 'Errore approvazione.'),
+                        r2.ok ? 'ok' : 'err');
+            },
+        });
+    }
+}
+
+// Svuota il riquadro capo/vice (anche se precompilato dalle regole admin):
+// libera il vigile e lo rimette tra i disponibili se non occupato altrove.
+async function svuotaRuolo(isCapo) {
+    if (BLOCCATO) { showMsg('🔒 Foglio bloccato.', 'err'); return; }
+    const inputEl = document.getElementById(isCapo ? 'csId'  : 'vcsId');
+    const prevId  = parseInt(inputEl.value) || 0;
+    if (!prevId) return;
+    inputEl.value = '';
+    const nomeEl  = document.getElementById(isCapo ? 'csNome' : 'vcsNome');
+    if (nomeEl) { nomeEl.textContent = 'Trascina qui…'; nomeEl.classList.add('vuoto'); }
+    const clearEl = document.getElementById(isCapo ? 'csClear' : 'vcsClear');
+    if (clearEl) clearEl.style.display = 'none';
+    await salvaIntestazioneAjax();
+    if (!_ruoloOccupatoAltrove(prevId, isCapo)) setOccupato(prevId, false);
+    showMsg((isCapo ? 'Capo Servizio' : 'Vice Capo') + ' rimosso.');
 }
 
 // ════════════════════════════════════════════════════════════

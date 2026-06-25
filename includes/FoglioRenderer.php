@@ -7,6 +7,8 @@
  * (dalle righe-header), e riempie dall'alto le celle sotto ogni header coi nomi del DB.
  * Niente clonazione righe: capienza = righe del modulo (come da esempio B4).
  */
+require_once __DIR__ . '/ferie_blocchi.php';
+
 class FoglioRenderer
 {
     const TBL = 'urn:oasis:names:tc:opendocument:xmlns:table:1.0';
@@ -103,6 +105,25 @@ class FoglioRenderer
             $a['sigla'] = ((int)$a['vig_sede'] !== (int)$a['pos_sede']) ? $a['sede_cod'] : null;
             $this->assByCode[$code][] = $a;
         }
+        // Nomi esterni al turno (non in `vigili`): si accodano alla posizione.
+        // Tabella creata da foglio/nuovo.php; potrebbe non esistere su DB vecchi.
+        try {
+            $stx = $this->pdo->prepare(
+                "SELECT posizione_id, nome, in_straordinario
+                   FROM assegnazioni_esterni WHERE foglio_id=? ORDER BY posizione_id, ordine"
+            );
+            $stx->execute([$foglioId]);
+            foreach ($stx->fetchAll() as $e) {
+                $code = $idByCode[(int)$e['posizione_id']] ?? null;
+                if (!$code) continue;
+                $this->assByCode[$code][] = [
+                    'nome_libero'      => $e['nome'],
+                    'in_straordinario' => (int)$e['in_straordinario'],
+                    'patente_max'      => null,
+                    'sigla'            => null,
+                ];
+            }
+        } catch (Throwable $ignored) { /* tabella assente: nessun esterno */ }
         // assenze per tipo
         $st = $this->pdo->prepare(
             "SELECT a.*, v.cognome, v.disambiguatore, q.codice AS qcodice, ta.codice AS tipo_codice, $pat AS patente_max,
@@ -115,6 +136,7 @@ class FoglioRenderer
             $a['sigla'] = $this->siglaAssenza($a);
             $this->perTipo[$a['tipo_codice']][] = $a;
         }
+        $this->arricchisciFerie();   // nr_turni + periodo da–a sulle righe FER
         // capo / vice / furieri
         $this->capo = $this->vigById($this->foglio['capo_servizio_id'] ?? null);
         $this->vice = $this->vigById($this->foglio['vice_capo_id'] ?? null);
@@ -189,6 +211,35 @@ class FoglioRenderer
         return $r;
     }
 
+    /**
+     * Per ogni riga FERIE calcola nr turni + periodo (da–a) del blocco contiguo
+     * di ferie del vigile che contiene la data di questo foglio. Stessa logica
+     * dell'Agenda (includes/ferie_blocchi.php): un blocco = richieste con gap
+     * <= 3 giorni; DN vale 2 turni.
+     */
+    private function arricchisciFerie(): void
+    {
+        if (empty($this->perTipo['FER'])) return;
+        $req = $this->pdo->prepare(
+            "SELECT data_richiesta, tipo_turno FROM bot_requests
+              WHERE vigile_id=? ORDER BY data_richiesta"
+        );
+        foreach ($this->perTipo['FER'] as $i => $a) {
+            $req->execute([(int)$a['vigile_id']]);
+            $blocchi = blocchiContigui($req->fetchAll());
+            foreach ($blocchi as $b) {
+                $da = $b[0]['data_richiesta'];
+                $aa = end($b)['data_richiesta'];
+                if ($this->dataStr >= $da && $this->dataStr <= $aa) {
+                    $this->perTipo['FER'][$i]['nr_turni'] = turniLabel($b);
+                    $this->perTipo['FER'][$i]['data_da']  = $da;
+                    $this->perTipo['FER'][$i]['data_a']   = $aa;
+                    break;
+                }
+            }
+        }
+    }
+
     /** sigla per le sezioni assenti: distacco manuale, o sede di appartenenza (se non Centrale) */
     private function siglaAssenza(array $a): ?string
     {
@@ -206,6 +257,7 @@ class FoglioRenderer
 
     private static function etichetta(array $v): string
     {
+        if (isset($v['nome_libero'])) return $v['nome_libero'];   // esterno al turno
         return ucfirst(strtolower($v['qcodice'] ?? '')) . ' ' . ucfirst(strtolower($v['cognome'] ?? ''))
              . (!empty($v['disambiguatore']) ? ' ' . (int)$v['disambiguatore'] : '');
     }

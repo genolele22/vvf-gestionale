@@ -21,13 +21,9 @@ if (!$foglioId) {
 }
 if (!$foglioId) { http_response_code(404); exit('Foglio non trovato: compilalo prima dalla pagina del servizio.'); }
 
-// Generare l'ODT = chiudere il servizio: approva le ferie del foglio e notifica
-// (Telegram + mail via bot). Idempotente: la 2ª generazione non ri-notifica.
-require_once __DIR__ . '/../includes/finalize_ferie.php';
-$st = $pdo->prepare("SELECT data_servizio, tipo_turno FROM fogli_servizio WHERE id=?");
-$st->execute([$foglioId]);
-$f = $st->fetch();
-if ($f) { try { finalizeFerie($pdo, $foglioId, $f['data_servizio'], $f['tipo_turno']); } catch (Throwable $e) { error_log('finalizeFerie: ' . $e->getMessage()); } }
+// L'ODT è solo un export del documento: NON approva le ferie né notifica.
+// L'approvazione + invio notifiche avviene dal tasto "Salva" del foglio
+// (con conferma esplicita) → azione 'finalizza_ferie' in foglio/nuovo.php.
 
 try {
     $r   = new FoglioRenderer($pdo, $foglioId);

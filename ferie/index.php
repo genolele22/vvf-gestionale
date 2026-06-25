@@ -28,50 +28,7 @@ $giorniNomi = ['','Lun','Mar','Mer','Gio','Ven','Sab','Dom'];
 // rejected → assenza rimossa. Tutto reversibile: l'assenza si ricrea
 // dai dati della richiesta (vigile + data + turno).
 
-function feriaGetOrCreateFoglio(PDO $pdo, string $data, string $tipo): int {
-    $st = $pdo->prepare("SELECT id FROM fogli_servizio WHERE data_servizio=? AND tipo_turno=?");
-    $st->execute([$data, $tipo]);
-    $id = $st->fetchColumn();
-    if ($id) return (int)$id;
-    $next = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM fogli_servizio")->fetchColumn();
-    $pdo->prepare(
-        "INSERT INTO fogli_servizio (id, data_servizio, tipo_turno, salto_riposo_id, creato_da)
-         VALUES (?, ?, ?, 1, 'ferie')"
-    )->execute([$next, $data, $tipo]);
-    return $next;
-}
-
-function feriaInsertAssenza(PDO $pdo, int $vigileId, int $foglioId): void {
-    $st = $pdo->prepare(
-        "SELECT id FROM assenze WHERE foglio_id=? AND vigile_id=? AND tipo_assenza_id=1"
-    );
-    $st->execute([$foglioId, $vigileId]);
-    if ($st->fetchColumn()) return;
-    $next = (int)$pdo->query("SELECT COALESCE(MAX(id),0)+1 FROM assenze")->fetchColumn();
-    $pdo->prepare(
-        "INSERT INTO assenze (id, foglio_id, vigile_id, tipo_assenza_id) VALUES (?, ?, ?, 1)"
-    )->execute([$next, $foglioId, $vigileId]);
-}
-
-function feriaDeleteAssenza(PDO $pdo, int $vigileId, string $data, string $tipo): void {
-    $pdo->prepare(
-        "DELETE a FROM assenze a
-         JOIN fogli_servizio f ON f.id = a.foglio_id
-         WHERE a.vigile_id=? AND f.data_servizio=? AND f.tipo_turno=? AND a.tipo_assenza_id=1"
-    )->execute([$vigileId, $data, $tipo]);
-}
-
-function feriaSyncAssenza(PDO $pdo, int $vigileId, string $data, string $tipoTurno, string $stato): void {
-    $tipi = ($tipoTurno === 'DN') ? ['D', 'N'] : [$tipoTurno];
-    foreach ($tipi as $t) {
-        if ($stato === 'rejected') {
-            feriaDeleteAssenza($pdo, $vigileId, $data, $t);
-        } else { // approved | pending → vigile assente sul foglio
-            $foglioId = feriaGetOrCreateFoglio($pdo, $data, $t);
-            feriaInsertAssenza($pdo, $vigileId, $foglioId);
-        }
-    }
-}
+require_once __DIR__ . '/../includes/ferie_assenze.php';
 
 // ── AJAX ─────────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -209,46 +166,7 @@ function etichettaVigile(array $v): string {
     return "$q $c$d";
 }
 
-function blocchiContigui(array $richieste): array {
-    if (empty($richieste)) return [];
-    $blocks = [];
-    $current = [$richieste[0]];
-    for ($i = 1; $i < count($richieste); $i++) {
-        $prev = new DateTime(end($current)['data_richiesta']);
-        $curr = new DateTime($richieste[$i]['data_richiesta']);
-        if ((int)$curr->diff($prev)->days <= 3) {
-            $current[] = $richieste[$i];
-        } else {
-            $blocks[] = $current;
-            $current  = [$richieste[$i]];
-        }
-    }
-    $blocks[] = $current;
-    return $blocks;
-}
-
-function periodLabel(array $block): string {
-    $da = new DateTime($block[0]['data_richiesta']);
-    $a  = new DateTime(end($block)['data_richiesta']);
-    if ($da->format('Y-m-d') === $a->format('Y-m-d')) {
-        return $da->format('d/m');
-    }
-    return $da->format('d') . '–' . $a->format('d/m');
-}
-
-function turniLabel(array $block): int {
-    $n = 0;
-    foreach ($block as $r) {
-        $n += ($r['tipo_turno'] === 'DN') ? 2 : 1;
-    }
-    return $n;
-}
-
-function statoBlock(array $block): string {
-    $stati = array_unique(array_column($block, 'stato'));
-    if (count($stati) === 1) return $stati[0];
-    return 'misto';
-}
+require_once __DIR__ . '/../includes/ferie_blocchi.php';
 
 // ── Carica richieste del mese ────────────────────────────────
 $stmt = $pdo->prepare("

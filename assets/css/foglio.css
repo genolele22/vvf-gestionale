@@ -65,27 +65,31 @@
 .foglio-turno-badge.notturno { background: #1a4d72;      border: 2px solid var(--blu); }
 
 /* Campi intestazione (furieri, CS, VCS, funzionario) */
+/* I tre campi affiancati su un'unica riga, ciascuno con label sopra la casella. */
 .foglio-header-fields {
     display: grid;
-    grid-template-columns: 1fr;
-    gap: 8px;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
 }
-/* Label + casella sulla stessa riga (c'è spazio): etichetta a larghezza fissa
-   così le tre caselle restano allineate. */
 .fh-field {
     display: flex;
-    flex-direction: row;
-    align-items: center;
-    gap: 10px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+    min-width: 0;
 }
 .fh-label {
-    flex: 0 0 160px;
+    flex: none;
     font-size: .68rem;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: .5px;
     color: var(--grigio-md);
     white-space: nowrap;
+}
+/* Su schermi stretti torna a colonna così non si schiaccia. */
+@media (max-width: 640px) {
+    .foglio-header-fields { grid-template-columns: 1fr; }
 }
 .fh-value {
     flex: 1;
@@ -112,11 +116,22 @@
 .fh-value select:focus,
 .fh-value input:focus { outline: none; }
 
-/* Drop-zone capo/vice (drag-only): nome corrente + placeholder */
-.fh-dropzone { cursor: default; transition: border-color .15s, background .15s; }
+/* Drop-zone capo/vice (drag-only): nome corrente + placeholder + togli */
+.fh-dropzone { cursor: default; transition: border-color .15s, background .15s; display: flex; align-items: center; gap: 6px; }
 .fh-dropzone.drop-target { border-color: var(--rosso); background: #fff0ee; box-shadow: 0 0 0 2px rgba(192,57,43,.2); }
-.dz-nome { display: block; }
+.dz-nome { flex: 1; min-width: 0; }
 .dz-nome.vuoto { color: #bbb; font-weight: 500; font-style: italic; }
+.fh-clear {
+    flex: none;
+    border: none;
+    background: transparent;
+    color: var(--grigio-md);
+    font-size: 1.1rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 2px;
+}
+.fh-clear:hover { color: var(--rosso); }
 
 /* ── Barra azioni foglio ── */
 .foglio-toolbar {
@@ -239,6 +254,50 @@ body.cruscotto-bloccato .foglio-layout {
     font-family: inherit;
 }
 .organico-cerca:focus { outline: none; background: #fff8f0; }
+
+/* Aggiungi nome esterno al turno (turno C/sommozzatori/nautici) */
+.aggiungi-esterno {
+    padding: 8px;
+    border-bottom: 1px solid #e8e8e8;
+    background: #fffdf6;
+}
+.aggiungi-esterno > input[type="text"] {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 7px 10px;
+    border: 1px solid #e0d6b8;
+    border-radius: 6px;
+    font-size: .82rem;
+    font-family: inherit;
+}
+.aggiungi-esterno > input[type="text"]:focus { outline: none; border-color: var(--giallo); }
+.aggiungi-esterno-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 6px;
+}
+.aggiungi-esterno-row label {
+    font-size: .74rem;
+    color: var(--grigio-md);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+}
+/* Card / pallino del personale esterno */
+.esterno-dot {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #b9770e;
+    font-size: .8rem;
+    line-height: 1;
+    margin-right: 2px;
+}
+.persona-card.esterno,
+.ass-card.esterno { border-left: 3px solid #b9770e; }
 
 .organico-list {
     padding: 6px;
