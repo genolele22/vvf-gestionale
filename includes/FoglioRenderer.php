@@ -26,8 +26,9 @@ class FoglioRenderer
         'RP-1A'=>'RP-1A','CH-1B'=>'CH-1B','AP-1ROS'=>'AP-1ROS','AP-1ASA'=>'AP-1ASA','AP-1VI'=>'AP-1VI',
         'AP-2VI'=>'AP-2VI','ML-1NAU'=>'ML-1NAU','EL-1SMZ'=>'EL-1SMZ',
     ];
-    // colonne sezione assenti (start-col nel modello)
-    const FER_COG=0, FER_TUR=6, FER_DA=7, FER_A=9, RC_COG=12, RC_VAR=17;
+    // colonne sezione assenti (start-col nel modello).
+    // FER_SIG/RC_SIG = colonna sigla sede (a destra del nome, già centrata).
+    const FER_COG=0, FER_SIG=4, FER_TUR=6, FER_DA=7, FER_A=9, RC_COG=12, RC_SIG=15, RC_VAR=17;
 
     private PDO $pdo;
     private array $foglio;
@@ -441,14 +442,17 @@ class FoglioRenderer
             $byCol = $this->rowCellsByCol($rows[$i]);
             if ($fi < count($fer) && isset($byCol[self::FER_COG])) {
                 $a = $fer[$fi++];
-                $this->writeName($doc, $byCol[self::FER_COG], $a, !empty($a['sigla']) ? ' ' . $a['sigla'] : '');
+                // sigla sede nella colonna dedicata (a destra del nome, centrata), non in coda al nome
+                $this->writeName($doc, $byCol[self::FER_COG], $a);
+                if (isset($byCol[self::FER_SIG])) $this->setText($doc, $byCol[self::FER_SIG], $a['sigla'] ?? '');
                 if (isset($byCol[self::FER_TUR])) $this->setText($doc, $byCol[self::FER_TUR], $a['nr_turni'] ? (string)(int)$a['nr_turni'] : '');
-                if (isset($byCol[self::FER_DA]))  $this->setText($doc, $byCol[self::FER_DA], $a['data_da'] ? date('d/m', strtotime($a['data_da'])) : '');
-                if (isset($byCol[self::FER_A]))   $this->setText($doc, $byCol[self::FER_A], $a['data_a'] ? date('d/m', strtotime($a['data_a'])) : '');
+                if (isset($byCol[self::FER_DA]))  $this->setText($doc, $byCol[self::FER_DA], $a['data_da'] ? date('j', strtotime($a['data_da'])) : '');
+                if (isset($byCol[self::FER_A]))   $this->setText($doc, $byCol[self::FER_A], $a['data_a'] ? date('j', strtotime($a['data_a'])) : '');
             }
             if ($ri < count($rc) && isset($byCol[self::RC_COG])) {
                 $a = $rc[$ri++];
-                $this->writeName($doc, $byCol[self::RC_COG], $a, !empty($a['sigla']) ? ' ' . $a['sigla'] : '');
+                $this->writeName($doc, $byCol[self::RC_COG], $a);
+                if (isset($byCol[self::RC_SIG])) $this->setText($doc, $byCol[self::RC_SIG], $a['sigla'] ?? '');
                 if (isset($byCol[self::RC_VAR])) $this->setText($doc, $byCol[self::RC_VAR], $a['note'] ?? '');  // solo "Riposa per X"
             }
         }
@@ -496,8 +500,9 @@ class FoglioRenderer
         }
         // due righe data: la più in alto = inizio servizio, la sotto = fine
         usort($dateCells, fn($a, $b) => $a[0] <=> $b[0]);
-        if (isset($dateCells[0])) $this->setText($doc, $dateCells[0][1], $this->rigaData1);
-        if (isset($dateCells[1])) $this->setText($doc, $dateCells[1][1], $this->rigaData2);
+        // peso normale esplicito: la 2ª cella data nel modello eredita il grassetto
+        if (isset($dateCells[0])) $this->setText($doc, $dateCells[0][1], $this->rigaData1, 'NmReg');
+        if (isset($dateCells[1])) $this->setText($doc, $dateCells[1][1], $this->rigaData2, 'NmReg');
         // nomi furieri: riga 3, prima cella
         if (isset($rows[3])) {
             $bc = $this->rowCellsByCol($rows[3]);
@@ -740,6 +745,16 @@ class FoglioRenderer
         if (!$auto) return;
         $have = [];
         foreach ($auto->getElementsByTagNameNS(self::STY, 'style') as $s) $have[$s->getAttributeNS(self::STY, 'name')] = true;
+        // stile peso-normale: forza il non-grassetto dove il modello lo eredita (riga data)
+        if (!isset($have['NmReg'])) {
+            $st = $doc->createElementNS(self::STY, 'style:style');
+            $st->setAttributeNS(self::STY, 'style:name', 'NmReg');
+            $st->setAttributeNS(self::STY, 'style:family', 'text');
+            $tp = $doc->createElementNS(self::STY, 'style:text-properties');
+            $tp->setAttributeNS(self::FO, 'fo:font-weight', 'normal');
+            $st->appendChild($tp);
+            $auto->appendChild($st);
+        }
         $YEL = '#FFFF66';
         // matrice: colore patente × straordinario (giallo) × sottolineato (fuori sede)
         $colors = ['' => null, 'Rosso' => '#C00000', 'Blu' => '#0000C0'];
