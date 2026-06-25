@@ -1851,9 +1851,6 @@ function colorePatentePHP(?string $patente): string {
                         <span style="font-size:.6rem;color:var(--giallo);font-weight:700">STR</span>
                     <?php endif; ?>
                   </span>
-                  <button class="remove-btn"
-                          onclick="rimuoviDaPosizione(<?= $ass['vigile_id'] ?>)"
-                          title="Rimuovi">✕</button>
                 </div>
               <?php endforeach; ?>
               <?php // Nomi esterni al turno (non in `vigili`)
@@ -2565,9 +2562,6 @@ function buildAssCard(p, posId, straord) {
               <span class="ass-nome" style="color:${colore}" title="${p.nome}">
                 <span class="ass-nome-txt">${p.nome}</span>${sedeBadge}${strBadge}
               </span>
-              <button class="remove-btn"
-                      onclick="rimuoviDaPosizione(${p.id})"
-                      title="Rimuovi">✕</button>
             </div>`;
 }
 
@@ -3316,14 +3310,8 @@ async function rimuoviEsternoPos(extId) {
 // ════════════════════════════════════════════════════════════
 // RIMOZIONI
 // ════════════════════════════════════════════════════════════
-async function rimuoviDaPosizione(vigileId) {
-    const res = await ajax({ azione: 'rimuovi', vigile_id: vigileId });
-    if (!res.ok) { showMsg('⚠️ Errore.','err'); return; }
-    rimuoviDOM(vigileId);
-    const p = PERSONALE[vigileId];
-    if (p && !p.saltoCanon) setOccupato(vigileId, false);
-    showMsg('↩️ Rimosso dalla posizione.');
-}
+// Rimozione da posizione → "Centrale (disponibili)" del menu tasto destro
+// (mandaInCentraleDisponibili). La vecchia x sulla card era ridondante, rimossa.
 
 async function rimuoviDaAssenza(vigileId) {
     const res = await ajax({ azione: 'rimuovi_assenza', vigile_id: vigileId });
