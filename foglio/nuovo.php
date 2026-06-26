@@ -27,6 +27,16 @@ function capPos(int $posId): int {
     return $map[$posId] ?? 7;
 }
 
+// ── "Nuovo Foglio" nudo (GET senza ?data): apre il foglio del turno B ────────
+// Se oggi il turno B non è in servizio, salta al primo slot successivo in cui
+// lo è (diurno del suo giorno o notturno del giorno dopo). Redirect alla URL
+// canonica così refresh/segnalibri e le chiamate AJAX ereditano data+tipo.
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && !isset($_GET['data'])) {
+    $slot = prossimoSlotTurnoB(date('Y-m-d'));
+    header('Location: nuovo.php?data=' . $slot['data'] . '&tipo=' . $slot['tipo']);
+    exit;
+}
+
 // ── Parametri URL ────────────────────────────────────────────
 $dataParam = $_GET['data'] ?? date('Y-m-d');
 $tipoParam = ($_GET['tipo'] ?? 'D') === 'N' ? 'N' : 'D';
@@ -1230,6 +1240,20 @@ $vigiliInSalto = $stmtSalto->fetchAll();
 //   base = riposanti di diritto (canonico ± scambi salto) via resterEffettivi
 //   + chi è stato messo in salto a mano (salto_servizio)
 //   − chi è in ferie/assenza (se assente non è a riposo)
+// Scambi salto attivi per questa data/turno: chi ENTRA (prende il salto) e chi CEDE
+// (torna in servizio). Servono per marcare le card con un badge 🔄 e — sotto — per
+// non ri-agganciare alla colonna salto chi ha CEDUTO il riposo (vigile_out).
+$scambioIn = []; $scambioOut = [];
+$stSc = $pdo->prepare(
+    "SELECT vigile_in_id, vigile_out_id FROM salto_override
+     WHERE data=? AND tipo=? AND attivo=1"
+);
+$stSc->execute([$dataStr, $tipoParam]);
+foreach ($stSc->fetchAll() as $r) {
+    $scambioIn[(int)$r['vigile_in_id']]   = true;
+    $scambioOut[(int)$r['vigile_out_id']] = true;
+}
+
 // STR (richiamato) = riposante assegnato a una posizione, o flag su salto_servizio.
 $setAssegnati    = array_flip(array_map('intval', $vigiliAssegnati));
 $setAssenti      = array_flip(array_map('intval', $vigiliAssenti));
@@ -1244,23 +1268,13 @@ foreach (array_keys(resterEffettivi($pdo, $dataStr, $tipoParam, $saltoRiposoId))
 foreach ($vigiliInSalto as $r) {
     $vid = (int)$r['vigile_id'];
     if (isset($setAssenti[$vid]) || isset($inSaltoSet[$vid])) continue;
+    // Chi ha CEDUTO il salto con uno scambio (vigile_out) lavora: non è in straordinario
+    // e non va in colonna salto, anche se la vecchia riga salto_servizio è rimasta.
+    if (isset($scambioOut[$vid])) continue;
     $inSaltoSet[$vid]      = true;
     $saltoRichiamato[$vid] = (int)$r['richiamato'] ? 1 : (isset($setAssegnati[$vid]) ? 1 : 0);
 }
 $idVigiliInSalto = array_keys($inSaltoSet);
-
-// Scambi salto attivi per questa data/turno: chi ENTRA (prende il salto) e chi CEDE
-// (torna in servizio). Servono solo per marcare le card con un badge 🔄.
-$scambioIn = []; $scambioOut = [];
-$stSc = $pdo->prepare(
-    "SELECT vigile_in_id, vigile_out_id FROM salto_override
-     WHERE data=? AND tipo=? AND attivo=1"
-);
-$stSc->execute([$dataStr, $tipoParam]);
-foreach ($stSc->fetchAll() as $r) {
-    $scambioIn[(int)$r['vigile_in_id']]   = true;
-    $scambioOut[(int)$r['vigile_out_id']] = true;
-}
 
 // Vigili disponibili (non assegnati, non assenti, non in salto)
 $vigiliOccupati = array_unique(array_merge(

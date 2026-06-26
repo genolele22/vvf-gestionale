@@ -88,6 +88,32 @@ function getSaltoRiposo(string $data, string $tipo): int
 }
 
 /**
+ * Primo slot (data,tipo) in cui il turno B è EFFETTIVAMENTE in servizio,
+ * a partire da $fromData inclusa, scandendo in avanti.
+ *
+ * B è in servizio: di giorno quando il diurno è B; di notte quando il notturno
+ * è B (= il diurno del giorno prima era B). In un ciclo di 4 giorni capita 2
+ * volte su giorni consecutivi (giorno X diurno, giorno X+1 notte), quindi una
+ * scansione di pochi giorni trova sempre un match. Per ogni giorno controlla
+ * prima D poi N (D è più presto nella giornata).
+ *
+ * Restituisce ['data'=>'Y-m-d', 'tipo'=>'D'|'N'].
+ */
+function prossimoSlotTurnoB(string $fromData): array
+{
+    $d = new DateTime($fromData);
+    for ($i = 0; $i < 8; $i++) {
+        $ds = $d->format('Y-m-d');
+        $tg = getTurnoGiorno($ds);
+        if ($tg['diurno']['turno'] === 'B') return ['data' => $ds, 'tipo' => 'D'];
+        if ($tg['notte']['turno']  === 'B') return ['data' => $ds, 'tipo' => 'N'];
+        $d->modify('+1 day');
+    }
+    // Non dovrebbe mai accadere (ciclo di 4 giorni): fallback prudente.
+    return ['data' => $fromData, 'tipo' => 'D'];
+}
+
+/**
  * Restituisce turno+salto diurno e notturno per una data.
  * Es: ['diurno'=>['turno'=>'B','salto'=>1], 'notte'=>['turno'=>'A','salto'=>1]]
  */
