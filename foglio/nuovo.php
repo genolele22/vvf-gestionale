@@ -1600,7 +1600,7 @@ function colorePatentePHP(?string $patente): string {
         <div class="fh-label">Funzionario</div>
         <div class="fh-value">
           <select name="funzionario" id="funzionario">
-            <option value="">— nessuno —</option>
+            <option value="">— seleziona il funzionario —</option>
             <?php
               $funzInLista = false;
               foreach ($funzionariOpt as $fnome):
