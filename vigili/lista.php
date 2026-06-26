@@ -154,7 +154,7 @@ $stmtV = $pdo->prepare(
      JOIN sedi s         ON s.id  = v.sede_id
      JOIN salti_turno st ON st.id = v.salto_id
      $whereStr
-     ORDER BY q.id DESC, v.cognome ASC, v.disambiguatore ASC"
+     ORDER BY v.cognome ASC, v.disambiguatore ASC"
 );
 $stmtV->execute($params);
 $vigili = $stmtV->fetchAll();
@@ -479,16 +479,16 @@ if (!empty($vigili)) {
       </span>
     </div>
 
-    <table>
+    <table id="tabellaVigili">
       <thead>
   <tr>
-    <th>Qualifica</th>
-    <th>Cognome / Nome</th>
-    <th>Sede</th>
-    <th>Salto</th>
-    <th>Patenti</th>
-    <th>Abilitazioni</th>
-    <th>Stato</th>
+    <th class="sortable" data-col="0">Qualifica</th>
+    <th class="sortable" data-col="1" aria-sort="ascending">Cognome / Nome</th>
+    <th class="sortable" data-col="2">Sede</th>
+    <th class="sortable" data-col="3">Salto</th>
+    <th class="sortable" data-col="4">Patenti</th>
+    <th class="sortable" data-col="5">Abilitazioni</th>
+    <th class="sortable" data-col="6">Stato</th>
     <th style="text-align:center">Azioni</th>
   </tr>
 </thead>
@@ -505,18 +505,21 @@ if (!empty($vigili)) {
 
         <?php foreach ($vigili as $v):
           $patientiV = $patentiPerVigile[$v['id']] ?? [];
+          $abilVsort = $abilitazPerVigile[$v['id']] ?? [];
+          $saltoNum  = (int)preg_replace('/\D/', '', $v['salto_codice']);
+          $cognKey   = strtolower($v['cognome']) . sprintf('%03d', (int)$v['disambiguatore']);
         ?>
         <tr class="<?= $v['attivo'] ? '' : 'disattivo' ?>">
 
           <!-- Qualifica -->
-          <td>
+          <td data-sort="<?= (int)$v['qualifica_id'] ?>">
             <span class="badge-qual badge-<?= htmlspecialchars($v['qcodice']) ?>">
               <?= htmlspecialchars(ucfirst(strtolower($v['qcodice']))) ?>
             </span>
           </td>
 
           <!-- Cognome / Nome -->
-          <td>
+          <td data-sort="<?= htmlspecialchars($cognKey) ?>">
             <strong><?= htmlspecialchars(ucfirst(strtolower($v['cognome']))) ?></strong>
             <?php if ($v['disambiguatore']): ?>
               <span style="color:var(--grigio-md);font-size:.8rem">
@@ -536,17 +539,17 @@ if (!empty($vigili)) {
           </td>
 
           <!-- Sede -->
-          <td><?= htmlspecialchars($v['sede_nome']) ?></td>
+          <td data-sort="<?= htmlspecialchars(strtolower($v['sede_nome'])) ?>"><?= htmlspecialchars($v['sede_nome']) ?></td>
 
           <!-- Salto -->
-          <td>
+          <td data-sort="<?= $saltoNum ?>">
             <span class="badge-salto">
               <?= htmlspecialchars($v['salto_codice']) ?>
             </span>
           </td>
 
           <!-- Patenti -->
-          <td>
+          <td data-sort="<?= count($patientiV) ?>">
             <?php if (empty($patientiV)): ?>
               <span style="color:#bbb;font-size:.75rem">—</span>
             <?php else: ?>
@@ -558,7 +561,7 @@ if (!empty($vigili)) {
 
 
           <!-- Abilitazioni -->
-          <td>
+          <td data-sort="<?= count($abilVsort) ?>">
             <?php
             $abilV = $abilitazPerVigile[$v['id']] ?? [];
             if (empty($abilV)): ?>
@@ -571,7 +574,7 @@ if (!empty($vigili)) {
           </td>
 
           <!-- Stato -->
-          <td>
+          <td data-sort="<?= (int)$v['attivo'] ?>">
             <?php if ($v['attivo']): ?>
               <span style="color:var(--verde);font-size:.78rem;font-weight:600">
                 ● Attivo
@@ -659,7 +662,50 @@ if (tog && lbl) {
         lbl.textContent = tog.checked ? 'Attivo' : 'Non attivo';
     });
 }
+
+// ── Ordinamento cliccando le intestazioni di colonna ─────────────────────────
+// Chiave d'ordine = attributo data-sort della cella (qualifica per grado, salto
+// per numero, ecc.); fallback al testo. Numerico se entrambi i valori sono numeri.
+(function () {
+    const tab = document.getElementById('tabellaVigili');
+    if (!tab) return;
+    const tbody = tab.tBodies[0];
+    const headers = tab.querySelectorAll('thead th.sortable');
+
+    function chiave(tr, col) {
+        const td = tr.children[col];
+        if (!td) return '';
+        return td.dataset.sort != null ? td.dataset.sort : td.textContent.trim();
+    }
+
+    headers.forEach(th => {
+        th.addEventListener('click', () => {
+            const col = parseInt(th.dataset.col, 10);
+            const asc = th.getAttribute('aria-sort') !== 'ascending';
+            headers.forEach(h => h.removeAttribute('aria-sort'));
+            th.setAttribute('aria-sort', asc ? 'ascending' : 'descending');
+
+            const righe = Array.from(tbody.querySelectorAll('tr')).filter(r => r.children.length > 1);
+            righe.sort((a, b) => {
+                const va = chiave(a, col), vb = chiave(b, col);
+                const na = parseFloat(va), nb = parseFloat(vb);
+                let cmp;
+                if (!isNaN(na) && !isNaN(nb)) cmp = na - nb;
+                else cmp = va.localeCompare(vb, 'it', { sensitivity: 'base' });
+                return asc ? cmp : -cmp;
+            });
+            righe.forEach(r => tbody.appendChild(r));
+        });
+    });
+})();
 </script>
+<style>
+  #tabellaVigili thead th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+  #tabellaVigili thead th.sortable:hover { background: rgba(0,0,0,.04); }
+  #tabellaVigili thead th.sortable::after { content: ' ⇅'; opacity: .35; font-size: .8em; }
+  #tabellaVigili thead th.sortable[aria-sort="ascending"]::after  { content: ' ▲'; opacity: .9; }
+  #tabellaVigili thead th.sortable[aria-sort="descending"]::after { content: ' ▼'; opacity: .9; }
+</style>
 
 </body>
 </html>
