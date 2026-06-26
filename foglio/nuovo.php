@@ -4,6 +4,8 @@ require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/turni.php';
 require_once __DIR__ . '/../includes/scambio_salto.php';
 require_once __DIR__ . '/../includes/FoglioRenderer.php';
+require_once __DIR__ . '/../includes/auth.php';
+richiediLogin();
 
 $pdo = getDB();
 
@@ -401,6 +403,12 @@ function countOccupanti(PDO $pdo, int $foglioId, int $posId, int $exclVigile = 0
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $azione = $_POST['azione'] ?? '';
     header('Content-Type: application/json');
+
+    // Sola lettura (user): nessuna azione AJAX di modifica passa dal server.
+    if (isSoloLettura()) {
+        echo json_encode(['ok' => false, 'errore' => 'Profilo in sola lettura.']);
+        exit;
+    }
 
     // Cambia lo stato di blocco condiviso del foglio
     if ($azione === 'set_blocco') {
@@ -1489,9 +1497,13 @@ function colorePatentePHP(?string $patente): string {
 
         <!-- Pulsanti -->
         <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <?php if (!isSoloLettura()): ?>
           <button id="btnBlocco" onclick="toggleBlocco()" class="btn btn-sm"></button>
           <button onclick="salvaIntestazioneAjax(true)"
                   class="btn btn-verde btn-sm">💾 Salva</button>
+          <?php else: ?>
+          <span class="btn btn-sm" style="background:#5b6b7b;color:#fff;cursor:default">👁️ Sola lettura</span>
+          <?php endif; ?>
           <a href="stampa.php?id=<?= $foglioId ?>" target="_blank"
              class="btn btn-grigio btn-sm">🖨️ Stampa</a>
           <?php if ($foglioPrec):
@@ -2418,7 +2430,9 @@ async function ajax(data) {
 // ════════════════════════════════════════════════════════════
 // BLOCCO / SBLOCCO FOGLIO (stato condiviso sul server)
 // ════════════════════════════════════════════════════════════
-let BLOCCATO = <?= $foglioBloccato ? 'true' : 'false' ?>;
+// Gli utenti in sola lettura vedono il foglio come "bloccato" (drag disabilitato).
+const SOLA_LETTURA = <?= isSoloLettura() ? 'true' : 'false' ?>;
+let BLOCCATO = <?= ($foglioBloccato || isSoloLettura()) ? 'true' : 'false' ?>;
 
 function applicaStatoBlocco() {
     const btn = document.getElementById('btnBlocco');

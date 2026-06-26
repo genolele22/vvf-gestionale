@@ -2,6 +2,8 @@
 session_start();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/scambio_salto.php';
+require_once __DIR__ . '/../includes/auth.php';
+richiediLogin();
 
 $pdo = getDB();
 
@@ -34,6 +36,11 @@ require_once __DIR__ . '/../includes/ferie_assenze.php';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     header('Content-Type: application/json');
     $azione = $_POST['azione'] ?? '';
+
+    if (isSoloLettura()) {
+        echo json_encode(['ok' => false, 'errore' => 'Profilo in sola lettura.']);
+        exit;
+    }
 
     if ($azione === 'set_stato') {
         $stato = $_POST['stato'] ?? '';

@@ -1,6 +1,8 @@
 <?php
 session_start();
 require_once __DIR__ . '/../config/db.php';
+require_once __DIR__ . '/../includes/auth.php';
+richiediAdmin();
 $pdo = getDB();
 
 // ── Pausa bot (flag condiviso 'bot_pausa' nella tabella parametri) ───────────
@@ -133,6 +135,15 @@ $nFur     = contaTab($pdo, "SELECT COUNT(*) FROM furieri_fissi");
   </div>
 
   <div class="admin-grid">
+
+    <?php if (isComando()): ?>
+    <a href="utenti.php" class="admin-card">
+      <div class="ac-ico">👤</div>
+      <h3>Gestione utenti</h3>
+      <p>Account di accesso: comando, admin e user per turno. Crea utenti, assegna ruolo/turno, reimposta password.</p>
+      <div class="ac-meta"><?= contaTab($pdo, "SELECT COUNT(*) FROM utenti") ?> utenti</div>
+    </a>
+    <?php endif; ?>
 
     <a href="anagrafiche.php" class="admin-card">
       <div class="ac-ico">🗂️</div>

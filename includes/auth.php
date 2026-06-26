@@ -12,7 +12,7 @@
 
 if (session_status() === PHP_SESSION_NONE) session_start();
 
-const AUTH_ENFORCE = false;   // ← mettere true per attivare il blocco
+const AUTH_ENFORCE = true;   // ← false = soft (pagine aperte); true = blocco attivo
 
 function utenteCorrente(): ?array { return $_SESSION['utente'] ?? null; }
 function isLoggato(): bool        { return utenteCorrente() !== null; }
@@ -21,6 +21,24 @@ function turnoCorrente(): ?string { return utenteCorrente()['turno'] ?? null; }
 function isComando(): bool        { return ruoloCorrente() === 'comando'; }
 function isAdmin(): bool          { return in_array(ruoloCorrente(), ['comando','admin'], true); }
 function isSoloLettura(): bool    { return ruoloCorrente() === 'user'; }
+
+/**
+ * Visibilità per turno: comando vede tutto, admin vede tutti i turni (gli altri
+ * in lettura), user solo il proprio. (Oggi esiste solo il turno B.)
+ */
+function puoVedereTurno(?string $t): bool {
+    if (isComando() || isAdmin()) return true;
+    return turnoCorrente() !== null && $t === turnoCorrente();
+}
+
+/**
+ * Modifica per turno: comando ovunque, admin solo il proprio turno, user mai.
+ */
+function puoModificareTurno(?string $t): bool {
+    if (isComando()) return true;
+    if (ruoloCorrente() === 'admin') return $t === turnoCorrente();
+    return false;
+}
 
 /** Redirect al login se non autenticato (no-op in soft). */
 function richiediLogin(): void {

@@ -7,6 +7,8 @@
  */
 session_start();
 require_once __DIR__ . '/../config/db.php';
+require_once __DIR__ . '/../includes/auth.php';
+richiediLogin();
 
 $pdo = getDB();
 
@@ -23,6 +25,7 @@ $pdo->exec("
 ");
 
 // ── Azioni (POST → redirect, pattern PRG per evitare doppio invio) ──────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST') vietaSeSolaLettura();
 $azione = $_POST['azione'] ?? '';
 
 if ($azione === 'add') {

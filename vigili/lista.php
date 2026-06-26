@@ -1,13 +1,16 @@
 <?php
 session_start();
 require_once __DIR__ . '/../config/db.php';
+require_once __DIR__ . '/../includes/auth.php';
+richiediLogin();
 
 $pdo     = getDB();
 $errore  = '';
 $sucesso = '';
 
-// ── AZIONI POST ──────────────────────────────────────────────
+// ── AZIONI POST (solo admin/comando: l'anagrafica si modifica da admin) ──────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    richiediAdmin();
     $azione         = $_POST['azione']                  ?? '';
     $cognome        = strtoupper(trim($_POST['cognome'] ?? ''));
     $nome           = trim($_POST['nome']               ?? '');
@@ -256,7 +259,7 @@ if (!empty($vigili)) {
 <main class="main">
   <div class="page-title">
     <h2>👥 Gestione Personale — Turno B</h2>
-    <?php if (!$vigileEdit && !isset($_GET['nuovo'])): ?>
+    <?php if (isAdmin() && !$vigileEdit && !isset($_GET['nuovo'])): ?>
       <a href="lista.php?nuovo=1" class="btn btn-rosso">➕ Nuovo Vigile</a>
     <?php endif; ?>
   </div>
@@ -266,8 +269,8 @@ if (!empty($vigili)) {
   <?php if ($errore): ?>
     <div class="alert alert-err">⚠️ <?= htmlspecialchars($errore) ?></div>
   <?php endif; ?>
-  <!-- ══ FORM INSERIMENTO / MODIFICA ══════════════════════════ -->
-  <?php if (isset($_GET['nuovo']) || $vigileEdit): ?>
+  <!-- ══ FORM INSERIMENTO / MODIFICA (solo admin) ═════════════ -->
+  <?php if (isAdmin() && (isset($_GET['nuovo']) || $vigileEdit)): ?>
   <div class="card">
     <div class="card-head">
       <?= $vigileEdit ? '✏️ Modifica Vigile' : '➕ Inserisci Nuovo Vigile' ?>
@@ -633,6 +636,9 @@ if (!empty($vigili)) {
 
           <!-- Azioni -->
           <td>
+            <?php if (!isAdmin()): ?>
+              <span style="color:#bbb;font-size:.75rem">—</span>
+            <?php else: ?>
             <div class="azioni">
 
               <!-- Modifica -->
@@ -674,6 +680,7 @@ if (!empty($vigili)) {
               </form>
 
             </div>
+            <?php endif; ?>
           </td>
 
         </tr>
