@@ -1684,6 +1684,7 @@ function colorePatentePHP(?string $patente): string {
          data-salto="<?= htmlspecialchars($v['salto_codice']) ?>"
          data-salto-id="<?= (int)$v['salto_id'] ?>"
          data-salto-canon="0"
+         data-spec="<?= (int)($v['specialista'] ?? 0) ?>"
          <?= $occupato ? '' : 'draggable="true"' ?>>
 
         <span class="qual-dot <?= htmlspecialchars($v['qcodice']) ?>"></span>
@@ -1713,6 +1714,10 @@ function colorePatentePHP(?string $patente): string {
             <span class="persona-salto">
                 <?= htmlspecialchars(siglaSede($v['sede_codice'])) ?>
             </span>
+        <?php endif; ?>
+        <?php if (!empty($v['specialista'])): ?>
+            <span class="persona-salto" title="Specialista — conteggiato a parte"
+                  style="background:#5b2c83;color:#fff">SPEC</span>
         <?php endif; ?>
 
     </div>
@@ -2364,10 +2369,18 @@ function showMsg(txt, tipo = 'ok') {
 }
 
 function aggiornaContatore() {
-    const tutti    = document.querySelectorAll('#organicoList .persona-card').length;
-    const occupati = document.querySelectorAll('#organicoList .persona-card.assente').length;
+    // Conteggio separato: operativi vs specialisti (gli specialisti vanno calcolati
+    // a parte e in futuro restano fuori dalla reportistica). "Disponibile" = card
+    // in organico non occupata (.assente = occupato altrove).
+    const liberi = document.querySelectorAll('#organicoList .persona-card:not(.assente)');
+    let op = 0, spec = 0;
+    liberi.forEach(c => (c.dataset.spec === '1' ? spec++ : op++));
     const el = document.getElementById('contatore-liberi');
-    if (el) el.textContent = (tutti - occupati) + ' disponibili';
+    if (el) {
+        el.textContent = spec > 0
+            ? `${op + spec} disponibili · ${op} op + ${spec} spec`
+            : `${op} disponibili`;
+    }
 }
 
 async function ajax(data) {

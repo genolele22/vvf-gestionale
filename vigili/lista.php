@@ -19,6 +19,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $patenti        = $_POST['patenti']                 ?? [];
     $abilitazioni   = $_POST['abilitazioni']            ?? [];
     $attivo         = isset($_POST['attivo'])           ? 1 : 0;
+    $specialista    = isset($_POST['specialista'])      ? 1 : 0;
     $note           = trim($_POST['note']               ?? '');
 
     // Coerenza patenti: la 4 presuppone la 3. Se arriva la 4 senza la 3
@@ -83,10 +84,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $vid = nextId($pdo, 'vigili');
             $pdo->prepare(
                 "INSERT INTO vigili
-                 (id,cognome,nome,disambiguatore,email,qualifica_id,sede_id,salto_id,attivo,note)
-                 VALUES (?,?,?,?,?,?,?,?,?,?)"
+                 (id,cognome,nome,disambiguatore,email,qualifica_id,sede_id,salto_id,attivo,specialista,note)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?)"
             )->execute([$vid,$cognome,$nome,$disambiguatore,$email,
-                        $qualifica_id,$sede_id,$salto_id,$attivo,$note]);
+                        $qualifica_id,$sede_id,$salto_id,$attivo,$specialista,$note]);
 
             foreach ($patenti as $pid) {
                 $pdo->prepare(
@@ -105,10 +106,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $pdo->prepare(
                 "UPDATE vigili
                  SET cognome=?,nome=?,disambiguatore=?,email=?,qualifica_id=?,
-                     sede_id=?,salto_id=?,attivo=?,note=?
+                     sede_id=?,salto_id=?,attivo=?,specialista=?,note=?
                  WHERE id=?"
             )->execute([$cognome,$nome,$disambiguatore,$email,
-                        $qualifica_id,$sede_id,$salto_id,$attivo,$note,$id]);
+                        $qualifica_id,$sede_id,$salto_id,$attivo,$specialista,$note,$id]);
 
             $pdo->prepare("DELETE FROM vigili_patenti WHERE vigile_id=?")->execute([$id]);
             foreach ($patenti as $pid) {
@@ -400,6 +401,19 @@ if (!empty($vigili)) {
               </span>
             </div>
           </div>
+          <div class="form-group">
+            <label>Tipo</label>
+            <div class="toggle-wrap">
+              <label class="toggle">
+                <input type="checkbox" name="specialista" value="1"
+                       <?= (!empty($vigileEdit['specialista'])) ? 'checked' : '' ?>>
+                <span class="toggle-slider"></span>
+              </label>
+              <span style="font-size:.875rem;font-weight:600">
+                Specialista <span style="color:var(--grigio-md);font-weight:400;font-size:.78rem">(conteggiato a parte dagli operativi)</span>
+              </span>
+            </div>
+          </div>
           <div class="form-group full">
             <label>Note / Mansioni speciali</label>
             <textarea name="note"
@@ -525,6 +539,11 @@ if (!empty($vigili)) {
               <span style="color:var(--grigio-md);font-size:.8rem">
                 <?= (int)$v['disambiguatore'] ?>
               </span>
+            <?php endif; ?>
+            <?php if (!empty($v['specialista'])): ?>
+              <span title="Specialista — conteggiato a parte dagli operativi"
+                    style="background:#5b2c83;color:#fff;font-size:.6rem;font-weight:800;
+                           padding:1px 5px;border-radius:5px;vertical-align:middle;margin-left:4px">SPEC</span>
             <?php endif; ?>
             <?php if ($v['nome']): ?>
               <br>
