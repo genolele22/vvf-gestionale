@@ -1378,6 +1378,10 @@ $viceNome = $nomeRuolo($foglio['vice_capo_id'] ?? 0);
 $capoId   = (int)($foglio['capo_servizio_id'] ?? 0);
 $viceId   = (int)($foglio['vice_capo_id'] ?? 0);
 
+// Funzionari per la tendina dell'intestazione (anagrafica admin/funzionari)
+$funzionariOpt = $pdo->query("SELECT nome FROM funzionari ORDER BY nome")->fetchAll(PDO::FETCH_COLUMN);
+$funzCorrente  = trim($foglio['funzionario'] ?? '');
+
 // Helper: etichetta vigile "CS Rossi 4"
 function etichettaVigile(array $v): string {
     return ucfirst(strtolower($v['qcodice'] ?? ''))
@@ -1581,9 +1585,21 @@ function colorePatentePHP(?string $patente): string {
       <div class="fh-field">
         <div class="fh-label">Funzionario</div>
         <div class="fh-value">
-          <input type="text" name="funzionario" id="funzionario"
-                 placeholder="Nome funzionario…"
-                 value="<?= htmlspecialchars($foglio['funzionario'] ?? '') ?>">
+          <select name="funzionario" id="funzionario">
+            <option value="">— nessuno —</option>
+            <?php
+              $funzInLista = false;
+              foreach ($funzionariOpt as $fnome):
+                  if ($fnome === $funzCorrente) $funzInLista = true; ?>
+              <option value="<?= htmlspecialchars($fnome) ?>"<?= $fnome === $funzCorrente ? ' selected' : '' ?>>
+                <?= htmlspecialchars($fnome) ?>
+              </option>
+            <?php endforeach; ?>
+            <?php if ($funzCorrente !== '' && !$funzInLista): ?>
+              <!-- valore storico non più in anagrafica: lo conservo finché non si ri-salva -->
+              <option value="<?= htmlspecialchars($funzCorrente) ?>" selected><?= htmlspecialchars($funzCorrente) ?> (fuori lista)</option>
+            <?php endif; ?>
+          </select>
         </div>
       </div>
 
@@ -3437,6 +3453,11 @@ document.getElementById('assTipo').addEventListener('change', function() {
         codice === 'RC'  ? 'flex' : 'none';
     document.getElementById('campoFerie').style.display =
         codice === 'FER' ? 'flex' : 'none';
+});
+
+// Funzionario: salvataggio immediato alla scelta (come il drop di capo/vice).
+document.getElementById('funzionario').addEventListener('change', function() {
+    salvaIntestazioneAjax();
 });
 
 async function salvaAssenza() {

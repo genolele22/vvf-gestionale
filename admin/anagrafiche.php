@@ -22,6 +22,8 @@ $TABELLE = [
         'cols' => ['tipo' => ['Tipo','text'], 'nome' => ['Nome','text']]],
     'abilitazioni' => ['label' => 'Abilitazioni', 'icona' => '✅',
         'cols' => ['codice' => ['Codice','text'], 'nome' => ['Nome','text']]],
+    'funzionari'   => ['label' => 'Funzionari', 'icona' => '👔',
+        'cols' => ['nome' => ['Nome','text']]],
 ];
 
 // Tab corrente
