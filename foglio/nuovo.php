@@ -2373,15 +2373,37 @@ function aggiornaContatore() {
 async function ajax(data) {
     const fd = new FormData();
     Object.entries(data).forEach(([k,v]) => fd.append(k, v));
-    const r = await fetch(FOGLIO_URL, { method:'POST', body:fd });
-    const json = await r.json();
-    // Se il server segnala blocco (es. bloccato da un altro utente), allinea la UI
-    if (json && json.bloccato === true && !BLOCCATO) {
-        BLOCCATO = true;
-        applicaStatoBlocco();
-        showMsg('🔒 Foglio bloccato.', 'err');
+
+    // Robusto: la macchina Fly può essere "fredda" (auto-stop) e rispondere con un
+    // 502/HTML, oppure la connessione può cadere → r.json() lancerebbe e il tasto
+    // "non farebbe niente". Qui controlliamo lo stato, parsiamo in sicurezza e
+    // ritentiamo una volta sugli errori transitori, restituendo SEMPRE un oggetto.
+    let lastErr = '';
+    for (let tentativo = 0; tentativo < 2; tentativo++) {
+        if (tentativo > 0) await new Promise(res => setTimeout(res, 600));
+        try {
+            const r = await fetch(FOGLIO_URL, {
+                method: 'POST', body: fd, headers: { 'Accept': 'application/json' },
+            });
+            const testo = await r.text();
+            if (!r.ok) { lastErr = 'HTTP ' + r.status; continue; }   // 5xx/4xx → ritenta
+            let json;
+            try { json = JSON.parse(testo); }
+            catch (e) { lastErr = 'Risposta non valida dal server'; continue; }
+
+            // Se il server segnala blocco (es. bloccato da un altro utente), allinea la UI
+            if (json && json.bloccato === true && !BLOCCATO) {
+                BLOCCATO = true;
+                applicaStatoBlocco();
+                showMsg('🔒 Foglio bloccato.', 'err');
+            }
+            return json;
+        } catch (e) {
+            lastErr = e.message || 'Errore di rete';   // fetch fallito → ritenta
+        }
     }
-    return json;
+    showMsg('⚠️ Salvataggio non riuscito (' + lastErr + '). Riprova.', 'err');
+    return { ok: false, errore: lastErr };
 }
 
 // ════════════════════════════════════════════════════════════
@@ -3639,7 +3661,7 @@ async function salvaIntestazioneAjax(proponiFerie = false) {
         vice_capo_id:     document.getElementById('vcsId').value,
         funzionario:      document.getElementById('funzionario').value,
     });
-    if (!res.ok) { showMsg('⚠️ Errore.', 'err'); return; }
+    if (!res.ok) { if (res.errore) showMsg('⚠️ ' + res.errore, 'err'); return; }
     showMsg('✅ Salvato.', 'ok');
 
     // Se restano ferie pending sul foglio, proponi di approvarle + notificare.
