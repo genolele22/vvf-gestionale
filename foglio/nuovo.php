@@ -1715,10 +1715,6 @@ function colorePatentePHP(?string $patente): string {
                 <?= htmlspecialchars(siglaSede($v['sede_codice'])) ?>
             </span>
         <?php endif; ?>
-        <?php if (!empty($v['specialista'])): ?>
-            <span class="persona-salto" title="Specialista — conteggiato a parte"
-                  style="background:#5b2c83;color:#fff">SPEC</span>
-        <?php endif; ?>
 
     </div>
 <?php endforeach; ?>
