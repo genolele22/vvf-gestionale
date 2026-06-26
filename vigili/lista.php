@@ -488,9 +488,29 @@ if (!empty($vigili)) {
 
     <div class="tabella-head">
       <span>👥 Elenco Personale</span>
-      <span style="font-size:.8rem;font-weight:400;opacity:.8">
-        <?= count($vigili) ?> record trovati
-      </span>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select id="filtroTipo" class="th-filtro" title="Operativi / Specialisti">
+          <option value="">Tutti i tipi</option>
+          <option value="op">Solo operativi</option>
+          <option value="spec">Solo specialisti</option>
+        </select>
+        <select id="filtroComp" class="th-filtro" title="Patente / abilitazione">
+          <option value="">Tutte le competenze</option>
+          <optgroup label="Patenti">
+            <?php foreach (array_reverse($patentiAll) as $p): ?>
+              <option value="P<?= htmlspecialchars($p['tipo']) ?>">Patente <?= htmlspecialchars($p['tipo']) ?></option>
+            <?php endforeach; ?>
+          </optgroup>
+          <optgroup label="Abilitazioni">
+            <?php foreach ($abilitazAll as $a): ?>
+              <option value="<?= htmlspecialchars($a['codice']) ?>"><?= htmlspecialchars($a['codice'] . ' — ' . $a['nome']) ?></option>
+            <?php endforeach; ?>
+          </optgroup>
+        </select>
+        <span id="contaRecord" style="font-size:.8rem;font-weight:400;opacity:.8">
+          <?= count($vigili) ?> record
+        </span>
+      </div>
     </div>
 
     <table id="tabellaVigili">
@@ -522,8 +542,14 @@ if (!empty($vigili)) {
           $abilVsort = $abilitazPerVigile[$v['id']] ?? [];
           $saltoNum  = (int)preg_replace('/\D/', '', $v['salto_codice']);
           $cognKey   = strtolower($v['cognome']) . sprintf('%03d', (int)$v['disambiguatore']);
+          // Competenze della riga per il filtro: patenti come "P4 P3", abilitazioni col codice.
+          $compRiga  = htmlspecialchars(implode(' ', array_merge(
+                          array_map(fn($p) => 'P' . $p, $patientiV),
+                          $abilVsort)));
         ?>
-        <tr class="<?= $v['attivo'] ? '' : 'disattivo' ?>">
+        <tr class="<?= $v['attivo'] ? '' : 'disattivo' ?>"
+            data-spec="<?= (int)($v['specialista'] ?? 0) ?>"
+            data-comp="<?= $compRiga ?>">
 
           <!-- Qualifica -->
           <td data-sort="<?= (int)$v['qualifica_id'] ?>">
@@ -717,6 +743,39 @@ if (tog && lbl) {
         });
     });
 })();
+
+// ── Filtri intestazione: Tipo (operativo/specialista) + Competenza ───────────
+// Client-side, combinabili. Nasconde le righe non corrispondenti e aggiorna il
+// conteggio. Convive con l'ordinamento (riordina solo le righe visibili/nascoste).
+(function () {
+    const tab  = document.getElementById('tabellaVigili');
+    const fT   = document.getElementById('filtroTipo');
+    const fC   = document.getElementById('filtroComp');
+    const cnt  = document.getElementById('contaRecord');
+    if (!tab || !fT || !fC) return;
+    const tbody = tab.tBodies[0];
+
+    function applica() {
+        const tipo = fT.value;            // '', 'op', 'spec'
+        const comp = fC.value;            // '', 'P4', 'SFA', ...
+        let visibili = 0;
+        tbody.querySelectorAll('tr').forEach(tr => {
+            if (tr.children.length <= 1) return;   // riga "nessun risultato"
+            let ok = true;
+            if (tipo === 'op')   ok = ok && tr.dataset.spec === '0';
+            if (tipo === 'spec') ok = ok && tr.dataset.spec === '1';
+            if (comp) {
+                const tokens = (tr.dataset.comp || '').split(' ');
+                ok = ok && tokens.includes(comp);
+            }
+            tr.style.display = ok ? '' : 'none';
+            if (ok) visibili++;
+        });
+        if (cnt) cnt.textContent = visibili + ' record';
+    }
+    fT.addEventListener('change', applica);
+    fC.addEventListener('change', applica);
+})();
 </script>
 <style>
   #tabellaVigili thead th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
@@ -724,6 +783,8 @@ if (tog && lbl) {
   #tabellaVigili thead th.sortable::after { content: ' ⇅'; opacity: .35; font-size: .8em; }
   #tabellaVigili thead th.sortable[aria-sort="ascending"]::after  { content: ' ▲'; opacity: .9; }
   #tabellaVigili thead th.sortable[aria-sort="descending"]::after { content: ' ▼'; opacity: .9; }
+  .th-filtro { font-size:.78rem; padding:3px 6px; border-radius:6px; border:1px solid rgba(255,255,255,.35);
+               background:#fff; color:#333; max-width:200px; }
 </style>
 
 </body>
