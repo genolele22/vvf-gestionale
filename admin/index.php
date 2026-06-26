@@ -3,6 +3,45 @@ session_start();
 require_once __DIR__ . '/../config/db.php';
 $pdo = getDB();
 
+// ── Pausa bot (flag condiviso 'bot_pausa' nella tabella parametri) ───────────
+// Quando è ON il bot Telegram rifiuta nuove richieste (ferie e scambi salto):
+// utile per testare il gestionale senza che le richieste reali "sporchino" i dati.
+$pdo->exec("CREATE TABLE IF NOT EXISTS parametri (
+    id INT NOT NULL,
+    chiave VARCHAR(60) NOT NULL,
+    valore TEXT,
+    descrizione VARCHAR(200),
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_chiave (chiave)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+function botPausaAttiva(PDO $pdo): bool {
+    try {
+        $v = $pdo->query("SELECT valore FROM parametri WHERE chiave='bot_pausa' LIMIT 1")->fetchColumn();
+        return in_array(strtolower(trim((string)$v)), ['1','true','on','si','sì'], true);
+    } catch (Throwable $e) { return false; }
+}
+
+$msgPausa = '';
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['azione'] ?? '') === 'toggle_pausa') {
+    $nuovo = botPausaAttiva($pdo) ? '0' : '1';
+    try {
+        $st = $pdo->prepare("UPDATE parametri SET valore=? WHERE chiave='bot_pausa'");
+        $st->execute([$nuovo]);
+        if ($st->rowCount() === 0) {
+            $newId = nextId($pdo, 'parametri');
+            $pdo->prepare("INSERT INTO parametri (id, chiave, valore, descrizione)
+                           VALUES (?, 'bot_pausa', ?, 'Se 1 il bot Telegram rifiuta nuove richieste')")
+                ->execute([$newId, $nuovo]);
+        }
+        $msgPausa = $nuovo === '1' ? 'Bot in pausa: le richieste Telegram sono sospese.'
+                                   : 'Bot riattivato: le richieste Telegram sono di nuovo accettate.';
+    } catch (Throwable $e) {
+        $msgPausa = 'Errore nel cambio stato: ' . $e->getMessage();
+    }
+}
+$botPausa = botPausaAttiva($pdo);
+
 // Conteggi rapidi per le card (best-effort: se una tabella manca, 0)
 function contaTab(PDO $pdo, string $sql): int {
     try { return (int)$pdo->query($sql)->fetchColumn(); }
@@ -62,6 +101,36 @@ $nFur     = contaTab($pdo, "SELECT COUNT(*) FROM furieri_fissi");
   <p style="color:var(--grigio-md);margin:0 0 14px">
     Dati fissi del gestionale: anagrafiche di sistema, assegnazioni ricorrenti e parametri.
   </p>
+
+  <?php if ($msgPausa): ?>
+    <div class="alert alert-ok" style="margin-bottom:12px">✅ <?= htmlspecialchars($msgPausa) ?></div>
+  <?php endif; ?>
+
+  <!-- Interruttore pausa bot Telegram -->
+  <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+              background:<?= $botPausa ? '#fdecea' : '#eafaf1' ?>;
+              border:1px solid <?= $botPausa ? '#e6b0aa' : '#abebc6' ?>;
+              border-radius:10px;padding:14px 18px;margin-bottom:18px">
+    <div style="font-size:1.6rem"><?= $botPausa ? '⏸️' : '🤖' ?></div>
+    <div style="flex:1;min-width:220px">
+      <div style="font-weight:700;font-size:1rem">
+        Bot Telegram: <?= $botPausa ? '<span style="color:#c0392b">IN PAUSA</span>'
+                                    : '<span style="color:#1e8449">ATTIVO</span>' ?>
+      </div>
+      <div style="color:var(--grigio-md);font-size:.82rem">
+        <?= $botPausa
+            ? 'I vigili NON possono inviare richieste (ferie e scambi salto). Riattivalo per riaprirle.'
+            : 'I vigili possono inviare richieste. Mettilo in pausa per testare senza richieste reali.' ?>
+      </div>
+    </div>
+    <form method="POST" action="index.php" style="margin:0">
+      <input type="hidden" name="azione" value="toggle_pausa">
+      <button type="submit" class="btn btn-sm"
+              style="background:<?= $botPausa ? 'var(--verde)' : '#c0392b' ?>;color:#fff;white-space:nowrap">
+        <?= $botPausa ? '▶️ Riattiva bot' : '⏸️ Metti in pausa' ?>
+      </button>
+    </form>
+  </div>
 
   <div class="admin-grid">
 
