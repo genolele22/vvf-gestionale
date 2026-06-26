@@ -2,6 +2,8 @@
 session_start();
 require_once __DIR__ . '/config/db.php';
 require_once __DIR__ . '/includes/turni.php';
+require_once __DIR__ . '/includes/auth.php';
+richiediLogin();   // soft: non blocca finché AUTH_ENFORCE è false
 
 // ── Navigazione mese ────────────────────────────────────────
 $oggi  = new DateTime('today');
@@ -98,6 +100,14 @@ $saltoOggi = $turnoOggi['diurno']['turno'] . $turnoOggi['diurno']['salto']
       <p>Gestionale Foglio di Servizio &mdash; Turno B</p>
     </div>
     <div class="header-badge">TURNO&nbsp;B</div>
+    <?php if (isLoggato()): $uc = utenteCorrente(); ?>
+      <div style="margin-left:14px;text-align:right;font-size:.78rem;line-height:1.3">
+        <div style="font-weight:700"><?= htmlspecialchars($uc['nome'] ?: $uc['username']) ?></div>
+        <div style="opacity:.85">
+          <?= htmlspecialchars(ucfirst($uc['ruolo'])) ?><?= $uc['turno'] ? ' · turno ' . htmlspecialchars($uc['turno']) : '' ?>
+        </div>
+      </div>
+    <?php endif; ?>
   </div>
 </header>
 

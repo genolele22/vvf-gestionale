@@ -1,6 +1,5 @@
 <?php
-// Logout: chiude la sessione e torna al cruscotto.
-// Stub pronto per quando verrà aggiunta l'autenticazione (redirect → login).
+// Logout: chiude la sessione e torna alla pagina di accesso.
 session_start();
 $_SESSION = [];
 if (ini_get('session.use_cookies')) {
@@ -9,5 +8,5 @@ if (ini_get('session.use_cookies')) {
         $p['path'], $p['domain'], $p['secure'], $p['httponly']);
 }
 session_destroy();
-header('Location: index.php');
+header('Location: login.php');
 exit;
