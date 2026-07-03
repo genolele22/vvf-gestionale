@@ -99,18 +99,45 @@ function getSaltoRiposo(string $data, string $tipo): int
  *
  * Restituisce ['data'=>'Y-m-d', 'tipo'=>'D'|'N'].
  */
-function prossimoSlotTurnoB(string $fromData): array
+function prossimoSlotTurnoB(string $fromData, string $turno = 'B'): array
 {
     $d = new DateTime($fromData);
     for ($i = 0; $i < 8; $i++) {
         $ds = $d->format('Y-m-d');
         $tg = getTurnoGiorno($ds);
-        if ($tg['diurno']['turno'] === 'B') return ['data' => $ds, 'tipo' => 'D'];
-        if ($tg['notte']['turno']  === 'B') return ['data' => $ds, 'tipo' => 'N'];
+        if ($tg['diurno']['turno'] === $turno) return ['data' => $ds, 'tipo' => 'D'];
+        if ($tg['notte']['turno']  === $turno) return ['data' => $ds, 'tipo' => 'N'];
         $d->modify('+1 day');
     }
     // Non dovrebbe mai accadere (ciclo di 4 giorni): fallback prudente.
     return ['data' => $fromData, 'tipo' => 'D'];
+}
+
+/**
+ * Servizio del turno B immediatamente SUCCESSIVO ($dir=+1) o PRECEDENTE ($dir=-1)
+ * a (data,tipo), scandendo il calendario turni — a prescindere che il foglio esista
+ * già. Entro la giornata D precede N. Ritorna ['data'=>'Y-m-d','tipo'=>'D'|'N'] o
+ * null se non trovato (non dovrebbe: B è in servizio ogni pochi giorni).
+ */
+function servizioAdiacenteB(string $data, string $tipo, int $dir, string $turno = 'B'): ?array
+{
+    $ordine = ['D' => 0, 'N' => 1];
+    $cur    = new DateTime($data);
+    for ($i = 0; $i < 40; $i++) {
+        $ds    = $cur->format('Y-m-d');
+        $tg    = getTurnoGiorno($ds);
+        $slots = $dir > 0 ? ['D', 'N'] : ['N', 'D'];
+        foreach ($slots as $t) {
+            // salta il corrente e tutto ciò che sta dalla parte sbagliata
+            $cmp = ($ds <=> $data) ?: ($ordine[$t] <=> $ordine[$tipo]);
+            if ($dir > 0 ? $cmp <= 0 : $cmp >= 0) continue;
+            if ($tg[$t === 'D' ? 'diurno' : 'notte']['turno'] === $turno) {
+                return ['data' => $ds, 'tipo' => $t];
+            }
+        }
+        $cur->modify(($dir > 0 ? '+' : '-') . '1 day');
+    }
+    return null;
 }
 
 /**
@@ -214,11 +241,11 @@ function getTurniMese(int $anno, int $mese): array
  * @param string $data   'Y-m-d'
  * @param int    $salto  1-8
  */
-function isSaltoRiposo(string $data, int $salto): bool
+function isSaltoRiposo(string $data, int $salto, string $turno = 'B'): bool
 {
     $t = getTurnoGiorno($data);
-    $saltoD = ($t['diurno']['turno'] === 'B') ? $t['diurno']['salto'] : null;
-    $saltoN = ($t['notte']['turno']  === 'B') ? $t['notte']['salto']  : null;
+    $saltoD = ($t['diurno']['turno'] === $turno) ? $t['diurno']['salto'] : null;
+    $saltoN = ($t['notte']['turno']  === $turno) ? $t['notte']['salto']  : null;
     // È a riposo se non è né diurno né notturno quel giorno
     return ($salto !== $saltoD && $salto !== $saltoN);
 }
@@ -227,14 +254,14 @@ function isSaltoRiposo(string $data, int $salto): bool
  * Restituisce l'etichetta 'B1'...'B8' del salto B a riposo oggi.
  * Se entrambi i turni B lavorano (non dovrebbe mai accadere), restituisce '—'.
  */
-function getSaltoLabel(string $data, string $tipo): string
+function getSaltoLabel(string $data, string $tipo, string $turno = 'B'): string
 {
     $t = getTurnoGiorno($data);
-    if ($tipo === 'D' && $t['diurno']['turno'] === 'B') {
-        return 'B' . $t['diurno']['salto'];
+    if ($tipo === 'D' && $t['diurno']['turno'] === $turno) {
+        return $turno . $t['diurno']['salto'];
     }
-    if ($tipo === 'N' && $t['notte']['turno'] === 'B') {
-        return 'B' . $t['notte']['salto'];
+    if ($tipo === 'N' && $t['notte']['turno'] === $turno) {
+        return $turno . $t['notte']['salto'];
     }
     return '—';
 }

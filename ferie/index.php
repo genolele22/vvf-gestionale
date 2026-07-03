@@ -5,7 +5,8 @@ require_once __DIR__ . '/../includes/scambio_salto.php';
 require_once __DIR__ . '/../includes/auth.php';
 richiediLogin();
 
-$pdo = getDB();
+$pdo   = getDB();
+$TURNO = turnoAttivo();   // turno in vista (A/B/C/D); default B. Multi-turno.
 
 // ── Mese di riferimento ──────────────────────────────────────
 $annoP = isset($_GET['anno']) ? (int)$_GET['anno'] : (int)date('Y');
@@ -37,8 +38,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     header('Content-Type: application/json');
     $azione = $_POST['azione'] ?? '';
 
-    if (isSoloLettura()) {
-        echo json_encode(['ok' => false, 'errore' => 'Profilo in sola lettura.']);
+    if (soloLetturaAttivo()) {
+        echo json_encode(['ok' => false, 'errore' => 'Turno in sola lettura per il tuo profilo.']);
         exit;
     }
 
@@ -57,27 +58,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $ph   = implode(',', array_fill(0, count($ids), '?'));
         $stmt = $pdo->prepare(
-            "SELECT id, vigile_id, data_richiesta, tipo_turno FROM bot_requests WHERE id IN ($ph)"
+            "SELECT id, vigile_id, data_richiesta, tipo_turno, stato FROM bot_requests WHERE id IN ($ph)"
         );
         $stmt->execute($ids);
         $rows = $stmt->fetchAll();
 
-        // 'pending' = annulla approvazione: processed_at torna NULL
-        $processedAt = $stato === 'pending' ? null : date('Y-m-d H:i:s');
         $up = $pdo->prepare("UPDATE bot_requests SET stato=?, processed_at=? WHERE id=?");
 
-        // Per l'annullamento: gestione della notifica già accodata (bot_outbox)
+        // ACCETTA = 'pending' (deciso ma NON ancora comunicato). L'approvazione vera
+        // avviene solo all'invio della mail (finalizeFerie promuove pending→approved).
+        // Se una notifica ferie:<id> è accodata ma non ancora partita, la togliamo
+        // (torna "da inviare"); se è già 'sent' non si può disinviare.
         $obSel = $pdo->prepare("SELECT id, stato FROM bot_outbox WHERE ctx=?");
         $obDel = $pdo->prepare("DELETE FROM bot_outbox WHERE id=?");
         $giaNotificati = 0;
+        $esiti = [];   // id => stato risultante (il client allinea il DOM su questo)
 
         $pdo->beginTransaction();
         try {
             foreach ($rows as $r) {
-                $up->execute([$stato, $processedAt, $r['id']]);
-                feriaSyncAssenza($pdo, (int)$r['vigile_id'], $r['data_richiesta'], $r['tipo_turno'], $stato);
+                // Accettare NON deve retrocedere una ferie già 'approved' (= già
+                // comunicata via mail): resta approved. Gli altri casi vanno al target.
+                $target = ($stato === 'pending' && $r['stato'] === 'approved')
+                    ? 'approved' : $stato;
+                $esiti[(int)$r['id']] = $target;
 
-                if ($stato === 'pending') {
+                $processedAt = $target === 'pending' ? null : date('Y-m-d H:i:s');
+                $up->execute([$target, $processedAt, $r['id']]);
+                feriaSyncAssenza($pdo, (int)$r['vigile_id'], $r['data_richiesta'], $r['tipo_turno'], $target);
+
+                if ($target === 'pending') {
                     $obSel->execute(['ferie:' . (int)$r['id']]);
                     $ob = $obSel->fetch();
                     if ($ob) {
@@ -97,7 +107,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         echo json_encode([
             'ok' => true, 'aggiornati' => count($rows), 'stato' => $stato,
-            'gia_notificati' => $giaNotificati,
+            'esiti' => $esiti, 'gia_notificati' => $giaNotificati,
         ]);
         exit;
     }
@@ -186,11 +196,37 @@ $stmt = $pdo->prepare("
     JOIN vigili v     ON v.id = r.vigile_id
     JOIN qualifiche q ON q.id = v.qualifica_id
     JOIN sedi s       ON s.id = v.sede_id
-    WHERE DATE_FORMAT(r.data_richiesta, '%Y-%m') = ?
+    WHERE DATE_FORMAT(r.data_richiesta, '%Y-%m') = ? AND v.turno = ?
     ORDER BY v.cognome, v.disambiguatore, r.data_richiesta
 ");
-$stmt->execute([$meseStr]);
+$stmt->execute([$meseStr, $TURNO]);
 $tutteRichieste = $stmt->fetchAll();
+
+// ── Stato COMUNICAZIONE per singola richiesta (badge per-turno, richiesta #93) ──
+// La "comunicazione" NON è lo stato della richiesta (pending/approved/rejected):
+// è se esiste una riga bot_outbox 'sent' per l'esito corrente del turno. Chiavi
+// ctx: 'ferie:<id>' (accettata), 'ferie_neg:<id>' (negata). Così il segnale è
+// indipendente dallo stato, che viene riscritto a ogni modifica dell'assegnazione.
+$outboxReq = [];   // [reqId => ['ok'=>stato, 'neg'=>stato]]
+$reqIds = array_map('intval', array_column($tutteRichieste, 'id'));
+if ($reqIds) {
+    $ctxList = [];
+    foreach ($reqIds as $rid) { $ctxList[] = 'ferie:' . $rid; $ctxList[] = 'ferie_neg:' . $rid; }
+    $phc = implode(',', array_fill(0, count($ctxList), '?'));
+    $obq = $pdo->prepare("SELECT ctx, stato FROM bot_outbox WHERE ctx IN ($phc)");
+    $obq->execute($ctxList);
+    foreach ($obq->fetchAll() as $o) {
+        [$pref, $rid] = explode(':', $o['ctx'], 2);
+        $outboxReq[(int)$rid][$pref === 'ferie_neg' ? 'neg' : 'ok'] = $o['stato'];
+    }
+}
+// Ritorna [classe, etichetta] del badge comunicazione di un turno.
+function comunicazioneTurno(array $r, array $outboxReq): array {
+    $kind = $r['stato'] === 'rejected' ? 'neg' : 'ok';
+    if (($outboxReq[(int)$r['id']][$kind] ?? null) === 'sent') return ['comunicata', '✉️ comunicata'];
+    if ($r['stato'] === 'pending')                             return ['attesa',     '⏳ attesa'];
+    return ['dainviare', '📨 da inviare'];
+}
 
 // Raggruppa per vigile → blocchi
 $perVigile = [];
@@ -229,7 +265,7 @@ foreach ($pdo->query("
         FROM bot_scambi_salto s
         JOIN vigili a ON a.id = s.vigile_a_id
         JOIN vigili b ON b.id = s.vigile_b_id
-        WHERE s.stato = 'approvato'
+        WHERE s.stato = 'approvato' AND a.turno = '" . $TURNO . "'
     ")->fetchAll() as $s) {
     $scById[(int)$s['id']] = $s;
 }
@@ -270,7 +306,7 @@ foreach ($pdo->query("
         JOIN vigili b     ON b.id = s.vigile_b_id
         JOIN qualifiche qa ON qa.id = a.qualifica_id
         JOIN qualifiche qb ON qb.id = b.qualifica_id
-        WHERE s.stato IN ('proposto', 'confermato')
+        WHERE s.stato IN ('proposto', 'confermato') AND a.turno = '" . $TURNO . "'
         ORDER BY s.blocco_inizio, s.id
     ")->fetchAll() as $s) {
     $etic = fn($q, $c, $d) => ucfirst(strtolower($q)) . ' ' . ucfirst(strtolower($c))
@@ -387,6 +423,13 @@ $totVigili   = count($perVigile);
 }
 .turno-riga:last-child { border-bottom: none; }
 .turno-riga[data-stato="rejected"] { opacity: .6; }
+
+/* Badge comunicazione per-turno (comunicata / da inviare / attesa) */
+.com-badge { font-size: .72rem; font-weight: 600; padding: 1px 7px; border-radius: 10px;
+             white-space: nowrap; margin-right: 8px; }
+.com-comunicata { background: var(--verde-bg); color: var(--verde); border: 1px solid #a9dfbf; }
+.com-dainviare  { background: #fff3e0; color: #b56a00; border: 1px solid #f5c896; }
+.com-attesa     { background: #fef9e7; color: #b7950b; border: 1px solid #f9e79f; }
 
 .turno-data { font-weight: 600; color: var(--grigio-sc); width: 60px; }
 .turno-dow  { color: var(--grigio-md); width: 28px; }
@@ -544,7 +587,7 @@ $totVigili   = count($perVigile);
     $saltoNum  = saltoRiposoNum($dataInizio, $saltoTipo);
     $urlFoglio = '../foglio/nuovo.php?data=' . urlencode($dataInizio) . '&tipo=' . $saltoTipo;
   ?>
-  <div class="data-section">
+  <div class="data-section" id="giorno-<?= htmlspecialchars($dataInizio) ?>" data-giorno="<?= htmlspecialchars($dataInizio) ?>">
 
     <!-- Intestazione data: data cliccabile (apre il foglio) + salto a riposo a destra -->
     <div class="data-head" style="display:flex;align-items:baseline;gap:10px;padding:6px 4px 6px 0;margin-bottom:6px;border-bottom:2px solid var(--rosso);">
@@ -597,14 +640,11 @@ $totVigili   = count($perVigile);
       <span class="stato-badge stato-<?= $stato ?>" id="badge-<?= $detailId ?>"><?= $stato ?></span>
       <div class="blocco-azioni" onclick="event.stopPropagation()">
         <button class="btn-mini accetta"
-                onclick='setStato(<?= htmlspecialchars(json_encode($allIds)) ?>, "approved")'
-                title="Accetta tutto il periodo">✓ tutti</button>
+                onclick='setStato(<?= htmlspecialchars(json_encode($allIds)) ?>, "pending")'
+                title="Accetta tutto il periodo (resta in attesa fino all'invio della mail)">✓ tutti</button>
         <button class="btn-mini respingi"
                 onclick='setStato(<?= htmlspecialchars(json_encode($allIds)) ?>, "rejected")'
                 title="Respingi tutto il periodo">✗ tutti</button>
-        <button class="btn-mini" style="background:#6c757d;color:#fff"
-                onclick='annullaApprovazione(<?= htmlspecialchars(json_encode($allIds)) ?>)'
-                title="Riporta in attesa (annulla approvazione/rifiuto)">↩️ attesa</button>
       </div>
     </div>
 
@@ -614,7 +654,13 @@ $totVigili   = count($perVigile);
         $d   = new DateTime($r['data_richiesta']);
         $dow = $giorniNomi[(int)$d->format('N')];
       ?>
-      <div class="turno-riga" data-id="<?= $r['id'] ?>" data-stato="<?= $r['stato'] ?>" data-block="<?= $detailId ?>">
+      <?php
+        [$comCls, $comLbl] = comunicazioneTurno($r, $outboxReq);
+        $sok  = (($outboxReq[(int)$r['id']]['ok']  ?? null) === 'sent') ? 1 : 0;
+        $sneg = (($outboxReq[(int)$r['id']]['neg'] ?? null) === 'sent') ? 1 : 0;
+      ?>
+      <div class="turno-riga" data-id="<?= $r['id'] ?>" data-stato="<?= $r['stato'] ?>" data-block="<?= $detailId ?>"
+           data-sok="<?= $sok ?>" data-sneg="<?= $sneg ?>">
         <span class="turno-data"><?= $d->format('d/m') ?></span>
         <span class="turno-dow"><?= $dow ?></span>
         <span class="turno-tipo <?= $r['tipo_turno'] ?>">
@@ -626,10 +672,11 @@ $totVigili   = count($perVigile);
           } ?>
         </span>
         <span class="turno-spacer"></span>
+        <span class="com-badge com-<?= $comCls ?>" id="com-<?= $r['id'] ?>"><?= $comLbl ?></span>
         <div class="scelta">
           <label class="lbl-si">
             <input type="checkbox" class="chk-si" <?= $r['stato'] !== 'rejected' ? 'checked' : '' ?>
-                   onchange="onScelta(this, 'approved')">accetto
+                   onchange="onScelta(this, 'pending')">accetto
           </label>
           <label class="lbl-no">
             <input type="checkbox" class="chk-no" <?= $r['stato'] === 'rejected' ? 'checked' : '' ?>
@@ -698,10 +745,12 @@ async function setStato(ids, stato) {
         return;
     }
 
-    // Aggiorna lo stato in pagina senza reload
+    // Aggiorna lo stato in pagina senza reload usando gli esiti reali dal server
+    // (accettare NON retrocede una ferie già approvata/comunicata → resta approved).
+    const esiti = res.esiti || {};
     ids.forEach(id => {
         const riga = document.querySelector(`.turno-riga[data-id="${id}"]`);
-        if (riga) riga.dataset.stato = stato;
+        if (riga) riga.dataset.stato = esiti[id] || stato;
     });
     sincronizzaDOM();
     const extra = (stato === 'pending' && res.gia_notificati > 0)
@@ -710,19 +759,14 @@ async function setStato(ids, stato) {
     showMsg(`✅ ${res.aggiornati} turno/i → ${STATO_LABEL[stato]}${extra}`, 'ok');
 }
 
-// Annulla approvazione/rifiuto: riporta in attesa (con conferma) e annulla
-// la notifica se non è ancora partita.
-function annullaApprovazione(ids) {
-    if (!ids || ids.length === 0) return;
-    chiediConferma({
-        titolo:  'Annulla — riporta in attesa',
-        testo:   'Riporti queste ferie in <b>attesa</b>?<br>' +
-                 'Se la notifica al vigile non è ancora partita viene annullata; ' +
-                 'se era già stata inviata dovrai avvisarlo tu.',
-        okLabel: '↩️ In attesa',
-        okStyle: 'background:#6c757d;color:#fff',
-        onOk:    () => setStato(ids, 'pending'),
-    });
+// Badge comunicazione di un turno, calcolato dallo stato + dai flag sent per esito
+// (data-sok = 'ferie:<id>' inviata, data-sneg = 'ferie_neg:<id>' inviata).
+function comBadgeTurno(riga) {
+    const st   = riga.dataset.stato;
+    const sent = st === 'rejected' ? riga.dataset.sneg === '1' : riga.dataset.sok === '1';
+    if (sent)             return ['comunicata', '✉️ comunicata'];
+    if (st === 'pending') return ['attesa',     '⏳ attesa'];
+    return ['dainviare', '📨 da inviare'];
 }
 
 // ── Riallinea spunte, badge blocco e contatori al DOM ────────
@@ -734,6 +778,9 @@ function sincronizzaDOM() {
         const no = riga.querySelector('.chk-no');
         if (si) si.checked = (st !== 'rejected');
         if (no) no.checked = (st === 'rejected');
+        // badge comunicazione per-turno
+        const com = document.getElementById('com-' + riga.dataset.id);
+        if (com) { const [cls, lbl] = comBadgeTurno(riga); com.className = 'com-badge com-' + cls; com.textContent = lbl; }
     });
 
     // badge di blocco
@@ -844,6 +891,20 @@ async function eseguiScambio(sid, stato) {
 }
 
 sincronizzaDOM();
+
+// #87 — apertura da "clic sulla data" del foglio: ?goto=YYYY-MM-DD → scrolla in
+// cima alla sezione di quel giorno; se quel giorno non ha ferie, va alla prima
+// sezione a partire da quella data (così si atterra comunque nel punto giusto).
+(function () {
+    const goto = new URLSearchParams(location.search).get('goto');
+    if (!goto) return;
+    let target = document.getElementById('giorno-' + goto);
+    if (!target) {
+        const sezioni = [...document.querySelectorAll('.data-section[data-giorno]')];
+        target = sezioni.find(s => s.dataset.giorno >= goto) || sezioni[sezioni.length - 1];
+    }
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+})();
 </script>
 
 </body>

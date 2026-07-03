@@ -40,10 +40,12 @@ class FoglioRenderer
     private int $centrSedeId = 1;   // sede "Centrale": non sigla nessuno
     public array $overflow = [];   // mezzi con più nomi che slot
     public array $noslot = [];     // mezzi con nomi ma 0 slot
+    private static string $formatoNome = 'standard';  // parametro admin (parametri.foglio_formato_nome)
 
     public function __construct(PDO $pdo, int $foglioId)
     {
         $this->pdo = $pdo;
+        self::$formatoNome = self::caricaFormatoNome($pdo);
         $st = $pdo->prepare("SELECT * FROM fogli_servizio WHERE id=?");
         $st->execute([$foglioId]);
         $f = $st->fetch();
@@ -59,7 +61,7 @@ class FoglioRenderer
         require_once __DIR__ . '/turni.php';
         $tg = getTurnoGiorno($this->dataStr);
         $rip = $this->tipoParam === 'D' ? $tg['notte'] : $tg['diurno'];
-        $this->codSaltoRip = 'B' . $rip['salto'];
+        $this->codSaltoRip = ($f['turno'] ?: 'B') . $rip['salto'];   // turno del foglio (multi-turno)
 
         // Intestazione: inizio/fine servizio. Diurno: 8→20 stesso giorno.
         // Notturno: 20 del giorno → 8 del giorno dopo.
@@ -258,10 +260,33 @@ class FoglioRenderer
         return $st->fetch() ?: null;
     }
 
+    /** Legge il formato nome dai parametri (resiliente: default 'standard' se manca). */
+    private static function caricaFormatoNome(PDO $pdo): string
+    {
+        try {
+            $st = $pdo->query("SELECT valore FROM parametri WHERE chiave='foglio_formato_nome'");
+            $v = $st ? $st->fetchColumn() : false;
+            $v = is_string($v) ? trim($v) : '';
+            return in_array($v, ['standard', 'cognome_maiusc', 'tutto_maiusc'], true) ? $v : 'standard';
+        } catch (Throwable $e) {
+            return 'standard';
+        }
+    }
+
     private static function etichetta(array $v): string
     {
         if (isset($v['nome_libero'])) return $v['nome_libero'];   // esterno al turno
-        return ucfirst(strtolower($v['qcodice'] ?? '')) . ' ' . ucfirst(strtolower($v['cognome'] ?? ''))
+        $q = $v['qcodice'] ?? '';
+        $c = $v['cognome'] ?? '';
+        switch (self::$formatoNome) {
+            case 'cognome_maiusc':   // es. "Cs ROSSI"
+                $q = ucfirst(strtolower($q)); $c = mb_strtoupper($c, 'UTF-8'); break;
+            case 'tutto_maiusc':     // es. "CS ROSSI"
+                $q = mb_strtoupper($q, 'UTF-8'); $c = mb_strtoupper($c, 'UTF-8'); break;
+            default:                 // 'standard' — es. "Cs Rossi"
+                $q = ucfirst(strtolower($q)); $c = ucfirst(strtolower($c)); break;
+        }
+        return trim("$q $c")
              . (!empty($v['disambiguatore']) ? ' ' . (int)$v['disambiguatore'] : '');
     }
     private static function colorStyle(?string $t): ?string

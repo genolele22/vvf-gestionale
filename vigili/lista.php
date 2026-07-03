@@ -11,6 +11,7 @@ $sucesso = '';
 // ── AZIONI POST (solo admin/comando: l'anagrafica si modifica da admin) ──────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     richiediAdmin();
+    vietaSeSolaLetturaTurno();   // anagrafica modificabile solo se hai scrittura sul turno attivo
     $azione         = $_POST['azione']                  ?? '';
     $cognome        = strtoupper(trim($_POST['cognome'] ?? ''));
     $nome           = trim($_POST['nome']               ?? '');
@@ -138,8 +139,8 @@ $filtroSalto = (int)($_GET['salto']  ?? 0);
 $filtroStato = $_GET['stato']        ?? 'attivi';
 $filtroTesto = trim($_GET['cerca']   ?? '');
 
-$where  = [];
-$params = [];
+$where  = ['v.turno = ?'];                 // multi-turno: solo il turno in vista
+$params = [turnoAttivo()];
 if ($filtroStato === 'attivi') { $where[] = 'v.attivo = 1'; }
 if ($filtroSede  > 0) { $where[] = 'v.sede_id = ?';  $params[] = $filtroSede;  }
 if ($filtroSalto > 0) { $where[] = 'v.salto_id = ?'; $params[] = $filtroSalto; }
@@ -497,19 +498,20 @@ if (!empty($vigili)) {
           <option value="op">Solo operativi</option>
           <option value="spec">Solo specialisti</option>
         </select>
-        <select id="filtroComp" class="th-filtro" title="Patente / abilitazione">
-          <option value="">Tutte le competenze</option>
-          <optgroup label="Patenti">
+        <details id="filtroComp" class="th-filtro th-filtro-multi" title="Patente / abilitazione (più scelte = chi le ha TUTTE)">
+          <summary>Competenze: <span id="compSel">tutte</span></summary>
+          <div class="comp-menu">
+            <div class="comp-group">Patenti</div>
             <?php foreach (array_reverse($patentiAll) as $p): ?>
-              <option value="P<?= htmlspecialchars($p['tipo']) ?>">Patente <?= htmlspecialchars($p['tipo']) ?></option>
+              <label><input type="checkbox" class="fcomp" value="P<?= htmlspecialchars($p['tipo']) ?>"> Patente <?= htmlspecialchars($p['tipo']) ?></label>
             <?php endforeach; ?>
-          </optgroup>
-          <optgroup label="Abilitazioni">
+            <div class="comp-group">Abilitazioni</div>
             <?php foreach ($abilitazAll as $a): ?>
-              <option value="<?= htmlspecialchars($a['codice']) ?>"><?= htmlspecialchars($a['codice'] . ' — ' . $a['nome']) ?></option>
+              <label><input type="checkbox" class="fcomp" value="<?= htmlspecialchars($a['codice']) ?>"> <?= htmlspecialchars($a['codice'] . ' — ' . $a['nome']) ?></label>
             <?php endforeach; ?>
-          </optgroup>
-        </select>
+            <button type="button" id="compReset" class="comp-reset">Azzera</button>
+          </div>
+        </details>
         <span id="contaRecord" style="font-size:.8rem;font-weight:400;opacity:.8">
           <?= count($vigili) ?> record
         </span>
@@ -761,19 +763,23 @@ if (tog && lbl) {
     const cnt  = document.getElementById('contaRecord');
     if (!tab || !fT || !fC) return;
     const tbody = tab.tBodies[0];
+    const checks   = Array.from(fC.querySelectorAll('input.fcomp'));
+    const lblSel   = document.getElementById('compSel');
+    const btnReset = document.getElementById('compReset');
 
     function applica() {
         const tipo = fT.value;            // '', 'op', 'spec'
-        const comp = fC.value;            // '', 'P4', 'SFA', ...
+        const comps = checks.filter(c => c.checked).map(c => c.value);  // AND: chi le ha TUTTE
+        if (lblSel) lblSel.textContent = comps.length ? comps.join(' + ') : 'tutte';
         let visibili = 0;
         tbody.querySelectorAll('tr').forEach(tr => {
             if (tr.children.length <= 1) return;   // riga "nessun risultato"
             let ok = true;
             if (tipo === 'op')   ok = ok && tr.dataset.spec === '0';
             if (tipo === 'spec') ok = ok && tr.dataset.spec === '1';
-            if (comp) {
+            if (comps.length) {
                 const tokens = (tr.dataset.comp || '').split(' ');
-                ok = ok && tokens.includes(comp);
+                ok = ok && comps.every(c => tokens.includes(c));
             }
             tr.style.display = ok ? '' : 'none';
             if (ok) visibili++;
@@ -781,7 +787,12 @@ if (tog && lbl) {
         if (cnt) cnt.textContent = visibili + ' record';
     }
     fT.addEventListener('change', applica);
-    fC.addEventListener('change', applica);
+    checks.forEach(c => c.addEventListener('change', applica));
+    if (btnReset) btnReset.addEventListener('click', () => {
+        checks.forEach(c => c.checked = false);
+        applica();
+        fC.removeAttribute('open');
+    });
 })();
 </script>
 <style>
@@ -792,6 +803,21 @@ if (tog && lbl) {
   #tabellaVigili thead th.sortable[aria-sort="descending"]::after { content: ' ▼'; opacity: .9; }
   .th-filtro { font-size:.78rem; padding:3px 6px; border-radius:6px; border:1px solid rgba(255,255,255,.35);
                background:#fff; color:#333; max-width:200px; }
+  .th-filtro-multi { position:relative; padding:0; max-width:none; }
+  .th-filtro-multi > summary { list-style:none; cursor:pointer; padding:4px 8px; white-space:nowrap; }
+  .th-filtro-multi > summary::-webkit-details-marker { display:none; }
+  .th-filtro-multi > summary::after { content:' ▾'; opacity:.6; }
+  .th-filtro-multi #compSel { font-weight:700; }
+  .comp-menu { position:absolute; z-index:50; top:calc(100% + 4px); right:0; min-width:210px;
+               background:#fff; color:#333; border:1px solid #cfd3d8; border-radius:8px;
+               box-shadow:0 6px 18px rgba(0,0,0,.18); padding:6px; max-height:340px; overflow:auto; }
+  .comp-menu .comp-group { font-size:.66rem; font-weight:800; text-transform:uppercase;
+               color:#8a8f96; margin:6px 4px 2px; }
+  .comp-menu label { display:flex; align-items:center; gap:6px; padding:4px 6px; border-radius:5px;
+               font-size:.8rem; cursor:pointer; }
+  .comp-menu label:hover { background:#eef1f4; }
+  .comp-reset { margin-top:6px; width:100%; padding:4px; font-size:.72rem; cursor:pointer;
+               border:1px solid #cfd3d8; border-radius:5px; background:#f7f8f9; }
 </style>
 
 </body>

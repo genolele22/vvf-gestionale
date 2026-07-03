@@ -9,6 +9,12 @@ COPY . /var/www/html/
 
 RUN chown -R www-data:www-data /var/www/html
 
+# Sessioni su DB (sopravvivono allo sleep/deploy della macchina Fly).
+RUN { \
+      echo 'auto_prepend_file=/var/www/html/includes/sessione.php'; \
+      echo 'session.gc_maxlifetime=43200'; \
+    } > /usr/local/etc/php/conf.d/zz-sessioni.ini
+
 EXPOSE 8080
 
 RUN sed -i 's/80/8080/g' /etc/apache2/sites-available/000-default.conf \

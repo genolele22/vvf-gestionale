@@ -4,6 +4,7 @@ require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/auth.php';
 richiediAdmin();
 $pdo     = getDB();
+$TURNO   = turnoAttivo();   // pool capi/furieri per-turno (via il turno del vigile)
 $errore  = '';
 $sucesso = '';
 
@@ -23,6 +24,7 @@ $pdo->exec("CREATE TABLE IF NOT EXISTS furieri_fissi (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    vietaSeSolaLetturaTurno();   // niente modifiche se il turno attivo è in sola lettura
     $azione = $_POST['azione'] ?? '';
     try {
         if ($azione === 'capo_add') {
@@ -82,23 +84,23 @@ function nomeVig(array $r): string {
 $capiSel = $pdo->query(
     "SELECT v.id, v.cognome, v.nome, v.disambiguatore, q.codice AS qcodice
      FROM vigili v JOIN qualifiche q ON q.id = v.qualifica_id
-     WHERE v.attivo=1 AND q.codice IN ('Cr','Cs') ORDER BY v.cognome, v.nome"
+     WHERE v.attivo=1 AND q.codice IN ('Cr','Cs') AND v.turno='$TURNO' ORDER BY v.cognome, v.nome"
 )->fetchAll();
 $tuttiSel = $pdo->query(
     "SELECT v.id, v.cognome, v.nome, v.disambiguatore, q.codice AS qcodice
      FROM vigili v JOIN qualifiche q ON q.id = v.qualifica_id
-     WHERE v.attivo=1 ORDER BY v.cognome, v.nome"
+     WHERE v.attivo=1 AND v.turno='$TURNO' ORDER BY v.cognome, v.nome"
 )->fetchAll();
 
 $poolRows = $pdo->query(
     "SELECT cp.id, cp.ordine, v.cognome, v.nome, v.disambiguatore, q.codice AS qcodice
      FROM capi_pool cp JOIN vigili v ON v.id = cp.vigile_id JOIN qualifiche q ON q.id = v.qualifica_id
-     ORDER BY cp.ordine, cp.id"
+     WHERE v.turno='$TURNO' ORDER BY cp.ordine, cp.id"
 )->fetchAll();
 $furRows = $pdo->query(
     "SELECT ff.id, v.cognome, v.nome, v.disambiguatore, q.codice AS qcodice
      FROM furieri_fissi ff JOIN vigili v ON v.id = ff.vigile_id JOIN qualifiche q ON q.id = v.qualifica_id
-     ORDER BY v.cognome, v.nome"
+     WHERE v.turno='$TURNO' ORDER BY v.cognome, v.nome"
 )->fetchAll();
 ?>
 <!DOCTYPE html>

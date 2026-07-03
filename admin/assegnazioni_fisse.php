@@ -4,6 +4,7 @@ require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/auth.php';
 richiediAdmin();
 $pdo     = getDB();
+$TURNO   = turnoAttivo();   // assegnazioni fisse per-turno (via il turno del vigile)
 $errore  = '';
 $sucesso = '';
 
@@ -20,6 +21,7 @@ $pdo->exec("CREATE TABLE IF NOT EXISTS assegnazioni_fisse (
 $TURNI = ['DN' => 'Diurno + Notturno', 'D' => 'Solo diurno', 'N' => 'Solo notturno'];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    vietaSeSolaLetturaTurno();   // niente modifiche se il turno attivo è in sola lettura
     $azione = $_POST['azione'] ?? '';
     if ($azione === 'aggiungi') {
         $vigileId = (int)($_POST['vigile_id'] ?? 0);
@@ -51,7 +53,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 // Liste per le tendine
 $vigili = $pdo->query(
-    "SELECT id, cognome, nome, disambiguatore FROM vigili WHERE attivo=1 ORDER BY cognome, nome"
+    "SELECT id, cognome, nome, disambiguatore FROM vigili WHERE attivo=1 AND turno='$TURNO' ORDER BY cognome, nome"
 )->fetchAll();
 $posizioni = $pdo->query(
     "SELECT p.id, p.codice, p.nome, s.codice AS sede_codice
@@ -68,6 +70,7 @@ $righe = $pdo->query(
      JOIN vigili    v ON v.id = af.vigile_id
      JOIN posizioni p ON p.id = af.posizione_id
      JOIN sedi      s ON s.id = p.sede_id
+     WHERE v.turno = '$TURNO'
      ORDER BY v.cognome, v.nome"
 )->fetchAll();
 

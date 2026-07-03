@@ -18,39 +18,63 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $username = strtolower(trim($_POST['username'] ?? ''));
             $nome     = trim($_POST['nome'] ?? '');
             $ruolo    = $_POST['ruolo'] ?? 'user';
-            $turno    = $_POST['turno'] ?? '';
             $attivo   = isset($_POST['attivo']) ? 1 : 0;
             $password = (string)($_POST['password'] ?? '');
+            $perm     = is_array($_POST['perm'] ?? null) ? $_POST['perm'] : [];  // [turno => '' | 'lettura' | 'scrittura']
 
             if (!isset($RUOLI[$ruolo]))                 throw new RuntimeException('Ruolo non valido.');
             if ($username === '')                       throw new RuntimeException('Username obbligatorio.');
-            // comando = nessun turno; admin/user = turno obbligatorio
-            $turnoVal = ($ruolo === 'comando') ? null : ($turno !== '' && in_array($turno, $TURNI, true) ? $turno : null);
-            if ($ruolo !== 'comando' && $turnoVal === null) throw new RuntimeException('Turno obbligatorio per admin/user.');
+            // comando = super (nessuna matrice). Per admin/user serve almeno un permesso in griglia.
+            if ($ruolo !== 'comando') {
+                $haPerm = false;
+                foreach ($TURNI as $t) if (in_array($perm[$t] ?? '', ['lettura','scrittura'], true)) { $haPerm = true; break; }
+                if (!$haPerm) throw new RuntimeException('Assegna almeno un permesso di turno (lettura o scrittura).');
+            }
 
+            $pdo->beginTransaction();
             if ($id > 0) {
-                $pdo->prepare("UPDATE utenti SET username=?, nome=?, ruolo=?, turno=?, attivo=? WHERE id=?")
-                    ->execute([$username, $nome, $ruolo, $turnoVal, $attivo, $id]);
+                $pdo->prepare("UPDATE utenti SET username=?, nome=?, ruolo=?, attivo=? WHERE id=?")
+                    ->execute([$username, $nome, $ruolo, $attivo, $id]);
                 if ($password !== '') {
                     if (strlen($password) < 6) throw new RuntimeException('La password deve avere almeno 6 caratteri.');
                     $pdo->prepare("UPDATE utenti SET password=? WHERE id=?")
                         ->execute([password_hash($password, PASSWORD_BCRYPT), $id]);
                 }
+                $targetId = $id;
                 $ok = 'Utente aggiornato.';
             } else {
                 if (strlen($password) < 6) throw new RuntimeException('Password obbligatoria (min 6 caratteri) per un nuovo utente.');
-                $newId = nextId($pdo, 'utenti');
-                $pdo->prepare("INSERT INTO utenti (id,username,password,nome,ruolo,turno,attivo) VALUES (?,?,?,?,?,?,?)")
-                    ->execute([$newId, $username, password_hash($password, PASSWORD_BCRYPT), $nome, $ruolo, $turnoVal, $attivo]);
+                $targetId = nextId($pdo, 'utenti');
+                $pdo->prepare("INSERT INTO utenti (id,username,password,nome,ruolo,turno,attivo) VALUES (?,?,?,?,?,NULL,?)")
+                    ->execute([$targetId, $username, password_hash($password, PASSWORD_BCRYPT), $nome, $ruolo, $attivo]);
                 $ok = 'Utente creato.';
             }
+
+            // ── Matrice permessi per turno (#90) + turno "di casa" (default al login) ──
+            $pdo->prepare("DELETE FROM utenti_turni WHERE utente_id=?")->execute([$targetId]);
+            $homeTurno = null;
+            if ($ruolo !== 'comando') {
+                $insUT = $pdo->prepare("INSERT INTO utenti_turni (utente_id, turno, livello) VALUES (?,?,?)");
+                foreach ($TURNI as $t) {
+                    $liv = $perm[$t] ?? '';
+                    if ($liv === 'lettura' || $liv === 'scrittura') {
+                        $insUT->execute([$targetId, $t, $liv]);
+                        if ($homeTurno === null && $liv === 'scrittura') $homeTurno = $t;  // 1° scrittura = casa
+                    }
+                }
+                if ($homeTurno === null) foreach ($TURNI as $t) if (($perm[$t] ?? '') === 'lettura') { $homeTurno = $t; break; }
+            }
+            $pdo->prepare("UPDATE utenti SET turno=? WHERE id=?")->execute([$homeTurno, $targetId]);
+            $pdo->commit();
         } elseif ($azione === 'elimina') {
             $id = (int)($_POST['id'] ?? 0);
             if ($id === (int)utenteCorrente()['id']) throw new RuntimeException('Non puoi eliminare il tuo stesso account.');
+            $pdo->prepare("DELETE FROM utenti_turni WHERE utente_id=?")->execute([$id]);
             $pdo->prepare("DELETE FROM utenti WHERE id=?")->execute([$id]);
             $ok = 'Utente eliminato.';
         }
     } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
         $msg = $e->getMessage();
         if (stripos($msg, 'uq_username') !== false || stripos($msg, 'Duplicate') !== false)
             $msg = 'Esiste già un utente con questo username.';
@@ -64,6 +88,19 @@ if (isset($_GET['modifica'])) {
     $st->execute([(int)$_GET['modifica']]);
     $rigaEdit = $st->fetch() ?: null;
 }
+
+// Permessi per turno: dell'utente in modifica (pre-riempie la griglia) e di tutti (tabella).
+$editGrants = [];
+$grantsById = [];
+try {
+    if ($rigaEdit) {
+        $stg = $pdo->prepare("SELECT turno, livello FROM utenti_turni WHERE utente_id=?");
+        $stg->execute([(int)$rigaEdit['id']]);
+        foreach ($stg->fetchAll() as $g) $editGrants[$g['turno']] = $g['livello'];
+    }
+    foreach ($pdo->query("SELECT utente_id, turno, livello FROM utenti_turni ORDER BY turno") as $g)
+        $grantsById[(int)$g['utente_id']][$g['turno']] = $g['livello'];
+} catch (Throwable $e) { /* tabella assente */ }
 $righe = $pdo->query("SELECT * FROM utenti ORDER BY ruolo, turno, username")->fetchAll();
 ?>
 <!DOCTYPE html>
@@ -134,14 +171,20 @@ $righe = $pdo->query("SELECT * FROM utenti ORDER BY ruolo, turno, username")->fe
             <?php endforeach; ?>
           </select>
         </div>
-        <div class="ff">
-          <label>Turno (no per Comando)</label>
-          <select name="turno">
-            <option value="">—</option>
-            <?php foreach ($TURNI as $t): ?>
-              <option value="<?= $t ?>" <?= ($rigaEdit['turno'] ?? '') === $t ? 'selected' : '' ?>><?= $t ?></option>
+        <div class="ff" style="flex:1 1 100%">
+          <label>Permessi per turno &nbsp;<span style="font-weight:600;text-transform:none;color:var(--grigio-md)">(il ruolo Comando ha comunque tutto)</span></label>
+          <div style="display:flex;gap:14px;flex-wrap:wrap">
+            <?php foreach ($TURNI as $t): $liv = $editGrants[$t] ?? ''; ?>
+              <div style="display:flex;flex-direction:column;gap:3px">
+                <span style="font-size:.72rem;font-weight:800;color:var(--grigio-sc);text-align:center">Turno <?= $t ?></span>
+                <select name="perm[<?= $t ?>]">
+                  <option value=""          <?= $liv===''          ? 'selected':'' ?>>—</option>
+                  <option value="lettura"   <?= $liv==='lettura'   ? 'selected':'' ?>>👁 Lettura</option>
+                  <option value="scrittura" <?= $liv==='scrittura' ? 'selected':'' ?>>✏️ Scrittura</option>
+                </select>
+              </div>
             <?php endforeach; ?>
-          </select>
+          </div>
         </div>
         <div class="ff">
           <label><?= $rigaEdit ? 'Nuova password (vuoto = invariata)' : 'Password' ?></label>
@@ -164,7 +207,7 @@ $righe = $pdo->query("SELECT * FROM utenti ORDER BY ruolo, turno, username")->fe
   <div class="tabella-wrap" style="margin-top:16px">
     <table>
       <thead>
-        <tr><th>Username</th><th>Nome</th><th>Ruolo</th><th>Turno</th><th>Stato</th><th style="text-align:center">Azioni</th></tr>
+        <tr><th>Username</th><th>Nome</th><th>Ruolo</th><th>Permessi turni</th><th>Stato</th><th style="text-align:center">Azioni</th></tr>
       </thead>
       <tbody>
         <?php foreach ($righe as $r): ?>
@@ -172,7 +215,15 @@ $righe = $pdo->query("SELECT * FROM utenti ORDER BY ruolo, turno, username")->fe
             <td><strong><?= htmlspecialchars($r['username']) ?></strong></td>
             <td><?= htmlspecialchars($r['nome'] ?? '') ?></td>
             <td><span class="badge-ruolo r-<?= htmlspecialchars($r['ruolo']) ?>"><?= htmlspecialchars(strtoupper($r['ruolo'])) ?></span></td>
-            <td><?= htmlspecialchars($r['turno'] ?? '—') ?></td>
+            <td style="font-size:.82rem">
+              <?php if ($r['ruolo'] === 'comando'): ?>
+                <span style="color:#5b2c83;font-weight:700">Tutti (R/W)</span>
+              <?php else:
+                $gs = $grantsById[(int)$r['id']] ?? [];
+                if (!$gs): ?><span style="color:var(--grigio-md)">—</span><?php
+                else: foreach ($TURNI as $t): if (isset($gs[$t])): ?><span title="<?= $gs[$t] ?>" style="margin-right:7px;font-weight:700"><?= $t ?><?= $gs[$t]==='scrittura'?'✏️':'👁' ?></span><?php endif; endforeach; endif;
+              endif; ?>
+            </td>
             <td><?= $r['attivo'] ? '● Attivo' : '○ Disattivato' ?></td>
             <td>
               <div class="azioni">

@@ -8,6 +8,9 @@
 *.bak
 .DS_Store
 
+# documentazione di progetto: non serve a runtime, mai web-esposta
+/docs
+
 # file di riferimento / screenshot caricati nella root: mai nell'immagine
 content%3A*
 /*.pdf

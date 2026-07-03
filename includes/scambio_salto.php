@@ -11,8 +11,97 @@
  * Le funzioni assumono di girare DENTRO una transazione gestita dal chiamante.
  */
 require_once __DIR__ . '/turni.php';
+require_once __DIR__ . '/FoglioRenderer.php';
 
 class ScambioConflitto extends RuntimeException {}
+
+/**
+ * Capienza di una posizione (slot del modello.odt + override editor).
+ * DEVE restare allineata a capPos() in foglio/nuovo.php.
+ */
+function scambioCapPos(string $codice): int
+{
+    static $map = null;
+    if ($map === null) {
+        $override = ['5A' => 6, '1SMZ' => 6, 'BL-1A' => 7, 'RP-1A' => 7,
+                     'EL-1SMZ' => 4, 'AP-2VI' => 4];
+        $map = $override + FoglioRenderer::slotCapacities();   // override vince
+    }
+    return $map[$codice] ?? 7;
+}
+
+/**
+ * Piazza un vigile nelle SQUADRE di un foglio già esistente seguendo le stesse
+ * regole del compositore di default (prepopolaAssegnazioni in nuovo.php), come
+ * servizio ORDINARIO (in_straordinario=0). Usato per chi CEDE il salto in uno
+ * scambio: torna a lavorare e va messo in squadra, non in straordinario.
+ * Se è già assegnato non fa nulla; se la sua posizione è piena resta disponibile.
+ */
+function scambioPiazzaInServizio(PDO $pdo, int $foglioId, int $vigileId): void
+{
+    $chk = $pdo->prepare("SELECT 1 FROM assegnazioni WHERE foglio_id=? AND vigile_id=?");
+    $chk->execute([$foglioId, $vigileId]);
+    if ($chk->fetchColumn()) return;   // già in squadra
+
+    $patMax = "(SELECT MAX(p.tipo) FROM vigili_patenti vp JOIN patenti p ON p.id=vp.patente_id WHERE vp.vigile_id=v.id)";
+    $hasSO  = "EXISTS (SELECT 1 FROM vigili_abilitazioni va JOIN abilitazioni ab ON ab.id=va.abilitazione_id WHERE va.vigile_id=v.id AND ab.codice='SO')";
+    $st = $pdo->prepare(
+        "SELECT s.codice AS sede, v.qualifica_id, $patMax AS patente_max, ($hasSO) AS ha_so
+         FROM vigili v JOIN sedi s ON s.id=v.sede_id WHERE v.id=? AND v.attivo=1"
+    );
+    $st->execute([$vigileId]);
+    $v = $st->fetch();
+    if (!$v) return;
+
+    $sede = $v['sede'];
+    $pat  = (int)$v['patente_max'];
+    $qual = (int)$v['qualifica_id'];
+    $so   = (int)$v['ha_so'] === 1;
+
+    // Stesse posizioni-candidate (in ordine) di prepopolaAssegnazioni.
+    $sedePos = [
+        'ML' => ['ML-1A'], 'MN' => ['ML-1NAU'], 'GA' => ['GA-1NAU'], 'SM' => ['1SMZ'],
+        'GE' => ['GE-1A'], 'BL' => ['BL-1A'], 'BS' => ['BS-1A'], 'RP' => ['RP-1A'],
+        'CH' => ['CH-1A', 'CH-1B'],
+        'AP' => ['AP-TEL', 'AP-1ROS', 'AP-1ASA', 'AP-1VI', 'AP-2VI'],
+        'EL' => ['EL-1SMZ'],
+    ];
+    $codes = [];
+    if ($sede !== 'C') {
+        $codes = $sedePos[$sede] ?? [];
+    } else {
+        if ($so && in_array($pat, [1, 2], true)) $codes[] = 'CENTR-OP';
+        if ($qual === 1) {                                  // Vp
+            if ($pat === 2)                    $codes = array_merge($codes, ['3A', '4B']);
+            elseif (in_array($pat, [3, 4], true)) $codes = array_merge($codes, ['4A', '1FUN-AUTORADIO']);
+            elseif ($pat === 1)                $codes = array_merge($codes, ['5A', '1SOP-AUTORIM']);
+        } elseif (in_array($qual, [2, 3], true)) {          // Cr/Cs
+            $codes[] = in_array($pat, [3, 4], true) ? '3B' : '2A';
+        }
+    }
+    if (!$codes) return;   // nessuna regola → resta disponibile
+
+    $posId = [];
+    foreach ($pdo->query("SELECT id, codice FROM posizioni") as $p) $posId[$p['codice']] = (int)$p['id'];
+
+    $cntSt = $pdo->prepare("SELECT COUNT(*) FROM assegnazioni WHERE foglio_id=? AND posizione_id=?");
+    $ins   = $pdo->prepare(
+        "INSERT IGNORE INTO assegnazioni (id,foglio_id,posizione_id,vigile_id,ordine,in_straordinario)
+         VALUES (?,?,?,?,?,0)"
+    );
+    foreach ($codes as $code) {
+        $pid = $posId[$code] ?? 0;
+        if (!$pid) continue;
+        $cntSt->execute([$foglioId, $pid]);
+        $cnt = (int)$cntSt->fetchColumn();
+        if ($cnt < scambioCapPos($code)) {
+            $aid = nextId($pdo, 'assegnazioni');
+            $ins->execute([$aid, $foglioId, $pid, $vigileId, $cnt + 1]);
+            return;
+        }
+    }
+    // tutte le posizioni-candidate piene → resta disponibile (mai sforare capienza)
+}
 
 /**
  * Le 4 righe override [[data, tipo, vigile_out, vigile_in], ...] di uno scambio,
@@ -92,6 +181,8 @@ function scambioScriviOverride(PDO $pdo, int $sid, array $rows): void
                 $nss = nextId($pdo, 'salto_servizio');
                 $insSS->execute([$nss, $fid, $inId]);
             }
+            // Chi cede il salto torna in servizio: piazzato in squadra (ordinario)
+            scambioPiazzaInServizio($pdo, (int)$fid, (int)$outId);
         }
     }
 }
@@ -174,6 +265,9 @@ function scambioAnnulla(PDO $pdo, int $sid): bool
         if ($fid) {
             // chi era entrato in salto esce; chi cedeva (rester canonico) rientra
             $delSS->execute([$fid, (int)$r['vigile_in_id']]);
+            // chi cedeva era stato piazzato in squadra: togli l'assegnazione, torna a riposo
+            $pdo->prepare("DELETE FROM assegnazioni WHERE foglio_id=? AND vigile_id=?")
+                ->execute([$fid, (int)$r['vigile_out_id']]);
             $chkSS->execute([$fid, (int)$r['vigile_out_id']]);
             if (!$chkSS->fetchColumn()) {
                 $nss = nextId($pdo, 'salto_servizio');

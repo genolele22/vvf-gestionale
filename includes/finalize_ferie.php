@@ -1,12 +1,15 @@
 <?php
 /**
- * Approvazione ferie alla generazione dell'ODT (servizio completo).
- * Per ogni ferie (assenza FER) presente sul foglio:
- *   - se la richiesta bot è pending → la approva
- *   - enfila una notifica in bot_outbox (Telegram + mail le manda il bot), idempotente via ctx.
- * Le ferie escluse dalla fureria (assenza rimossa in Agenda) non vengono toccate.
+ * Comunicazioni ferie alla finalizzazione del foglio (tasto ✉️ Invia).
+ * Un solo gesto raccoglie tutte le comunicazioni ferie del turno:
+ *   - APPROVATE  : FER sul foglio con richiesta bot → approva la richiesta + notifica
+ *   - D'UFFICIO  : FER sul foglio SENZA richiesta bot (ferie d'ufficio) → notifica
+ *   - NEGATE     : richiesta bot 'rejected' per la data/turno (l'Agenda l'ha respinta
+ *                  ma non avvisa) → notifica
+ * Tutto idempotente via bot_outbox.ctx (Telegram + mail le manda il bot).
+ * Ritorna i conteggi delle notifiche effettivamente accodate.
  */
-function finalizeFerie(PDO $pdo, int $foglioId, string $dataStr, string $tipo): void
+function finalizeFerie(PDO $pdo, int $foglioId, string $dataStr, string $tipo): array
 {
     // coda notifiche (idempotente: la crea se manca, stessa struttura del bot)
     $pdo->exec("
@@ -28,20 +31,9 @@ function finalizeFerie(PDO $pdo, int $foglioId, string $dataStr, string $tipo): 
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     ");
 
-    // vigili in FERIE su questo foglio (tipo_assenza FER = id 1)
-    $st = $pdo->prepare("SELECT DISTINCT vigile_id FROM assenze WHERE foglio_id=? AND tipo_assenza_id=1");
-    $st->execute([$foglioId]);
-    $vigili = array_map('intval', array_column($st->fetchAll(), 'vigile_id'));
-    if (!$vigili) return;
-
     $tipi = $tipo === 'N' ? ['N', 'DN'] : ['D', 'DN'];
     $ph   = implode(',', array_fill(0, count($tipi), '?'));
 
-    $findReq = $pdo->prepare(
-        "SELECT id, stato, tipo_turno FROM bot_requests
-         WHERE vigile_id=? AND data_richiesta=? AND tipo_turno IN ($ph)
-         ORDER BY id DESC LIMIT 1"
-    );
     $approve = $pdo->prepare("UPDATE bot_requests SET stato='approved', processed_at=NOW() WHERE id=? AND stato='pending'");
     $hasCtx  = $pdo->prepare("SELECT 1 FROM bot_outbox WHERE ctx=? LIMIT 1");
     $insOut  = $pdo->prepare(
@@ -49,19 +41,58 @@ function finalizeFerie(PDO $pdo, int $foglioId, string $dataStr, string $tipo): 
          VALUES (?,?,?,?,?,?)"
     );
 
+    $cnt = ['approvate' => 0, 'ufficio' => 0, 'negate' => 0];
+
+    // ── 1) FER sul foglio: approvata (con richiesta) o d'ufficio (senza) ──
+    $st = $pdo->prepare("SELECT DISTINCT vigile_id FROM assenze WHERE foglio_id=? AND tipo_assenza_id=1");
+    $st->execute([$foglioId]);
+    $vigili = array_map('intval', array_column($st->fetchAll(), 'vigile_id'));
+
+    // Solo richieste non respinte: una FER sul foglio con richiesta 'rejected' è
+    // un override a mano dell'operatore → la trattiamo come d'ufficio (non negata).
+    $findReq = $pdo->prepare(
+        "SELECT id, stato, tipo_turno FROM bot_requests
+         WHERE vigile_id=? AND data_richiesta=? AND tipo_turno IN ($ph) AND stato<>'rejected'
+         ORDER BY id DESC LIMIT 1"
+    );
+
     foreach ($vigili as $vid) {
         $findReq->execute(array_merge([$vid, $dataStr], $tipi));
         $req = $findReq->fetch();
-        if (!$req) continue;                       // ferie a mano (senza richiesta bot): niente notifica
-        $reqId = (int)$req['id'];
-        $ctx   = 'ferie:' . $reqId;
 
-        if ($req['stato'] === 'pending') $approve->execute([$reqId]);
-
-        $hasCtx->execute([$ctx]);
-        if ($hasCtx->fetchColumn()) continue;      // già notificato → idempotente
-
-        $nextId = nextId($pdo, 'bot_outbox');
-        $insOut->execute([$nextId, $vid, 'ferie_approvata', $dataStr, $req['tipo_turno'], $ctx]);
+        if ($req) {
+            // ferie da richiesta bot → approva + notifica
+            $reqId = (int)$req['id'];
+            if ($req['stato'] === 'pending') $approve->execute([$reqId]);
+            $hasCtx->execute(['ferie:' . $reqId]);
+            if ($hasCtx->fetchColumn()) continue;       // già notificato
+            $insOut->execute([nextId($pdo, 'bot_outbox'), $vid, 'ferie_approvata', $dataStr, $req['tipo_turno'], 'ferie:' . $reqId]);
+            $cnt['approvate']++;
+        } else {
+            // ferie d'ufficio (nessuna richiesta bot)
+            $hasCtx->execute(['ferie_uff:' . $foglioId . ':' . $vid]);
+            if ($hasCtx->fetchColumn()) continue;       // già notificato
+            $insOut->execute([nextId($pdo, 'bot_outbox'), $vid, 'ferie_ufficio', $dataStr, $tipo, 'ferie_uff:' . $foglioId . ':' . $vid]);
+            $cnt['ufficio']++;
+        }
     }
+
+    // ── 2) NEGATE: richieste 'rejected' per questa data/turno, per chi NON è
+    // (più) in FER sul foglio (chi è in FER è stato gestito sopra come d'ufficio) ──
+    $stNeg = $pdo->prepare(
+        "SELECT r.id, r.vigile_id, r.tipo_turno FROM bot_requests r
+         WHERE r.data_richiesta=? AND r.stato='rejected' AND r.tipo_turno IN ($ph)
+           AND NOT EXISTS (SELECT 1 FROM assenze a
+                           WHERE a.foglio_id=? AND a.vigile_id=r.vigile_id AND a.tipo_assenza_id=1)"
+    );
+    $stNeg->execute(array_merge([$dataStr], $tipi, [$foglioId]));
+    foreach ($stNeg->fetchAll() as $r) {
+        $reqId = (int)$r['id'];
+        $hasCtx->execute(['ferie_neg:' . $reqId]);
+        if ($hasCtx->fetchColumn()) continue;           // già notificato
+        $insOut->execute([nextId($pdo, 'bot_outbox'), (int)$r['vigile_id'], 'ferie_negata', $dataStr, $r['tipo_turno'], 'ferie_neg:' . $reqId]);
+        $cnt['negate']++;
+    }
+
+    return $cnt;
 }

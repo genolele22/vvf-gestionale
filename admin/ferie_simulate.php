@@ -5,12 +5,14 @@ require_once __DIR__ . '/../includes/auth.php';
 richiediAdmin();
 require_once __DIR__ . '/../includes/turni.php';          // getTurnoGiorno()
 require_once __DIR__ . '/../includes/ferie_assenze.php';  // feriaSyncAssenza()
+$TURNO = turnoAttivo();   // simula ferie sul turno attivo (multi-turno)
 
 $pdo = getDB();
 
 // ── AJAX: crea le voci ferie (come richieste BOT, stato pending) ──────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     header('Content-Type: application/json');
+    if (soloLetturaAttivo()) { echo json_encode(['ok' => false, 'errore' => 'Turno in sola lettura.']); exit; }
     $azione = $_POST['azione'] ?? '';
 
     if ($azione === 'crea_voci') {
@@ -25,11 +27,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
 
-        // Slot reale del turno B per una data: 'D', 'N' o null (B non in servizio).
-        $slotTurnoB = function (string $data): ?string {
+        // Slot reale del turno attivo per una data: 'D', 'N' o null (non in servizio).
+        $slotTurnoB = function (string $data) use ($TURNO): ?string {
             $tg = getTurnoGiorno($data);
-            if (($tg['diurno']['turno'] ?? '') === 'B') return 'D';
-            if (($tg['notte']['turno']  ?? '') === 'B') return 'N';
+            if (($tg['diurno']['turno'] ?? '') === $TURNO) return 'D';
+            if (($tg['notte']['turno']  ?? '') === $TURNO) return 'N';
             return null;
         };
 
@@ -78,7 +80,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // ── Vigili attivi per il dropdown ────────────────────────────────────────────
 $vigili = $pdo->query(
     "SELECT id, cognome, nome, disambiguatore
-       FROM vigili WHERE attivo = 1
+       FROM vigili WHERE attivo = 1 AND turno = '$TURNO'
    ORDER BY cognome ASC, nome ASC, disambiguatore ASC"
 )->fetchAll();
 ?>
@@ -212,11 +214,12 @@ function turnoDiurno(giorni) {         // lettera del diurno (A,B,C,D)
   const idx = (((ANCHOR_TURNO + giorni) % 4) + 4) % 4;
   return ['A', 'B', 'C', 'D'][idx];
 }
-// Slot del turno B in una data: 'D', 'N' o null (B non in servizio)
+const TURNO_ATTIVO = '<?= $TURNO ?>';
+// Slot del turno attivo in una data: 'D', 'N' o null (non in servizio)
 function slotTurnoB(y, m, d) {
   const g = giorniDallAncora(y, m, d);
-  if (turnoDiurno(g)     === 'B') return 'D';   // diurno
-  if (turnoDiurno(g - 1) === 'B') return 'N';   // notturno = diurno del giorno prima
+  if (turnoDiurno(g)     === TURNO_ATTIVO) return 'D';   // diurno
+  if (turnoDiurno(g - 1) === TURNO_ATTIVO) return 'N';   // notturno = diurno del giorno prima
   return null;
 }
 

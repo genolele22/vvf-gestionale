@@ -3,7 +3,8 @@ session_start();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/auth.php';
 richiediAdmin();
-$pdo = getDB();
+$pdo   = getDB();
+$TURNO = turnoAttivo();   // Amministrazione segue il turno attivo (multi-turno)
 
 // ── Pausa bot (flag condiviso 'bot_pausa' nella tabella parametri) ───────────
 // Quando è ON il bot Telegram rifiuta nuove richieste (ferie e scambi salto):
@@ -51,10 +52,11 @@ function contaTab(PDO $pdo, string $sql): int {
 }
 $nSedi    = contaTab($pdo, "SELECT COUNT(*) FROM sedi");
 $nPos     = contaTab($pdo, "SELECT COUNT(*) FROM posizioni");
-$nAssFix  = contaTab($pdo, "SELECT COUNT(*) FROM assegnazioni_fisse");
+// Le regole di composizione sono per-turno (via il turno del vigile).
+$nAssFix  = contaTab($pdo, "SELECT COUNT(*) FROM assegnazioni_fisse af JOIN vigili v ON v.id=af.vigile_id WHERE v.turno='$TURNO'");
 $nParam   = contaTab($pdo, "SELECT COUNT(*) FROM parametri");
-$nCapi    = contaTab($pdo, "SELECT COUNT(*) FROM capi_pool");
-$nFur     = contaTab($pdo, "SELECT COUNT(*) FROM furieri_fissi");
+$nCapi    = contaTab($pdo, "SELECT COUNT(*) FROM capi_pool cp JOIN vigili v ON v.id=cp.vigile_id WHERE v.turno='$TURNO'");
+$nFur     = contaTab($pdo, "SELECT COUNT(*) FROM furieri_fissi ff JOIN vigili v ON v.id=ff.vigile_id WHERE v.turno='$TURNO'");
 ?>
 <!DOCTYPE html>
 <html lang="it">
@@ -166,12 +168,14 @@ $nFur     = contaTab($pdo, "SELECT COUNT(*) FROM furieri_fissi");
       <div class="ac-meta"><?= $nCapi ?> nel pool · <?= $nFur ?> furieri</div>
     </a>
 
+    <?php if (isComando()): ?>
     <a href="parametri.php" class="admin-card">
-      <div class="ac-ico">📝</div>
-      <h3>Testi / parametri fissi</h3>
-      <p>Valori riutilizzabili: intestazioni, note standard, nome comando, indirizzi mail.</p>
+      <div class="ac-ico">⚙️</div>
+      <h3>Parametri di sistema</h3>
+      <p>Posta del bot (indirizzi, SMTP/IMAP), formato nomi sul foglio e parametri liberi.</p>
       <div class="ac-meta"><?= $nParam ?> parametri</div>
     </a>
+    <?php endif; ?>
 
     <a href="ferie_simulate.php" class="admin-card">
       <div class="ac-ico">🏖️</div>

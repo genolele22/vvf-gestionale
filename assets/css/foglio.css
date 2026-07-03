@@ -616,6 +616,48 @@ body.cruscotto-bloccato .foglio-layout {
     margin-bottom: 8px;
     display: inline-block;
 }
+/* Pannello Ferie spostabile (tra Disponibili e Centrale) */
+.ferie-head-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+.ferie-head-row .assenti-col-head { margin-bottom: 0; }
+.ferie-pos-btn {
+    background: none;
+    border: 1px solid #d5d8dc;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: .85rem;
+    line-height: 1;
+    padding: 3px 7px;
+    color: #444;
+}
+.ferie-pos-btn:hover { background: #eef1f4; }
+/* Layout con la Ferie infilata in mezzo: 3 colonne */
+.foglio-layout.with-ferie-middle {
+    grid-template-columns: 200px 200px 1fr;
+}
+@media (max-width: 1024px) {
+    .foglio-layout.with-ferie-middle { grid-template-columns: 1fr; }
+}
+.ferie-middle-slot {
+    position: sticky;
+    top: 116px;
+    max-height: calc(100vh - 130px);
+    overflow-y: auto;
+    scrollbar-width: thin;
+    flex-direction: column;
+}
+.ferie-middle-slot .assenti-col {
+    background: var(--bianco);
+    border-right: none;
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+}
+
 .ac-ferie    { background: #1e8449; }
 .ac-rc       { background: #2471a3; }
 .ac-missione { background: #784212; }

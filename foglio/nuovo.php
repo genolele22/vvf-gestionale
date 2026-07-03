@@ -7,6 +7,8 @@ require_once __DIR__ . '/../includes/FoglioRenderer.php';
 require_once __DIR__ . '/../includes/auth.php';
 richiediLogin();
 
+$TURNO = turnoAttivo();   // turno su cui si lavora (A/B/C/D); default B. Multi-turno.
+
 $pdo = getDB();
 
 // Capienza per posizione = slot del modello.odt (stessi spazi dell'ODT di riferimento).
@@ -19,7 +21,8 @@ function capPos(int $posId): int {
         // Override editor (non tocca l'ODT, che mantiene le sue celle):
         //  - 5A e 1SMZ a 6 slot (più visione a schermo);
         //  - BL-1A e RP-1A a 7 slot, uniformi agli altri distaccamenti.
-        $override = ['5A' => 6, '1SMZ' => 6, 'BL-1A' => 7, 'RP-1A' => 7];
+        $override = ['5A' => 6, '1SMZ' => 6, 'BL-1A' => 7, 'RP-1A' => 7,
+                     'EL-1SMZ' => 4, 'AP-2VI' => 4];
         foreach (getDB()->query("SELECT id, codice FROM posizioni") as $p) {
             $map[(int)$p['id']] = $override[$p['codice']]
                 ?? $cap[$p['codice']]
@@ -34,7 +37,7 @@ function capPos(int $posId): int {
 // lo è (diurno del suo giorno o notturno del giorno dopo). Redirect alla URL
 // canonica così refresh/segnalibri e le chiamate AJAX ereditano data+tipo.
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && !isset($_GET['data'])) {
-    $slot = prossimoSlotTurnoB(date('Y-m-d'));
+    $slot = prossimoSlotTurnoB(date('Y-m-d'), $TURNO);
     header('Location: nuovo.php?data=' . $slot['data'] . '&tipo=' . $slot['tipo']);
     exit;
 }
@@ -56,7 +59,7 @@ $oraLabel  = $tipoParam === 'D' ? '08:00 → 20:00' : '20:00 → 08:00';
 $turnoGiorno  = getTurnoGiorno($dataStr);
 $turnoAttivo  = $tipoParam === 'D' ? $turnoGiorno['diurno'] : $turnoGiorno['notte'];
 $turnoRiposo  = $tipoParam === 'D' ? $turnoGiorno['notte']  : $turnoGiorno['diurno'];
-$codSaltoRip  = 'B' . $turnoRiposo['salto'];
+$codSaltoRip  = $TURNO . $turnoRiposo['salto'];
 
 // ── Helper: chi riposa davvero su questo foglio ──────────────
 // Default = vigili col salto_id del giorno. Poi applica gli scambi salto
@@ -82,159 +85,189 @@ function resterEffettivi(PDO $pdo, string $dataStr, string $tipoParam, int $salt
 }
 
 // ── Helper: pre-popola assegnazioni e salto per un foglio ────
-// Regola: max = capienza ODT della posizione (capPos). Chi ha una posizione
-// esplicita (template ODT / default) ci va; gli altri vengono SPALMATI sulle
-// posizioni della loro sede, riempiendo fino a capienza in ordine.
-// $resters = insieme effettivo dei riposanti (default ± scambi salto).
+// COMPOSITORE DI DEFAULT (regole fisse del comando). Due famiglie di sedi:
+//
+//  A) SEDI NON CENTRALI (distaccamenti, aeroporto, sommozzatori, nautici):
+//     il personale della sede riempie le posizioni di quella sede, in ordine di
+//     ruolo (Cr→Cs→Vp) e cognome, traboccando alla posizione successiva quando
+//     la corrente è piena (capienza ODT). Mappa $sedePos.
+//
+//  B) CENTRALE (sede 'C'): regole specifiche per posizione:
+//     - 1A      = era in salto il turno precedente (precedenza su tutto)
+//     - CENTR-OP = abilitazione SO + patente 1/2
+//     - fasce Vp per patente (pool unica spezzata per indice):
+//         pat2 → 3A(1-6)·4B(7-10) · pat3/4 → 4A(1-6)·1FUN(7-8) · pat1 → 5A(1-6)·1SOP(7-10)
+//     - Cr/Cs: pat{1,2}/nessuna → 2A · pat{3,4} → 3B
+//     - 1B/2B-NBCR restano vuote (manuali / fisse)
+//
+// Override unico = assegnazioni_fisse (Amministrazione), priorità massima.
+// Una persona = una posizione: chi è assegnato esce dalla pool.
+// $resters = riposanti (salto ± scambi); assenti sul foglio = fuori servizio.
 function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, array $resters,
                                string $dataStr = '', string $tipoParam = ''): void {
     $pdo->prepare("DELETE FROM assegnazioni WHERE foglio_id=?")->execute([$foglioId]);
 
-    // Posizione da montaggio ODT per questo salto canonico
-    $tmpl = [];
-    $st = $pdo->prepare("SELECT vigile_id, posizione_id FROM posizione_template WHERE salto_canoni=?");
-    $st->execute([$saltoRiposoId]);
-    foreach ($st->fetchAll() as $r) {
-        $tmpl[(int)$r['vigile_id']] = (int)$r['posizione_id'];
-    }
+    // mappe codice → id (posizioni) e id → codice (sedi)
+    $posIdByCode = [];
+    foreach ($pdo->query("SELECT id, codice FROM posizioni") as $p) $posIdByCode[$p['codice']] = (int)$p['id'];
+    $sedeCodById = [];
+    foreach ($pdo->query("SELECT id, codice FROM sedi") as $s) $sedeCodById[(int)$s['id']] = $s['codice'];
 
-    // Assegnazioni FISSE (Amministrazione): override a priorità massima sulla
-    // posizione. Valgono per il turno corrente (tipo_turno = DN oppure D/N).
-    // Metodo 1: il vigile con regola fissa, se in servizio, ci va d'ufficio.
+    // Override: assegnazioni FISSE (DN oppure il turno corrente)
     $fisse = [];
     try {
         $stF = $pdo->prepare(
-            "SELECT vigile_id, posizione_id FROM assegnazioni_fisse
-             WHERE tipo_turno='DN' OR tipo_turno=?"
+            "SELECT vigile_id, posizione_id FROM assegnazioni_fisse WHERE tipo_turno='DN' OR tipo_turno=?"
         );
         $stF->execute([$tipoParam !== '' ? $tipoParam : 'DN']);
         foreach ($stF->fetchAll() as $r) $fisse[(int)$r['vigile_id']] = (int)$r['posizione_id'];
     } catch (Throwable $e) { /* tabella assente: nessuna regola fissa */ }
 
-    // Tutte le posizioni di ogni sede, ordinate; + mappa posizione→sede
-    $posizioniDiSede = [];
-    $sedeDiPos       = [];
-    foreach ($pdo->query("SELECT id, sede_id FROM posizioni ORDER BY sede_id, ordine") as $pp) {
-        $posizioniDiSede[(int)$pp['sede_id']][] = (int)$pp['id'];
-        $sedeDiPos[(int)$pp['id']]              = (int)$pp['sede_id'];
-    }
-
-    $personale = $pdo->query(
-        "SELECT v.id, v.sede_id, v.salto_id, v.posizione_default_id, v.cognome, v.qualifica_id,
-                (SELECT MAX(p.tipo) FROM vigili_patenti vp JOIN patenti p ON p.id=vp.patente_id
-                 WHERE vp.vigile_id=v.id) AS patente_max
-         FROM vigili v WHERE v.attivo=1"
-    )->fetchAll();
-
-    // Sede Centrale (per il raggruppamento della passata 2, solo lì)
-    $centrSedeId = (int)($pdo->query("SELECT id FROM sedi WHERE codice='CENTR'")->fetchColumn() ?: 0);
-    // Gruppo colore patente: rossi (3-4)=0, blu (2)=1, neri (1/—)=2
-    $coloreGruppo = function ($pat): int {
-        $n = (int)$pat;
-        if ($n >= 3) return 0;
-        if ($n === 2) return 1;
-        return 2;
-    };
-
-    // Chi era in SALTO TURNO il turno PRECEDENTE: questi (in centrale) vanno in 1A.
-    // Turno prima: per un N = il D dello stesso giorno; per un D = l'N del giorno prima.
-    // Sono i riposanti effettivi (salto ± scambi approvati) di quel turno.
+    // Chi era a riposo (salto) nel PRECEDENTE servizio del turno B → centrale in 1A.
+    // Il salto di riposo avanza +1 a ogni occorrenza, quindi il salto precedente
+    // = salto di oggi − 1 (ciclo 1..8). Sono i vigili (centrali) con quel salto_id,
+    // che oggi rientrano in servizio. [vid => true]
     $eraInSaltoPrima = [];
     if ($dataStr !== '' && $tipoParam !== '') {
-        if ($tipoParam === 'N') { $pd = $dataStr; $pt = 'D'; }
-        else { $pd = (new DateTime($dataStr))->modify('-1 day')->format('Y-m-d'); $pt = 'N'; }
+        $saltoOggi = saltoRiposoNum($dataStr, $tipoParam);          // 1..8
+        $prevNum   = (($saltoOggi - 2 + 8) % 8) + 1;                // −1 con wrap 1..8
         $stPrevS = $pdo->prepare("SELECT id FROM salti_turno WHERE codice=?");
-        $stPrevS->execute(['B' . saltoRiposoNum($pd, $pt)]);
+        $stPrevS->execute([turnoAttivo() . $prevNum]);
         $prevSaltoId = (int)($stPrevS->fetchColumn() ?: 0);
         if ($prevSaltoId > 0) {
-            $eraInSaltoPrima = resterEffettivi($pdo, $pd, $pt, $prevSaltoId);  // [vid => true]
+            $stPv = $pdo->prepare("SELECT id FROM vigili WHERE attivo=1 AND salto_id=?");
+            $stPv->execute([$prevSaltoId]);
+            foreach ($stPv->fetchAll(PDO::FETCH_COLUMN) as $vid) $eraInSaltoPrima[(int)$vid] = true;
         }
     }
 
-    // Vigili con assenza registrata per questo foglio → non vanno in servizio
+    // Assenti registrati su questo foglio → fuori servizio
     $assentiIds = [];
     $stAb = $pdo->prepare("SELECT vigile_id FROM assenze WHERE foglio_id=?");
     $stAb->execute([$foglioId]);
-    foreach ($stAb->fetchAll(PDO::FETCH_COLUMN) as $aid) {
-        $assentiIds[(int)$aid] = true;
+    foreach ($stAb->fetchAll(PDO::FETCH_COLUMN) as $aid) $assentiIds[(int)$aid] = true;
+
+    // Pool: attivi, con i dati per le regole (SO + patente più alta posseduta).
+    $patMax = "(SELECT MAX(p.tipo) FROM vigili_patenti vp JOIN patenti p ON p.id=vp.patente_id WHERE vp.vigile_id=v.id)";
+    $hasSO  = "EXISTS (SELECT 1 FROM vigili_abilitazioni va JOIN abilitazioni ab ON ab.id=va.abilitazione_id WHERE va.vigile_id=v.id AND ab.codice='SO')";
+    $rows = $pdo->query(
+        "SELECT v.id, v.cognome, v.sede_id, v.qualifica_id, $patMax AS patente_max, ($hasSO) AS ha_so
+         FROM vigili v WHERE v.attivo=1 AND v.turno='" . turnoAttivo() . "'"
+    )->fetchAll();
+
+    // Candidati = non a riposo, non assenti
+    $cand = [];
+    foreach ($rows as $r) {
+        $vid = (int)$r['id'];
+        if (isset($resters[$vid]) || isset($assentiIds[$vid])) continue;
+        $cand[$vid] = $r;
     }
 
+    // Inserimento
     $nextAssId = nextId($pdo, 'assegnazioni');
-    $stA       = $pdo->prepare("INSERT IGNORE INTO assegnazioni (id,foglio_id,posizione_id,vigile_id,ordine,in_straordinario) VALUES (?,?,?,?,?,0)");
-
-    $conteggio = [];  // posId => n attuale
-    $assegna = function(int $vid, int $posId) use (&$conteggio, &$nextAssId, $stA, $foglioId): void {
+    $stA = $pdo->prepare("INSERT IGNORE INTO assegnazioni (id,foglio_id,posizione_id,vigile_id,ordine,in_straordinario) VALUES (?,?,?,?,?,0)");
+    $conteggio = [];   // posId → n attuale
+    $assegnati = [];   // vid → true
+    $assegna = function(int $vid, ?int $posId) use (&$conteggio, &$assegnati, &$nextAssId, $stA, $foglioId): void {
+        if (!$posId) return;
         $conteggio[$posId] = ($conteggio[$posId] ?? 0) + 1;
         $stA->execute([$nextAssId++, $foglioId, $posId, $vid, $conteggio[$posId]]);
+        $assegnati[$vid] = true;
     };
 
-    // Prima posizione libera (sotto la sua capienza ODT) della sede, in ordine
-    $primaLibera = function(int $sedeId) use (&$conteggio, $posizioniDiSede): ?int {
-        foreach ($posizioniDiSede[$sedeId] ?? [] as $pid) {
-            if (($conteggio[$pid] ?? 0) < capPos($pid)) return $pid;
+    // Ordine ruolo (Cr>Cs>Vp = qualifica_id desc) + cognome
+    $ordina = function(array $list): array {
+        usort($list, fn($a, $b) =>
+            [-(int)$a['qualifica_id'], strtolower($a['cognome'])]
+            <=> [-(int)$b['qualifica_id'], strtolower($b['cognome'])]);
+        return $list;
+    };
+    // Disponibili (non già assegnati) che soddisfano $cond, ordinati
+    $disp = function(callable $cond) use (&$cand, &$assegnati, $ordina): array {
+        $out = [];
+        foreach ($cand as $vid => $r) {
+            if (isset($assegnati[$vid])) continue;
+            if ($cond($r)) $out[] = $r;
         }
-        return null;
+        return $ordina($out);
+    };
+    $sedeCod = fn(array $r): string => $sedeCodById[(int)$r['sede_id']] ?? '';
+
+    // Riempie le posizioni $codes (in ordine) con $lista, traboccando alla
+    // successiva quando una è piena. NON supera MAI la capienza (capPos): gli
+    // esuberi oltre l'ultima posizione restano disponibili.
+    $riempi = function(array $codes, array $lista) use (&$conteggio, $assegna, $posIdByCode): void {
+        $ci = 0;
+        foreach ($lista as $r) {
+            while ($ci < count($codes)
+                   && ($conteggio[$posIdByCode[$codes[$ci]] ?? 0] ?? 0) >= capPos($posIdByCode[$codes[$ci]] ?? 0))
+                $ci++;
+            if ($ci >= count($codes)) break;   // tutte piene → esubero disponibile
+            $assegna((int)$r['id'], $posIdByCode[$codes[$ci]] ?? null);
+        }
     };
 
-    // Pass 1: chi ha posizione esplicita (template/default) e c'è ancora posto
-    $daSpalmare = [];
-    $idx = 0;
-    foreach ($personale as $vp) {
-        $vid     = (int)$vp['id'];
-        $sedeId  = (int)$vp['sede_id'];
-        if (isset($resters[$vid])) continue;
-        if (isset($assentiIds[$vid])) continue;
-
-        $posEsplicita = $fisse[$vid]
-            ?? $tmpl[$vid]
-            ?? ($vp['posizione_default_id'] ? (int)$vp['posizione_default_id'] : null);
-
-        if ($posEsplicita && ($conteggio[$posEsplicita] ?? 0) < capPos($posEsplicita)) {
-            $assegna($vid, $posEsplicita);
-        } else {
-            // Sede di destinazione: quella della posizione esplicita (se piena) o quella del vigile
-            $sedeDest = $posEsplicita ? ($sedeDiPos[$posEsplicita] ?? $sedeId) : $sedeId;
-            $daSpalmare[] = [
-                'vid'  => $vid,
-                'sede' => $sedeDest,
-                'prev' => isset($eraInSaltoPrima[$vid]) ? 0 : 1,  // 0 = era in salto il turno prima → in 1A
-                'grp'  => $coloreGruppo($vp['patente_max']),   // rossi/blu/neri
-                'qual' => (int)$vp['qualifica_id'],            // rank: Cr>Cs>Vf (id più alto = più anziano)
-                'cog'  => (string)$vp['cognome'],
-                'idx'  => $idx++,
-            ];
-        }
+    // ── 0. Assegnazioni fisse ────────────────────────────────────────────────
+    foreach ($cand as $vid => $r) {
+        if (isset($fisse[$vid])) $assegna($vid, $fisse[$vid]);
     }
 
-    // Pass 2: spalma i restanti sulle posizioni libere della loro sede.
-    // SOLO la CENTRALE viene raggruppata per facilità di lettura:
-    //   1) chi era in SALTO TURNO il turno prima → riempie per primo (la 1A);
-    //   2) poi gli altri: prima i rossi, poi i blu, poi i neri; dentro ogni gruppo
-    //      per qualifica (Cr→Cs→Vf, = anzianità) e a pari qualifica per cognome.
-    // Le altre sedi mantengono l'ordine originale.
-    $spalmaCentrale = [];
-    $spalmaAltri    = [];
-    foreach ($daSpalmare as $d) {
-        if ($d['sede'] === $centrSedeId) $spalmaCentrale[] = $d;
-        else                             $spalmaAltri[]    = $d;
-    }
-    usort($spalmaCentrale, fn($a, $b) =>
-        [$a['prev'], $a['grp'], -$a['qual'], $a['cog'], $a['idx']]
-        <=> [$b['prev'], $b['grp'], -$b['qual'], $b['cog'], $b['idx']]
-    );
+    // ── A. Sedi NON centrali: personale della sede → posizioni della sede ─────
+    // Riempimento sequenziale con trabocco a capienza piena. Una posizione = una
+    // sede (la centrale 'C' è gestita a parte). MN (Multedo Nautica) non ha
+    // posizioni proprie → confluisce in ML-1NAU.
+    $sedePos = [
+        'ML' => ['ML-1A'],
+        'MN' => ['ML-1NAU'],
+        'GA' => ['GA-1NAU'],
+        'SM' => ['1SMZ'],
+        'GE' => ['GE-1A'],
+        'BL' => ['BL-1A'],
+        'BS' => ['BS-1A'],
+        'RP' => ['RP-1A'],
+        'CH' => ['CH-1A', 'CH-1B'],
+        'AP' => ['AP-TEL', 'AP-1ROS', 'AP-1ASA', 'AP-1VI', 'AP-2VI'],
+        'EL' => ['EL-1SMZ'],
+    ];
+    foreach ($sedePos as $sc => $codes)
+        $riempi($codes, $disp(fn($r) => $sedeCod($r) === $sc));
 
-    foreach (array_merge($spalmaCentrale, $spalmaAltri) as $d) {
-        $pid = $primaLibera($d['sede']);
-        if ($pid) $assegna($d['vid'], $pid);
-        // se tutte piene → resta nei disponibili (non assegnato)
+    // ── B. CENTRALE (sede 'C') ───────────────────────────────────────────────
+    // Tutte le posizioni rispettano la capienza ODT (riempi): mai sforata.
+    $isC = fn(array $r): bool => $sedeCod($r) === 'C';
+
+    // 1A — era a riposo il servizio precedente (precedenza su tutto)
+    $riempi(['1A'], $disp(fn($r) => $isC($r) && isset($eraInSaltoPrima[(int)$r['id']])));
+
+    // CENTR-OP — abilitazione SO, patente 1 o 2
+    $riempi(['CENTR-OP'], $disp(fn($r) => $isC($r) && (int)$r['ha_so'] === 1 && in_array((int)$r['patente_max'], [1, 2], true)));
+
+    // Fasce Vp per patente: pool unica per patente, traboccata sulle due posizioni
+    // a capienza (es. pat2 riempie 3A poi 4B). Limiti = capienze del modello.
+    $vp = $disp(fn($r) => $isC($r) && (int)$r['qualifica_id'] === 1);
+    $byPat = ['p2' => [], 'p34' => [], 'p1' => []];
+    foreach ($vp as $r) {
+        $p = (int)$r['patente_max'];
+        if ($p === 2)                 $byPat['p2'][]  = $r;
+        elseif ($p === 3 || $p === 4) $byPat['p34'][] = $r;
+        elseif ($p === 1)             $byPat['p1'][]  = $r;
+        // Vp senza patente: nessuna fascia → resta disponibile
     }
+    $riempi(['3A', '4B'],                  $byPat['p2']);
+    $riempi(['4A', '1FUN-AUTORADIO'],      $byPat['p34']);
+    $riempi(['5A', '1SOP-AUTORIM'],        $byPat['p1']);
+
+    // Cr/Cs: pat{3,4} → 3B, altrimenti (1/2/senza) → 2A
+    $crcs = $disp(fn($r) => $isC($r) && in_array((int)$r['qualifica_id'], [2, 3], true));
+    $riempi(['2A'], array_filter($crcs, fn($r) => !in_array((int)$r['patente_max'], [3, 4], true)));
+    $riempi(['3B'], array_filter($crcs, fn($r) => in_array((int)$r['patente_max'], [3, 4], true)));
 }
 
 function prepopolaFoglio(PDO $pdo, int $foglioId, int $saltoRiposoId, array $resters,
                          string $dataStr = '', string $tipoParam = ''): void {
     $pdo->prepare("DELETE FROM salto_servizio WHERE foglio_id=?")->execute([$foglioId]);
 
-    $personale   = $pdo->query("SELECT v.id FROM vigili v WHERE v.attivo=1")->fetchAll();
+    $personale   = $pdo->query("SELECT v.id FROM vigili v WHERE v.attivo=1 AND v.turno='" . turnoAttivo() . "'")->fetchAll();
     $nextSaltoId = nextId($pdo, 'salto_servizio');
     $stS         = $pdo->prepare("INSERT IGNORE INTO salto_servizio (id,foglio_id,vigile_id,richiamato) VALUES (?,?,?,0)");
 
@@ -264,7 +297,7 @@ function prepopolaRuoli(PDO $pdo, int $foglioId, array $resters): void {
     try {
         $pool = $pdo->query(
             "SELECT cp.vigile_id FROM capi_pool cp JOIN vigili v ON v.id = cp.vigile_id
-             WHERE v.attivo = 1 ORDER BY cp.ordine, cp.id"
+             WHERE v.attivo = 1 AND v.turno = '" . turnoAttivo() . "' ORDER BY cp.ordine, cp.id"
         )->fetchAll(PDO::FETCH_COLUMN);
         $capo = null; $vice = null;
         foreach ($pool as $vid) {
@@ -291,7 +324,7 @@ function prepopolaRuoli(PDO $pdo, int $foglioId, array $resters): void {
         $pdo->prepare("DELETE FROM foglio_furieri WHERE foglio_id=?")->execute([$foglioId]);
         $fur = $pdo->query(
             "SELECT ff.vigile_id FROM furieri_fissi ff JOIN vigili v ON v.id = ff.vigile_id
-             WHERE v.attivo = 1 ORDER BY v.cognome"
+             WHERE v.attivo = 1 AND v.turno = '" . turnoAttivo() . "' ORDER BY v.cognome"
         )->fetchAll(PDO::FETCH_COLUMN);
         $ins = $pdo->prepare("INSERT IGNORE INTO foglio_furieri (foglio_id, vigile_id) VALUES (?,?)");
         foreach ($fur as $vid) {
@@ -316,11 +349,78 @@ function contaFeriePending(PDO $pdo, int $foglioId, string $dataStr, string $tip
     return (int)$st->fetchColumn();
 }
 
-// ── Recupera o crea il foglio ────────────────────────────────
+// Tutte le comunicazioni ferie ancora da inviare su questo foglio (stessa logica
+// di finalize_ferie): approvande (FER + richiesta pending), d'ufficio (FER senza
+// richiesta), negate (richiesta rejected). Esclude ciò che è già stato notificato
+// (bot_outbox.ctx). Ritorna il dettaglio per il popup di conferma.
+function contaFerieDaNotificare(PDO $pdo, int $foglioId, string $dataStr, string $tipoParam): array {
+    $tipi = $tipoParam === 'N' ? ['N', 'DN'] : ['D', 'DN'];
+    $ph   = implode(',', array_fill(0, count($tipi), '?'));
+    $hasCtx = $pdo->prepare("SELECT 1 FROM bot_outbox WHERE ctx=? LIMIT 1");
+
+    // approvande: FER sul foglio con richiesta NON respinta la cui notifica
+    // (ctx ferie:<id>) non è ancora stata accodata. NB: si conta per PRESENZA sul
+    // foglio + registro bot_outbox, NON per stato 'pending'. Una richiesta già
+    // 'approved' in Agenda ma mai comunicata deve comunque risultare "da inviare":
+    // altrimenti la mail resta invisibile (bug turni collegati #94). Stessa scelta
+    // della richiesta di finalizeFerie: ultima non-rejected, id DESC.
+    $stFer = $pdo->prepare(
+        "SELECT DISTINCT vigile_id FROM assenze WHERE foglio_id=? AND tipo_assenza_id=1"
+    );
+    $stFer->execute([$foglioId]);
+    $findReq = $pdo->prepare(
+        "SELECT id FROM bot_requests
+          WHERE vigile_id=? AND data_richiesta=? AND tipo_turno IN ($ph) AND stato<>'rejected'
+          ORDER BY id DESC LIMIT 1"
+    );
+    $approva = 0;
+    foreach ($stFer->fetchAll(PDO::FETCH_COLUMN) as $vid) {
+        $findReq->execute(array_merge([(int)$vid, $dataStr], $tipi));
+        $rid = $findReq->fetchColumn();
+        if (!$rid) continue;                       // nessuna richiesta → è d'ufficio (sotto)
+        $hasCtx->execute(['ferie:' . (int)$rid]);
+        if (!$hasCtx->fetchColumn()) $approva++;   // decisa ma non ancora comunicata
+    }
+
+    // d'ufficio: FER sul foglio senza richiesta pending/approved (una richiesta
+    // rejected + FER a mano = d'ufficio, non negata → stessa logica di finalize)
+    $stU = $pdo->prepare(
+        "SELECT a.vigile_id FROM assenze a
+          WHERE a.foglio_id=? AND a.tipo_assenza_id=1
+            AND NOT EXISTS (SELECT 1 FROM bot_requests r
+                            WHERE r.vigile_id=a.vigile_id AND r.data_richiesta=?
+                              AND r.tipo_turno IN ($ph) AND r.stato<>'rejected')"
+    );
+    $stU->execute(array_merge([$foglioId, $dataStr], $tipi));
+    $ufficio = 0;
+    foreach ($stU->fetchAll(PDO::FETCH_COLUMN) as $vid) {
+        $hasCtx->execute(['ferie_uff:' . $foglioId . ':' . (int)$vid]);
+        if (!$hasCtx->fetchColumn()) $ufficio++;
+    }
+
+    // negate: richieste rejected per quella data/turno, per chi NON è in FER sul foglio
+    $stN = $pdo->prepare(
+        "SELECT r.id FROM bot_requests r
+          WHERE r.data_richiesta=? AND r.stato='rejected' AND r.tipo_turno IN ($ph)
+            AND NOT EXISTS (SELECT 1 FROM assenze a
+                            WHERE a.foglio_id=? AND a.vigile_id=r.vigile_id AND a.tipo_assenza_id=1)"
+    );
+    $stN->execute(array_merge([$dataStr], $tipi, [$foglioId]));
+    $negate = 0;
+    foreach ($stN->fetchAll(PDO::FETCH_COLUMN) as $rid) {
+        $hasCtx->execute(['ferie_neg:' . (int)$rid]);
+        if (!$hasCtx->fetchColumn()) $negate++;
+    }
+
+    return ['approva' => $approva, 'ufficio' => $ufficio, 'negate' => $negate,
+            'tot' => $approva + $ufficio + $negate];
+}
+
+// ── Recupera o crea il foglio (identità: turno + data + tipo) ─
 $stmtF = $pdo->prepare(
-    "SELECT * FROM fogli_servizio WHERE data_servizio=? AND tipo_turno=?"
+    "SELECT * FROM fogli_servizio WHERE turno=? AND data_servizio=? AND tipo_turno=?"
 );
-$stmtF->execute([$dataStr, $tipoParam]);
+$stmtF->execute([$TURNO, $dataStr, $tipoParam]);
 $foglio = $stmtF->fetch();
 
 $stSalto = $pdo->prepare("SELECT id FROM salti_turno WHERE codice=?");
@@ -330,12 +430,12 @@ $saltoRiposoId = (int)($stSalto->fetchColumn() ?: 1);
 if (!$foglio) {
     $nextId = nextId($pdo, 'fogli_servizio');
     $pdo->prepare(
-        "INSERT INTO fogli_servizio (id,data_servizio,tipo_turno,salto_riposo_id,creato_da) VALUES (?,?,?,?,?)"
-    )->execute([$nextId, $dataStr, $tipoParam, $saltoRiposoId, 'sistema']);
-    $stmtF->execute([$dataStr, $tipoParam]);
+        "INSERT INTO fogli_servizio (id,turno,data_servizio,tipo_turno,salto_riposo_id,creato_da) VALUES (?,?,?,?,?,?)"
+    )->execute([$nextId, $TURNO, $dataStr, $tipoParam, $saltoRiposoId, 'sistema']);
+    $stmtF->execute([$TURNO, $dataStr, $tipoParam]);
     $foglio = $stmtF->fetch();
     $foglioId = (int)$foglio['id'];
-    prepopolaFoglio($pdo, $foglioId, $saltoRiposoId, resterEffettivi($pdo, $dataStr, $tipoParam, $saltoRiposoId));
+    prepopolaFoglio($pdo, $foglioId, $saltoRiposoId, resterEffettivi($pdo, $dataStr, $tipoParam, $saltoRiposoId), $dataStr, $tipoParam);
 }
 $foglioId = (int)$foglio['id'];
 
@@ -343,7 +443,7 @@ $foglioId = (int)$foglio['id'];
 // applica ora capo/vice + furieri dal pool/set fisso, senza toccare le squadre.
 if (empty($foglio['capo_servizio_id'])) {
     prepopolaRuoli($pdo, $foglioId, resterEffettivi($pdo, $dataStr, $tipoParam, $saltoRiposoId));
-    $stmtF->execute([$dataStr, $tipoParam]);
+    $stmtF->execute([$TURNO, $dataStr, $tipoParam]);
     $foglio = $stmtF->fetch();
 }
 
@@ -352,12 +452,21 @@ if (empty($foglio['capo_servizio_id'])) {
 // altrimenti la data anteriore più vicina (D < N nello stesso giorno).
 $stPrev = $pdo->prepare(
     "SELECT id, data_servizio, tipo_turno FROM fogli_servizio
-      WHERE data_servizio < ? OR (data_servizio = ? AND tipo_turno < ?)
+      WHERE turno = ? AND (data_servizio < ? OR (data_servizio = ? AND tipo_turno < ?))
       ORDER BY data_servizio DESC, tipo_turno DESC
       LIMIT 1"
 );
-$stPrev->execute([$dataStr, $dataStr, $tipoParam]);
+$stPrev->execute([$TURNO, $dataStr, $dataStr, $tipoParam]);
 $foglioPrec = $stPrev->fetch();
+
+// ── Frecce di navigazione (#88): servizio prec/succ del TURNO ATTIVO nel
+// calendario turni, a prescindere che il foglio esista già (creato al GET). ──
+$servPrec = servizioAdiacenteB($dataStr, $tipoParam, -1, $TURNO);
+$servSucc = servizioAdiacenteB($dataStr, $tipoParam, +1, $TURNO);
+$navLabel = function (?array $s): string {
+    if (!$s) return '';
+    return date('d/m/Y', strtotime($s['data'])) . ' ' . ($s['tipo'] === 'N' ? 'Notturno' : 'Diurno');
+};
 
 // ── Stato blocco foglio (condiviso, lato server) ─────────────
 $pdo->exec(
@@ -404,9 +513,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $azione = $_POST['azione'] ?? '';
     header('Content-Type: application/json');
 
-    // Sola lettura (user): nessuna azione AJAX di modifica passa dal server.
-    if (isSoloLettura()) {
-        echo json_encode(['ok' => false, 'errore' => 'Profilo in sola lettura.']);
+    // Sola lettura: user, oppure admin che guarda un turno non suo. Nessuna azione
+    // AJAX di modifica passa dal server per il turno in vista.
+    if (soloLetturaAttivo()) {
+        echo json_encode(['ok' => false, 'errore' => 'Turno in sola lettura per il tuo profilo.']);
         exit;
     }
 
@@ -454,9 +564,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $pdo->prepare("DELETE FROM assenze         WHERE foglio_id=? AND vigile_id=?")->execute([$foglioId, $rid]);
         }
 
-        // Quante ferie pending ci sono ancora su questo foglio (per proporre
-        // l'approvazione+invio dal tasto Salva, con conferma lato client).
-        echo json_encode(['ok' => true, 'ferie_pending' => contaFeriePending($pdo, $foglioId, $dataStr, $tipoParam)]);
+        // Comunicazioni ferie ancora da inviare su questo foglio (approvande +
+        // d'ufficio + negate), per proporre l'invio dal tasto ✉️ con conferma client.
+        $ferieN = contaFerieDaNotificare($pdo, $foglioId, $dataStr, $tipoParam);
+        echo json_encode(['ok' => true,
+            'ferie_pending'  => $ferieN['approva'],   // retrocompat
+            'ferie_notifiche' => $ferieN]);
         exit;
     }
 
@@ -465,14 +578,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // qui, dal tasto Salva, dopo conferma esplicita dell'operatore.
     if ($azione === 'finalizza_ferie') {
         require_once __DIR__ . '/../includes/finalize_ferie.php';
-        $n = contaFeriePending($pdo, $foglioId, $dataStr, $tipoParam);
         try {
-            finalizeFerie($pdo, $foglioId, $dataStr, $tipoParam);
+            $cnt = finalizeFerie($pdo, $foglioId, $dataStr, $tipoParam);
         } catch (Throwable $e) {
-            echo json_encode(['ok' => false, 'errore' => 'Errore approvazione: ' . $e->getMessage()]);
+            echo json_encode(['ok' => false, 'errore' => 'Errore comunicazioni ferie: ' . $e->getMessage()]);
             exit;
         }
-        echo json_encode(['ok' => true, 'approvate' => $n]);
+        echo json_encode(['ok' => true,
+            'approvate' => $cnt['approvate'],
+            'ufficio'   => $cnt['ufficio'],
+            'negate'    => $cnt['negate'],
+            'tot'       => $cnt['approvate'] + $cnt['ufficio'] + $cnt['negate']]);
         exit;
     }
 
@@ -713,16 +829,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($reqTipo === 'DN') {
                     $tipoPaired = ($tipoParam === 'D') ? 'N' : 'D';
                     $stF = $pdo->prepare(
-                        "SELECT id FROM fogli_servizio WHERE data_servizio=? AND tipo_turno=?"
+                        "SELECT id FROM fogli_servizio WHERE turno=? AND data_servizio=? AND tipo_turno=?"
                     );
-                    $stF->execute([$dataStr, $tipoPaired]);
+                    $stF->execute([$TURNO, $dataStr, $tipoPaired]);
                     $fidPaired = $stF->fetchColumn();
                     if (!$fidPaired) {
                         $fidPaired = nextId($pdo, 'fogli_servizio');
                         $pdo->prepare(
-                            "INSERT INTO fogli_servizio (id,data_servizio,tipo_turno,salto_riposo_id,creato_da)
-                             VALUES (?,?,?,1,'ferie')"
-                        )->execute([$fidPaired, $dataStr, $tipoPaired]);
+                            "INSERT INTO fogli_servizio (id,turno,data_servizio,tipo_turno,salto_riposo_id,creato_da)
+                             VALUES (?,?,?,?,1,'ferie')"
+                        )->execute([$fidPaired, $TURNO, $dataStr, $tipoPaired]);
                     }
                     $stChk = $pdo->prepare(
                         "SELECT id FROM assenze WHERE foglio_id=? AND vigile_id=? AND tipo_assenza_id=1"
@@ -902,7 +1018,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!$aOcc || !$bOcc) {
             echo json_encode(['ok' => false, 'errore' => 'Controparte fuori dal blocco.']); exit;
         }
-        if ($bOcc[0] <= date('Y-m-d')) {
+        // Scambio a ritroso (riposo controparte già passato): solo admin.
+        if ($bOcc[0] <= date('Y-m-d') && !isAdmin()) {
             echo json_encode(['ok' => false, 'errore' => 'Il riposo della controparte è già passato.']); exit;
         }
 
@@ -1016,7 +1133,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // 4. Ricostruisci salti + assegnazioni dallo stato canonico.
         //    prepopolaAssegnazioni salta chi è in ferie (assenze appena ricreate).
         prepopolaFoglio($pdo, $foglioId, $saltoRiposoId,
-            resterEffettivi($pdo, $dataStr, $tipoParam, $saltoRiposoId));
+            resterEffettivi($pdo, $dataStr, $tipoParam, $saltoRiposoId), $dataStr, $tipoParam);
 
         echo json_encode(['ok' => true]);
         exit;
@@ -1032,8 +1149,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             echo json_encode(['ok' => false, 'errore' => 'Disponibile solo sul turno notturno.']); exit;
         }
         $dataPrec = (new DateTime($dataStr))->modify('-1 day')->format('Y-m-d');
-        $stD = $pdo->prepare("SELECT id FROM fogli_servizio WHERE data_servizio=? AND tipo_turno='D'");
-        $stD->execute([$dataPrec]);
+        $stD = $pdo->prepare("SELECT id FROM fogli_servizio WHERE turno=? AND data_servizio=? AND tipo_turno='D'");
+        $stD->execute([$TURNO, $dataPrec]);
         $diurnoId = (int)($stD->fetchColumn() ?: 0);
         if ($diurnoId <= 0) {
             echo json_encode(['ok' => false,
@@ -1094,7 +1211,7 @@ if (!$foglioBloccato && in_array(($foglio['creato_da'] ?? ''), ['bot', 'ferie'],
     $stChkS->execute([$foglioId]);
     if ((int)$stChkA->fetchColumn() === 0 && (int)$stChkS->fetchColumn() === 0) {
         prepopolaFoglio($pdo, $foglioId, $saltoRiposoId,
-            resterEffettivi($pdo, $dataStr, $tipoParam, $saltoRiposoId));
+            resterEffettivi($pdo, $dataStr, $tipoParam, $saltoRiposoId), $dataStr, $tipoParam);
     }
 }
 
@@ -1132,7 +1249,7 @@ $tuttoPersonale = $pdo->query(
      JOIN qualifiche q   ON q.id  = v.qualifica_id
      JOIN salti_turno st ON st.id = v.salto_id
      JOIN sedi s         ON s.id  = v.sede_id
-     WHERE v.attivo = 1
+     WHERE v.attivo = 1 AND v.turno = '" . $TURNO . "'
      ORDER BY q.id DESC, v.cognome ASC, v.disambiguatore ASC"
 )->fetchAll();
 
@@ -1339,13 +1456,17 @@ $sediSelect = $pdo->query(
 // altro slot col riposo (data_D) ancora futuro, nello stesso blocco B1→B8.
 $slotRiposoOggi  = saltoRiposoNum($dataStr, $tipoParam);
 $oggiStr         = date('Y-m-d');
-$contropartiSlot = [];   // slot => ['dataD','dataN']
+// Admin (comando/admin) possono scambiare anche con uno slot il cui riposo è
+// GIÀ PASSATO (scambio a ritroso); gli altri solo con riposi futuri.
+$scambioRitroso  = isAdmin();
+$contropartiSlot = [];   // slot => ['dataD','dataN','passato']
 for ($k = 1; $k <= 8; $k++) {
     if ($k === $slotRiposoOggi) continue;
     $sd = slotDatesInBlocco($k, $dataStr);
-    if ($sd && $sd[0] > $oggiStr) {
-        $contropartiSlot[$k] = ['dataD' => $sd[0], 'dataN' => $sd[1]];
-    }
+    if (!$sd) continue;
+    $passato = ($sd[0] <= $oggiStr);
+    if ($passato && !$scambioRitroso) continue;
+    $contropartiSlot[$k] = ['dataD' => $sd[0], 'dataN' => $sd[1], 'passato' => $passato];
 }
 // Vigili attivi raggruppati per slot (per i due menu del form)
 $vigiliPerSlot = [];
@@ -1355,7 +1476,7 @@ $stVPS = $pdo->query(
      FROM vigili v
      JOIN salti_turno st ON st.id = v.salto_id
      JOIN qualifiche  q  ON q.id  = v.qualifica_id
-     WHERE v.attivo=1
+     WHERE v.attivo=1 AND v.turno = '" . $TURNO . "'
      ORDER BY v.cognome, v.nome"
 );
 foreach ($stVPS as $r) {
@@ -1482,25 +1603,41 @@ function colorePatentePHP(?string $patente): string {
           <span class="badge-ora"><?= $oraLabel ?></span>
         </div>
 
-        <!-- Data e salto -->
-        <div style="text-align:center">
-          <div style="font-size:1.4rem;font-weight:800;color:var(--grigio-sc)">
-            <?= $dataLabel ?>
+        <!-- Frecce navigazione servizio (#88) + Data -->
+        <div style="display:flex;align-items:stretch;gap:8px">
+          <div style="display:flex;gap:4px">
+            <?php if ($servPrec): ?>
+            <a href="nuovo.php?data=<?= $servPrec['data'] ?>&tipo=<?= $servPrec['tipo'] ?>"
+               class="btn btn-grigio"
+               style="display:flex;align-items:center;font-size:1.1rem;padding:0 12px;line-height:1"
+               title="Servizio precedente (<?= htmlspecialchars($navLabel($servPrec)) ?>)">◀</a>
+            <?php endif; ?>
+            <?php if ($servSucc): ?>
+            <a href="nuovo.php?data=<?= $servSucc['data'] ?>&tipo=<?= $servSucc['tipo'] ?>"
+               class="btn btn-grigio"
+               style="display:flex;align-items:center;font-size:1.1rem;padding:0 12px;line-height:1"
+               title="Servizio successivo (<?= htmlspecialchars($navLabel($servSucc)) ?>)">▶</a>
+            <?php endif; ?>
           </div>
-          <div style="font-size:.78rem;color:var(--grigio-md);margin-top:2px">
-            Salto a riposo:
-            <strong style="color:var(--rosso)"><?= htmlspecialchars($codSaltoRip) ?></strong>
-            &nbsp;|&nbsp; In servizio:
-            <strong><?= htmlspecialchars($turnoAttivo['turno'].$turnoAttivo['salto']) ?></strong>
+          <div style="text-align:center">
+            <a href="../ferie/index.php?anno=<?= date('Y', strtotime($dataStr)) ?>&mese=<?= date('n', strtotime($dataStr)) ?>&goto=<?= urlencode($dataStr) ?>"
+               title="Apri l'agenda su questo giorno"
+               style="font-size:1.4rem;font-weight:800;color:var(--grigio-sc);text-decoration:none">
+              <?= $dataLabel ?>
+            </a>
+            <div style="font-size:.78rem;color:var(--grigio-md);margin-top:2px">
+              In servizio:
+              <strong><?= htmlspecialchars($turnoAttivo['turno'].$turnoAttivo['salto']) ?></strong>
+            </div>
           </div>
         </div>
 
         <!-- Pulsanti -->
         <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <?php if (!isSoloLettura()): ?>
+          <?php if (!soloLetturaAttivo()): ?>
           <button id="btnBlocco" onclick="toggleBlocco()" class="btn btn-sm"></button>
           <button onclick="salvaIntestazioneAjax(true)"
-                  class="btn btn-verde btn-sm">💾 Salva</button>
+                  class="btn btn-verde btn-sm">✉️ Invia</button>
           <?php else: ?>
           <span class="btn btn-sm" style="background:#5b6b7b;color:#fff;cursor:default">👁️ Sola lettura</span>
           <?php endif; ?>
@@ -1519,7 +1656,6 @@ function colorePatentePHP(?string $patente): string {
              class="btn btn-grigio btn-sm"
              data-nferie="<?= (int)$nFerieDaApprovare ?>"
              onclick="return scaricaOdt(this)">📄 Scarica .odt</a>
-          <a href="../index.php" class="btn btn-grigio btn-sm">← Torna</a>
           <?php if ($tipoParam === 'N'): ?>
           <button onclick="apriModalCopiaDiurno()"
                   class="btn btn-sm" style="background:#1a5276;color:#fff"
@@ -1669,7 +1805,10 @@ function colorePatentePHP(?string $patente): string {
       <div class="organico-list" id="organicoList">
   <?php foreach ($tuttoPersonale as $v):
     $vid          = $v['id'];
-    $isSaltoCanon = ((int)$v['salto_id'] === $idSaltoRiposo);
+    // Chi ha CEDUTO il salto con uno scambio è in servizio anche se il suo salto
+    // canonico è quello di riposo oggi: NON va escluso dall'organico (torna fra i
+    // disponibili, sempre — senza bisogno di resettare il foglio).
+    $isSaltoCanon = ((int)$v['salto_id'] === $idSaltoRiposo) && !isset($scambioOut[$vid]);
     if ($isSaltoCanon) continue;
 
     $isAssegnato = in_array($vid, $vigiliAssegnati);
@@ -1820,6 +1959,10 @@ function colorePatentePHP(?string $patente): string {
     </div><!-- /.ferie-ufficio-panel -->
 
     </div><!-- /.col-sinistra -->
+
+    <!-- Slot opzionale: il pannello Ferie può essere spostato qui (tra Disponibili
+         e Centrale). Preferenza salvata sul browser del singolo operatore. -->
+    <div id="ferieMiddleSlot" class="ferie-middle-slot" style="display:none"></div>
 
     <!-- ── GRIGLIA POSIZIONI (destra) ─────────────────────── -->
     <div class="griglia-wrapper" id="grigliaPosizioni">
@@ -2193,7 +2336,10 @@ function colorePatentePHP(?string $patente): string {
             // in un'unica lista alfabetica: niente suddivisione per salto.
             $contropartiVigili = [];
             foreach ($contropartiSlot as $k => $occ) {
-                foreach ($vigiliPerSlot[$k] ?? [] as $v) $contropartiVigili[] = $v;
+                foreach ($vigiliPerSlot[$k] ?? [] as $v) {
+                    $v['_passato'] = !empty($occ['passato']);
+                    $contropartiVigili[] = $v;
+                }
             }
             usort($contropartiVigili, fn($a, $b) =>
                 strcmp($a['cognome'].' '.$a['nome'], $b['cognome'].' '.$b['nome']));
@@ -2202,7 +2348,7 @@ function colorePatentePHP(?string $patente): string {
                   border-radius:5px;font-size:.8rem">
             <option value="">— seleziona —</option>
             <?php foreach ($contropartiVigili as $v): ?>
-              <option value="<?= (int)$v['id'] ?>"><?= htmlspecialchars(etichettaVigile($v)) ?></option>
+              <option value="<?= (int)$v['id'] ?>"><?= htmlspecialchars(etichettaVigile($v)) ?><?= $v['_passato'] ? ' — ⏪ a ritroso (riposo passato)' : '' ?></option>
             <?php endforeach; ?>
           </select>
 
@@ -2217,8 +2363,12 @@ function colorePatentePHP(?string $patente): string {
 
 
      <!-- Ferie -->
-<div class="assenti-col" data-drop-zone="colFerie">
-  <span class="assenti-col-head ac-ferie">🏖️ Ferie</span>
+<div class="assenti-col" id="feriePanel" data-drop-zone="colFerie">
+  <div class="ferie-head-row">
+    <span class="assenti-col-head ac-ferie">🏖️ Ferie</span>
+    <button type="button" id="btnFeriePos" class="ferie-pos-btn" onclick="toggleFeriePos()"
+            title="Sposta il pannello Ferie tra Disponibili e Centrale (resta salvato sul tuo browser)">↔️</button>
+  </div>
   <div id="colFerie">
           <?php /* Mostra TUTTE le ferie (da Telegram + a mano): le ferie a mano
                    si vedono sia qui sia nel box "Ferie d'ufficio" (ridondanza voluta). */ ?>
@@ -2318,6 +2468,8 @@ const PERSONALE = {
     salto:       <?= json_encode($v['salto_codice']) ?>,
     saltoId:     <?= (int)$v['salto_id'] ?>,
     saltoCanon:  <?= ((int)$v['salto_id'] === $idSaltoRiposo) ? 'true':'false' ?>,
+    saltoEff:    <?= (((int)$v['salto_id'] === $idSaltoRiposo && !isset($scambioOut[(int)$v['id']])) || isset($scambioIn[(int)$v['id']])) ? 'true':'false' ?>,
+    scambioIn:   <?= isset($scambioIn[(int)$v['id']]) ? 'true':'false' ?>,
     sede:        <?= json_encode($v['sede_codice']) ?>,
     sedeCentrale:<?= ($v['sede_nome'] === 'CENTRALE') ? 'true':'false' ?>,
     patente:     <?= json_encode($v['patente_max'] ?? '') ?>
@@ -2431,8 +2583,8 @@ async function ajax(data) {
 // BLOCCO / SBLOCCO FOGLIO (stato condiviso sul server)
 // ════════════════════════════════════════════════════════════
 // Gli utenti in sola lettura vedono il foglio come "bloccato" (drag disabilitato).
-const SOLA_LETTURA = <?= isSoloLettura() ? 'true' : 'false' ?>;
-let BLOCCATO = <?= ($foglioBloccato || isSoloLettura()) ? 'true' : 'false' ?>;
+const SOLA_LETTURA = <?= soloLetturaAttivo() ? 'true' : 'false' ?>;
+let BLOCCATO = <?= ($foglioBloccato || soloLetturaAttivo()) ? 'true' : 'false' ?>;
 
 function applicaStatoBlocco() {
     const btn = document.getElementById('btnBlocco');
@@ -2922,7 +3074,10 @@ document.addEventListener('drop', async function(e) {
             return;
         }
 
-        const straord = (source === 'salto' || p.saltoCanon) ? 1 : 0;
+        // STR = messo in servizio un riposante EFFETTIVO (canonico ± scambio salto),
+        // non il salto canonico: chi ha ceduto il salto (scambioOut) lavora e NON è
+        // straordinario anche se spostato; chi ha preso un salto (scambioIn) sì (#83).
+        const straord = (source === 'salto' || p.saltoEff) ? 1 : 0;
 
         const esito = await eseguiAssegnaPos(vigileId, posId, straord);
         if (esito === 'pieno') {
@@ -2997,6 +3152,36 @@ async function azioneSalto(vigileId) {
     );
     setOccupato(vigileId, true, 'in salto');
     showMsg('😴 ' + p.nome + ' → salto.');
+}
+
+// Rimette una card in colonna Salto per un riposante EFFETTIVO, replicando la card
+// canonica renderizzata dal server (draggable, niente ✕, badge 🔄 se preso via
+// scambio salto). Idempotente. Usata quando si toglie una missione/malattia a un
+// riposante: senza questo la card spariva (né salto né disponibili → serviva F5, #65).
+function reinserisciInSalto(vigileId) {
+    if (document.getElementById('salto-' + vigileId)) return;   // già presente
+    const p = PERSONALE[vigileId];
+    const col = document.getElementById('colSalto');
+    if (!p || !col) return;
+    const sedeBadge = (!p.sedeCentrale && p.sede)
+        ? `<span class="persona-salto">${siglaSede(p.sede)}</span>` : '';
+    const scambioBadge = p.scambioIn
+        ? `<span class="scambio-badge" style="font-size:.65rem;color:#0a58ca;font-weight:700;margin-left:4px"
+                 title="A riposo per scambio salto turno">🔄 scambio</span>` : '';
+    const html =
+        `<div class="assente-row" id="salto-${vigileId}" data-vigile-id="${vigileId}"
+              draggable="true" style="cursor:grab">
+           <span class="qual-dot ${p.qcodice}"></span>
+           <span class="assente-nome" style="color:${colorePatente(p.patente)}">
+             ${p.nome}${sedeBadge}${scambioBadge}
+           </span>
+           <span class="drag-icon-salto" style="font-size:.75rem;color:var(--grigio-md);margin-left:auto"
+                 title="Trascina su posizione o assenza">⇄</span>
+         </div>`;
+    const dropZone = document.getElementById('dropSalto');
+    if (dropZone) dropZone.insertAdjacentHTML('beforebegin', html);
+    else          col.insertAdjacentHTML('beforeend', html);
+    setOccupato(vigileId, true, 'in salto');
 }
 
 async function azioneAssenza(vigileId, tipoCodice) {
@@ -3121,7 +3306,7 @@ async function assegnaASedeDaMenu(vigileId, sedeCodice) {
     const cards = [...document.querySelectorAll('.pos-card')]
         .filter(c => c.dataset.sede === sedeCodice);
     if (!cards.length) { showMsg('⚠️ Nessuna squadra per ' + sedeCodice + '.', 'err'); return; }
-    const straord = p.saltoCanon ? 1 : 0;
+    const straord = p.saltoEff ? 1 : 0;   // riposo effettivo, non canonico (#83)
     for (const card of cards) {
         const body = document.getElementById('body-' + card.dataset.posId);
         const cap  = parseInt(body?.dataset.cap || '0');
@@ -3405,9 +3590,17 @@ async function rimuoviDaAssenza(vigileId) {
         spostaInFerieRespinte(vigileId);
         showMsg('🚫 ' + (p ? p.nome : 'Vigile') + ' → ferie respinta.');
     } else {
-        // Ferie a mano: si toglie e basta, la persona torna disponibile
-        if (p && !p.saltoCanon) setOccupato(vigileId, false);
-        showMsg('↩️ Rimesso disponibile.');
+        // Assenza/ferie a mano tolta: il vigile torna dove lo rimetterebbe il server
+        // al reload. Riposante EFFETTIVO (canonico ± scambio salto) → colonna Salto
+        // (#65: con missione/malattia la riga salto era stata rimossa, e prima qui
+        // non veniva rimessa da nessuna parte → spariva). Altrimenti → disponibile.
+        if (p && p.saltoEff) {
+            reinserisciInSalto(vigileId);
+            showMsg('😴 ' + p.nome + ' → salto.');
+        } else {
+            if (p) setOccupato(vigileId, false);
+            showMsg('↩️ Rimesso disponibile.');
+        }
     }
 }
 
@@ -3685,23 +3878,36 @@ async function salvaIntestazioneAjax(proponiFerie = false) {
         funzionario:      document.getElementById('funzionario').value,
     });
     if (!res.ok) { if (res.errore) showMsg('⚠️ ' + res.errore, 'err'); return; }
-    showMsg('✅ Salvato.', 'ok');
 
-    // Se restano ferie pending sul foglio, proponi di approvarle + notificare.
-    const n = parseInt(res.ferie_pending || 0);
-    if (proponiFerie && n > 0) {
+    // Se ci sono comunicazioni ferie da inviare (approvande / d'ufficio / negate),
+    // proponi l'invio con conferma esplicita. Se il tasto è ✉️ Invia (proponiFerie)
+    // ma non c'è nulla, avvisa esplicitamente invece di restare muto (#82).
+    const nf  = res.ferie_notifiche || {};
+    const tot = parseInt(nf.tot || 0);
+    if (proponiFerie && tot === 0) {
+        showMsg('ℹ️ Salvato. Nessuna comunicazione ferie da inviare.', 'ok');
+        return;
+    }
+    showMsg('✅ Salvato.', 'ok');
+    if (proponiFerie && tot > 0) {
+        const voci = [];
+        if (nf.approva > 0) voci.push(`<b>${nf.approva}</b> da comunicare`);
+        if (nf.ufficio > 0) voci.push(`<b>${nf.ufficio}</b> d'ufficio`);
+        if (nf.negate  > 0) voci.push(`<b>${nf.negate}</b> negate`);
         chiediConferma({
-            titolo:  'Approva ferie e notifica',
-            testo:   `Su questo turno ci sono <b>${n} fer${n === 1 ? 'ia' : 'ie'}</b> da approvare. ` +
-                     `Confermando le <b>approvi</b> e <b>invii le notifiche</b> ai vigili (Telegram + mail).<br><br>` +
-                     `Solo salvato? Annulla e le ferie restano in attesa.`,
-            okLabel: '✅ Approva e invia',
+            titolo:  'Comunicazioni ferie',
+            testo:   `Su questo turno ci sono comunicazioni ferie da inviare: ${voci.join(', ')}. ` +
+                     `Confermando <b>invii le notifiche</b> ai vigili (Telegram + mail) e <b>approvi</b> le ferie pending.`,
+            okLabel: '✉️ Invia comunicazioni',
             okStyle: 'background:var(--rosso);color:#fff',
             onOk:    async () => {
                 const r2 = await ajax({ azione: 'finalizza_ferie' });
-                showMsg(r2.ok ? `✅ ${r2.approvate} fer${r2.approvate === 1 ? 'ia approvata' : 'ie approvate'} e notificate.`
-                              : '⚠️ ' + (r2.errore || 'Errore approvazione.'),
-                        r2.ok ? 'ok' : 'err');
+                if (!r2.ok) { showMsg('⚠️ ' + (r2.errore || 'Errore comunicazioni ferie.'), 'err'); return; }
+                const parti = [];
+                if (r2.approvate > 0) parti.push(`${r2.approvate} approvate`);
+                if (r2.ufficio   > 0) parti.push(`${r2.ufficio} d'ufficio`);
+                if (r2.negate    > 0) parti.push(`${r2.negate} negate`);
+                showMsg(`✅ Comunicazioni inviate: ${parti.length ? parti.join(', ') : 'nessuna nuova'}.`, 'ok');
             },
         });
     }
@@ -3792,6 +3998,39 @@ document.addEventListener('DOMContentLoaded', function() {
         card.removeAttribute('ondrop');
     });
 });
+
+// ════════════════════════════════════════════════════════════
+// POSIZIONE PANNELLO FERIE (preferenza del singolo browser)
+// "basso" = nella sezione assenze (default) · "mezzo" = tra Disponibili e Centrale.
+// Nessun dato sul server: solo localStorage. Non tocca drag&drop (i drop sono
+// delegati sul document) né le altre 3 colonne assenze.
+// ════════════════════════════════════════════════════════════
+function _applyFeriePos(pos) {
+    const panel  = document.getElementById('feriePanel');
+    const mid    = document.getElementById('ferieMiddleSlot');
+    const layout = document.querySelector('.foglio-layout');
+    const miss   = document.querySelector('[data-drop-zone="colMissione"]');
+    const btn    = document.getElementById('btnFeriePos');
+    if (!panel || !mid || !layout) return;
+    if (pos === 'mezzo') {
+        mid.appendChild(panel);
+        mid.style.display = 'flex';
+        layout.classList.add('with-ferie-middle');
+        if (btn) { btn.textContent = '⬇️'; btn.title = 'Rimetti Ferie in basso'; }
+    } else {
+        if (miss && miss.parentNode) miss.parentNode.insertBefore(panel, miss);
+        mid.style.display = 'none';
+        layout.classList.remove('with-ferie-middle');
+        if (btn) { btn.textContent = '↔️'; btn.title = 'Sposta Ferie tra Disponibili e Centrale'; }
+    }
+}
+function toggleFeriePos() {
+    const cur  = localStorage.getItem('feriePos') === 'mezzo' ? 'mezzo' : 'basso';
+    const next = cur === 'mezzo' ? 'basso' : 'mezzo';
+    localStorage.setItem('feriePos', next);
+    _applyFeriePos(next);
+}
+_applyFeriePos(localStorage.getItem('feriePos') === 'mezzo' ? 'mezzo' : 'basso');
 </script>
 
 

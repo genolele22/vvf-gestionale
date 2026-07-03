@@ -5,6 +5,8 @@ require_once __DIR__ . '/includes/turni.php';
 require_once __DIR__ . '/includes/auth.php';
 richiediLogin();   // soft: non blocca finché AUTH_ENFORCE è false
 
+$TURNO = turnoAttivo();   // turno evidenziato nel cruscotto (A/B/C/D); default B
+
 // ── Navigazione mese ────────────────────────────────────────
 $oggi  = new DateTime('today');
 $annoP = isset($_GET['anno']) ? (int)$_GET['anno'] : (int)$oggi->format('Y');
@@ -38,9 +40,9 @@ try {
     $stmt = $pdo->prepare(
         "SELECT data_servizio, tipo_turno
          FROM fogli_servizio
-         WHERE YEAR(data_servizio)=? AND MONTH(data_servizio)=?"
+         WHERE turno=? AND YEAR(data_servizio)=? AND MONTH(data_servizio)=?"
     );
-    $stmt->execute([$annoP, $meseP]);
+    $stmt->execute([$TURNO, $annoP, $meseP]);
     foreach ($stmt->fetchAll() as $row) {
         $fogliCompilati[$row['data_servizio']][$row['tipo_turno']] = true;
     }
@@ -55,21 +57,21 @@ $saltoOggi = '';
 try {
     $pdo = getDB();
 
-    $totVigili = (int)$pdo->query(
-        "SELECT COUNT(*) FROM vigili WHERE attivo=1"
-    )->fetchColumn();
+    $vc = $pdo->prepare("SELECT COUNT(*) FROM vigili WHERE attivo=1 AND turno=?");
+    $vc->execute([$TURNO]);
+    $totVigili = (int)$vc->fetchColumn();
 
     $s = $pdo->prepare(
         "SELECT COUNT(*) FROM fogli_servizio
-         WHERE YEAR(data_servizio)=? AND MONTH(data_servizio)=?"
+         WHERE turno=? AND YEAR(data_servizio)=? AND MONTH(data_servizio)=?"
     );
-    $s->execute([$annoP, $meseP]);
+    $s->execute([$TURNO, $annoP, $meseP]);
     $totFogli = (int)$s->fetchColumn();
 
     $s2 = $pdo->prepare(
-        "SELECT COUNT(*) FROM fogli_servizio WHERE data_servizio=?"
+        "SELECT COUNT(*) FROM fogli_servizio WHERE turno=? AND data_servizio=?"
     );
-    $s2->execute([$oggiStr]);
+    $s2->execute([$TURNO, $oggiStr]);
     $fogliOggi = (int)$s2->fetchColumn();
 
 } catch (Exception $e) {}
@@ -85,7 +87,7 @@ $saltoOggi = $turnoOggi['diurno']['turno'] . $turnoOggi['diurno']['salto']
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>VVF Genova – Gestionale Turno B</title>
+<title>VVF Genova – Gestionale Turno <?= htmlspecialchars($TURNO) ?></title>
 <link rel="stylesheet" href="assets/css/stile.css?v=<?= @filemtime(__DIR__.'/assets/css/stile.css') ?>">
 </head>
 
@@ -97,9 +99,9 @@ $saltoOggi = $turnoOggi['diurno']['turno'] . $turnoOggi['diurno']['salto']
     <div class="header-logo">🚒</div>
     <div class="header-testi">
       <h1>Comando Provinciale VVF di Genova</h1>
-      <p>Gestionale Foglio di Servizio &mdash; Turno B</p>
+      <p>Gestionale Foglio di Servizio &mdash; Turno <?= htmlspecialchars($TURNO) ?></p>
     </div>
-    <div class="header-badge">TURNO&nbsp;B</div>
+    <div class="header-badge">TURNO&nbsp;<?= htmlspecialchars($TURNO) ?></div>
     <?php if (isLoggato()): $uc = utenteCorrente(); ?>
       <div style="margin-left:14px;text-align:right;font-size:.78rem;line-height:1.3">
         <div style="font-weight:700"><?= htmlspecialchars($uc['nome'] ?: $uc['username']) ?></div>
@@ -125,6 +127,7 @@ $saltoOggi = $turnoOggi['diurno']['turno'] . $turnoOggi['diurno']['salto']
     <!-- TEMP sviluppo: rimuovere a fine beta -->
     <a href="logbook/index.php" class="nav-btn">📓 Logbook</a>
     <a href="cambia_password.php" class="nav-btn ml-auto">🔑 Password</a>
+    <span style="margin-left:auto"><?= selettoreTurnoHtml() ?></span>
     <a href="logout.php"       class="nav-btn">🚪 Esci</a>
   </div>
 </nav>
@@ -206,15 +209,15 @@ $saltoOggi = $turnoOggi['diurno']['turno'] . $turnoOggi['diurno']['salto']
     $isOggi  = ($dataStr === $oggiStr);
     $turnoG  = $turniMese[$dataStr] ?? null;
 
-    // Evidenzia la cella SOLO se il turno B è in servizio
-    $turnoB_attivo = $turnoG && (
-        $turnoG['D']['turno'] === 'B' ||
-        $turnoG['N']['turno'] === 'B'
+    // Evidenzia la cella SOLO se il turno ATTIVO è in servizio
+    $turnoAttivoInServizio = $turnoG && (
+        $turnoG['D']['turno'] === $TURNO ||
+        $turnoG['N']['turno'] === $TURNO
     );
 
     $classeCell = 'cal-cell';
-    if ($isOggi)            $classeCell .= ' oggi-cell';
-    elseif ($turnoB_attivo) $classeCell .= ' turno-b';
+    if ($isOggi)                     $classeCell .= ' oggi-cell';
+    elseif ($turnoAttivoInServizio)  $classeCell .= ' turno-b';
 ?>
     <div class="<?= $classeCell ?>">
 
@@ -232,8 +235,8 @@ $saltoOggi = $turnoOggi['diurno']['turno'] . $turnoOggi['diurno']['salto']
         <?php if ($turnoG):
             $d = $turnoG['D'];
             $n = $turnoG['N'];
-            $isBd = ($d['turno'] === 'B');
-            $iBn  = ($n['turno'] === 'B');
+            $isBd = ($d['turno'] === $TURNO);
+            $iBn  = ($n['turno'] === $TURNO);
             $compilatoD = !empty($fogliCompilati[$dataStr]['D']);
             $compilatoN = !empty($fogliCompilati[$dataStr]['N']);
         ?>
@@ -244,7 +247,7 @@ $saltoOggi = $turnoOggi['diurno']['turno'] . $turnoOggi['diurno']['salto']
                 // Turno B diurno: pill colorata e cliccabile
                 $classd = 'pill diurno' . ($compilatoD ? ' compilato' : '');
                 $linkD  = 'foglio/' . ($compilatoD ? 'visualizza' : 'nuovo')
-                        . '.php?data=' . $dataStr . '&tipo=D';
+                        . '.php?data=' . $dataStr . '&tipo=D&turno=' . $TURNO;
                 ?>
                 <a href="<?= htmlspecialchars($linkD) ?>" class="<?= $classd ?>">
                     <span class="pill-label">
@@ -254,7 +257,7 @@ $saltoOggi = $turnoOggi['diurno']['turno'] . $turnoOggi['diurno']['salto']
                         </span>
                         <span class="pill-ora">08:00→20:00</span>
                     </span>
-                    <span class="pill-badge-b">B</span>
+                    <span class="pill-badge-b"><?= htmlspecialchars($TURNO) ?></span>
                 </a>
             <?php else: ?>
                 <!-- Altri turni diurni: solo testo discreto, non cliccabile -->
@@ -269,7 +272,7 @@ $saltoOggi = $turnoOggi['diurno']['turno'] . $turnoOggi['diurno']['salto']
                 // Turno B notturno: pill colorata e cliccabile
                 $classn = 'pill notte' . ($compilatoN ? ' compilato' : '');
                 $linkN  = 'foglio/' . ($compilatoN ? 'visualizza' : 'nuovo')
-                        . '.php?data=' . $dataStr . '&tipo=N';
+                        . '.php?data=' . $dataStr . '&tipo=N&turno=' . $TURNO;
                 ?>
                 <a href="<?= htmlspecialchars($linkN) ?>" class="<?= $classn ?>">
                     <span class="pill-label">
@@ -279,7 +282,7 @@ $saltoOggi = $turnoOggi['diurno']['turno'] . $turnoOggi['diurno']['salto']
                         </span>
                         <span class="pill-ora">20:00→08:00</span>
                     </span>
-                    <span class="pill-badge-b">B</span>
+                    <span class="pill-badge-b"><?= htmlspecialchars($TURNO) ?></span>
                 </a>
             <?php else: ?>
                 <!-- Altri turni notturni: solo testo discreto, non cliccabile -->
@@ -318,11 +321,11 @@ $saltoOggi = $turnoOggi['diurno']['turno'] . $turnoOggi['diurno']['salto']
       </div>
       <div class="leg">
         <div class="leg-box" style="background:#f0f7ff;border:1px solid #aac"></div>
-        Turno B in servizio
+        Turno <?= htmlspecialchars($TURNO) ?> in servizio
       </div>
       <div class="leg">
-        <span class="pill-badge-b">B</span>
-        &nbsp;= Turno B attivo su quel turno
+        <span class="pill-badge-b"><?= htmlspecialchars($TURNO) ?></span>
+        &nbsp;= Turno <?= htmlspecialchars($TURNO) ?> attivo su quel turno
       </div>
     </div>
 
