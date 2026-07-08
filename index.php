@@ -130,7 +130,9 @@ $saltoOggi = $turnoOggi['diurno']['turno'] . $turnoOggi['diurno']['salto']
     <a href="admin/index.php"  class="nav-btn">⚙️ Amministrazione</a>
     <?php endif; ?>
     <!-- TEMP sviluppo: rimuovere a fine beta -->
+    <?php if (isComando()): ?>
     <a href="logbook/index.php" class="nav-btn">📓 Logbook</a>
+    <?php endif; ?>
     <a href="cambia_password.php" class="nav-btn ml-auto">🔑 Password</a>
     <a href="logout.php"       class="nav-btn">🚪 Esci</a>
   </div>
