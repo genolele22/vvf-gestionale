@@ -1076,9 +1076,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!$sid) {
             echo json_encode(['ok' => false, 'errore' => 'Scambio non valido.']); exit;
         }
+        $stA = $pdo->prepare("SELECT vigile_a_id FROM bot_scambi_salto WHERE id=?");
+        $stA->execute([$sid]);
+        $vigileAId = (int)$stA->fetchColumn();
+
         $pdo->beginTransaction();
         try {
             $fatto = scambioAnnulla($pdo, $sid);
+            // Avvisa i due vigili (Telegram + il bot compone il messaggio): la
+            // validazione dello scambio è solo gestionale, la fureria non riceve
+            // nulla su Telegram, ma i vigili sì (stesso canale di approva/rifiuta).
+            if ($fatto && $vigileAId) {
+                scambioEnqueueOutbox($pdo, $vigileAId, 'scambio_annullato', "scambio:$sid:annullato");
+            }
             $pdo->commit();
         } catch (Throwable $e) {
             $pdo->rollBack();
