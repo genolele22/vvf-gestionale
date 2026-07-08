@@ -4,7 +4,7 @@ require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/auth.php';
 richiediAdmin();
 $pdo     = getDB();
-$TURNO   = turnoAttivo();   // pool capi/furieri per-turno (via il turno del vigile)
+$TURNO   = turnoAmministrazione();   // fisso sul turno di casa (admin/user niente switch qui)
 $errore  = '';
 $sucesso = '';
 
@@ -24,7 +24,7 @@ $pdo->exec("CREATE TABLE IF NOT EXISTS furieri_fissi (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    vietaSeSolaLetturaTurno();   // niente modifiche se il turno attivo è in sola lettura
+    vietaSeSolaLetturaTurno($TURNO);   // niente modifiche se il turno di Amministrazione è in sola lettura
     $azione = $_POST['azione'] ?? '';
     try {
         if ($azione === 'capo_add') {

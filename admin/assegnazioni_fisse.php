@@ -4,7 +4,7 @@ require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/auth.php';
 richiediAdmin();
 $pdo     = getDB();
-$TURNO   = turnoAttivo();   // assegnazioni fisse per-turno (via il turno del vigile)
+$TURNO   = turnoAmministrazione();   // fisso sul turno di casa (admin/user niente switch qui)
 $errore  = '';
 $sucesso = '';
 
@@ -21,7 +21,7 @@ $pdo->exec("CREATE TABLE IF NOT EXISTS assegnazioni_fisse (
 $TURNI = ['DN' => 'Diurno + Notturno', 'D' => 'Solo diurno', 'N' => 'Solo notturno'];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    vietaSeSolaLetturaTurno();   // niente modifiche se il turno attivo è in sola lettura
+    vietaSeSolaLetturaTurno($TURNO);   // niente modifiche se il turno di Amministrazione è in sola lettura
     $azione = $_POST['azione'] ?? '';
     if ($azione === 'aggiungi') {
         $vigileId = (int)($_POST['vigile_id'] ?? 0);

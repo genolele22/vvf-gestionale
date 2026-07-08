@@ -89,6 +89,16 @@ $saltoOggi = $turnoOggi['diurno']['turno'] . $turnoOggi['diurno']['salto']
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>VVF Genova – Gestionale Turno <?= htmlspecialchars($TURNO) ?></title>
 <link rel="stylesheet" href="assets/css/stile.css?v=<?= @filemtime(__DIR__.'/assets/css/stile.css') ?>">
+<style>
+  .turno-tabs { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; }
+  .turno-tab { display:inline-flex; align-items:center; gap:5px; padding:7px 14px;
+               border-radius:8px; text-decoration:none; font-size:.85rem; font-weight:700;
+               background:var(--bianco); box-shadow:var(--shadow); color:var(--grigio-sc);
+               border:1px solid #e4e7ea; transition:border-color .15s, transform .1s; }
+  .turno-tab:hover { border-color:var(--rosso); transform:translateY(-1px); }
+  .turno-tab.active { background:var(--rosso); color:#fff; border-color:var(--rosso); }
+  .turno-tab.ro:not(.active) { color:var(--grigio-md); }
+</style>
 </head>
 
 <body>
@@ -127,13 +137,28 @@ $saltoOggi = $turnoOggi['diurno']['turno'] . $turnoOggi['diurno']['salto']
     <!-- TEMP sviluppo: rimuovere a fine beta -->
     <a href="logbook/index.php" class="nav-btn">📓 Logbook</a>
     <a href="cambia_password.php" class="nav-btn ml-auto">🔑 Password</a>
-    <span style="margin-left:auto"><?= selettoreTurnoHtml() ?></span>
     <a href="logout.php"       class="nav-btn">🚪 Esci</a>
   </div>
 </nav>
 
 <!-- ══ MAIN ══════════════════════════════════════════════════ -->
 <main class="main">
+
+  <!-- TAB TURNI: cliccabili, niente tendina. Un turno solo se puoModificareTurno(),
+       altrimenti sola lettura (👁) — nascoste se l'utente vede un solo turno. -->
+  <?php $turniVis = turniVisibili(); if (count($turniVis) > 1): ?>
+  <div class="turno-tabs">
+    <?php foreach ($turniVis as $t):
+        $qs = $_GET; $qs['turno'] = $t;
+        $mod = puoModificareTurno($t);
+    ?>
+      <a href="?<?= htmlspecialchars(http_build_query($qs)) ?>"
+         class="turno-tab<?= $t === $TURNO ? ' active' : '' ?><?= $mod ? ' mod' : ' ro' ?>">
+        <?= $mod ? '✏️' : '👁' ?> Turno <?= htmlspecialchars($t) ?>
+      </a>
+    <?php endforeach; ?>
+  </div>
+  <?php endif; ?>
 
   <!-- STAT CARDS -->
   <div class="stat-grid">

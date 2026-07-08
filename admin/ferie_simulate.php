@@ -5,14 +5,14 @@ require_once __DIR__ . '/../includes/auth.php';
 richiediAdmin();
 require_once __DIR__ . '/../includes/turni.php';          // getTurnoGiorno()
 require_once __DIR__ . '/../includes/ferie_assenze.php';  // feriaSyncAssenza()
-$TURNO = turnoAttivo();   // simula ferie sul turno attivo (multi-turno)
+$TURNO = turnoAmministrazione();   // fisso sul turno di casa (admin/user niente switch qui)
 
 $pdo = getDB();
 
 // ── AJAX: crea le voci ferie (come richieste BOT, stato pending) ──────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     header('Content-Type: application/json');
-    if (soloLetturaAttivo()) { echo json_encode(['ok' => false, 'errore' => 'Turno in sola lettura.']); exit; }
+    if (!puoModificareTurno($TURNO)) { echo json_encode(['ok' => false, 'errore' => 'Turno in sola lettura.']); exit; }
     $azione = $_POST['azione'] ?? '';
 
     if ($azione === 'crea_voci') {

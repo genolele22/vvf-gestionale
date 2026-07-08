@@ -6,7 +6,19 @@ require_once __DIR__ . '/../includes/auth.php';
 richiediLogin();
 
 $pdo   = getDB();
-$TURNO = turnoAttivo();   // turno in vista (A/B/C/D); default B. Multi-turno.
+
+// Turno primario: fisso sul turno di casa (admin/user niente switch qui). Comando
+// non ha un turno di casa: segue l'attivo di sessione (le tab del cruscotto).
+$TURNO = turnoCorrente() ?: turnoAttivo();
+
+// Turni extra da affiancare in SOLA LETTURA (checkbox in UI), whitelisted contro i
+// turni che l'utente può davvero vedere (esclude il primario).
+$turniExtra = array_values(array_intersect(
+    array_map(fn($t) => strtoupper(substr((string)$t, 0, 1)), (array)($_GET['extra'] ?? [])),
+    array_diff(turniVisibili(), [$TURNO])
+));
+$turniQuery = array_merge([$TURNO], $turniExtra);
+$phTurni    = implode(',', array_fill(0, count($turniQuery), '?'));
 
 // ── Mese di riferimento ──────────────────────────────────────
 $annoP = isset($_GET['anno']) ? (int)$_GET['anno'] : (int)date('Y');
@@ -38,8 +50,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     header('Content-Type: application/json');
     $azione = $_POST['azione'] ?? '';
 
-    if (soloLetturaAttivo()) {
-        echo json_encode(['ok' => false, 'errore' => 'Turno in sola lettura per il tuo profilo.']);
+    // Blocco rapido di ruolo (gli user non scrivono mai). La guardia vera, ora che
+    // questa pagina può mostrare più turni insieme, è il controllo per-riga qui sotto:
+    // un turno aggiunto "in sola lettura" resta tale anche via richiesta diretta.
+    if (isSoloLettura()) {
+        echo json_encode(['ok' => false, 'errore' => 'Profilo in sola lettura.']);
         exit;
     }
 
@@ -58,10 +73,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $ph   = implode(',', array_fill(0, count($ids), '?'));
         $stmt = $pdo->prepare(
-            "SELECT id, vigile_id, data_richiesta, tipo_turno, stato FROM bot_requests WHERE id IN ($ph)"
+            "SELECT r.id, r.vigile_id, r.data_richiesta, r.tipo_turno, r.stato, v.turno
+             FROM bot_requests r JOIN vigili v ON v.id = r.vigile_id WHERE r.id IN ($ph)"
         );
         $stmt->execute($ids);
-        $rows = $stmt->fetchAll();
+        $rows = array_values(array_filter($stmt->fetchAll(), fn($r) => puoModificareTurno($r['turno'])));
+        if (empty($rows)) {
+            echo json_encode(['ok' => false, 'errore' => 'Turno in sola lettura per il tuo profilo.']); exit;
+        }
 
         $up = $pdo->prepare("UPDATE bot_requests SET stato=?, processed_at=? WHERE id=?");
 
@@ -117,10 +136,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $id = (int)($_POST['id'] ?? 0);
         if ($id <= 0) { echo json_encode(['ok' => false, 'errore' => 'ID non valido']); exit; }
 
-        $st = $pdo->prepare("SELECT vigile_id, data_richiesta, tipo_turno FROM bot_requests WHERE id=?");
+        $st = $pdo->prepare(
+            "SELECT r.vigile_id, r.data_richiesta, r.tipo_turno, v.turno
+             FROM bot_requests r JOIN vigili v ON v.id = r.vigile_id WHERE r.id=?"
+        );
         $st->execute([$id]);
         $r = $st->fetch();
         if (!$r) { echo json_encode(['ok' => false, 'errore' => 'Richiesta inesistente']); exit; }
+        if (!puoModificareTurno($r['turno'])) {
+            echo json_encode(['ok' => false, 'errore' => 'Turno in sola lettura per il tuo profilo.']); exit;
+        }
 
         $pdo->beginTransaction();
         try {
@@ -146,6 +171,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stato = $_POST['stato'] ?? '';
         if ($sid <= 0 || !in_array($stato, ['approved', 'rejected'], true)) {
             echo json_encode(['ok' => false, 'errore' => 'Parametri non validi']); exit;
+        }
+
+        $stT = $pdo->prepare(
+            "SELECT a.turno FROM bot_scambi_salto s JOIN vigili a ON a.id = s.vigile_a_id WHERE s.id=?"
+        );
+        $stT->execute([$sid]);
+        $turnoScambio = $stT->fetchColumn();
+        if ($turnoScambio === false || !puoModificareTurno($turnoScambio)) {
+            echo json_encode(['ok' => false, 'errore' => 'Turno in sola lettura per il tuo profilo.']); exit;
         }
 
         $pdo->beginTransaction();
@@ -188,7 +222,7 @@ require_once __DIR__ . '/../includes/ferie_blocchi.php';
 // ── Carica richieste del mese ────────────────────────────────
 $stmt = $pdo->prepare("
     SELECT r.id, r.vigile_id, r.data_richiesta, r.tipo_turno, r.stato,
-           v.nome, v.cognome, v.disambiguatore, v.email,
+           v.nome, v.cognome, v.disambiguatore, v.email, v.turno,
            q.codice AS qcodice,
            s.nome   AS sede_nome,
            s.codice AS sede_codice
@@ -196,10 +230,10 @@ $stmt = $pdo->prepare("
     JOIN vigili v     ON v.id = r.vigile_id
     JOIN qualifiche q ON q.id = v.qualifica_id
     JOIN sedi s       ON s.id = v.sede_id
-    WHERE DATE_FORMAT(r.data_richiesta, '%Y-%m') = ? AND v.turno = ?
+    WHERE DATE_FORMAT(r.data_richiesta, '%Y-%m') = ? AND v.turno IN ($phTurni)
     ORDER BY v.cognome, v.disambiguatore, r.data_richiesta
 ");
-$stmt->execute([$meseStr, $TURNO]);
+$stmt->execute(array_merge([$meseStr], $turniQuery));
 $tutteRichieste = $stmt->fetchAll();
 
 // ── Stato COMUNICAZIONE per singola richiesta (badge per-turno, richiesta #93) ──
@@ -259,14 +293,16 @@ unset($gruppo);
 // Ogni scambio compare sotto la/le sue date di riposo (override tipo D) che
 // cadono nel mese: in quella data il "vigile_in" riposa al posto della controparte.
 $scById = [];
-foreach ($pdo->query("
-        SELECT s.id, s.slot_a, s.slot_b, s.vigile_a_id, s.vigile_b_id,
+$stSc = $pdo->prepare("
+        SELECT s.id, s.slot_a, s.slot_b, s.vigile_a_id, s.vigile_b_id, a.turno,
                a.cognome AS a_cog, b.cognome AS b_cog
         FROM bot_scambi_salto s
         JOIN vigili a ON a.id = s.vigile_a_id
         JOIN vigili b ON b.id = s.vigile_b_id
-        WHERE s.stato = 'approvato' AND a.turno = '" . $TURNO . "'
-    ")->fetchAll() as $s) {
+        WHERE s.stato = 'approvato' AND a.turno IN ($phTurni)
+    ");
+$stSc->execute($turniQuery);
+foreach ($stSc->fetchAll() as $s) {
     $scById[(int)$s['id']] = $s;
 }
 $scambiPerData = [];
@@ -288,6 +324,7 @@ if ($scById) {
             'altro'  => $restaA ? $s['b_cog'] : $s['a_cog'],
             'slot_a' => (int)$s['slot_a'],
             'slot_b' => (int)$s['slot_b'],
+            'turno'  => $s['turno'],
         ];
     }
 }
@@ -296,9 +333,9 @@ if ($scById) {
 // Non filtrati per mese: il furiere deve vederli tutti per agire, a prescindere
 // dal mese in vista. Le date di riposo si ricavano dai due slot + il blocco.
 $scambiPending = [];
-foreach ($pdo->query("
+$stScP = $pdo->prepare("
         SELECT s.id, s.slot_a, s.slot_b, s.blocco_inizio, s.stato,
-               s.vigile_a_id, s.vigile_b_id,
+               s.vigile_a_id, s.vigile_b_id, a.turno,
                a.cognome AS a_cog, a.disambiguatore AS a_dis, qa.codice AS a_q,
                b.cognome AS b_cog, b.disambiguatore AS b_dis, qb.codice AS b_q
         FROM bot_scambi_salto s
@@ -306,9 +343,11 @@ foreach ($pdo->query("
         JOIN vigili b     ON b.id = s.vigile_b_id
         JOIN qualifiche qa ON qa.id = a.qualifica_id
         JOIN qualifiche qb ON qb.id = b.qualifica_id
-        WHERE s.stato IN ('proposto', 'confermato') AND a.turno = '" . $TURNO . "'
+        WHERE s.stato IN ('proposto', 'confermato') AND a.turno IN ($phTurni)
         ORDER BY s.blocco_inizio, s.id
-    ")->fetchAll() as $s) {
+    ");
+$stScP->execute($turniQuery);
+foreach ($stScP->fetchAll() as $s) {
     $etic = fn($q, $c, $d) => ucfirst(strtolower($q)) . ' ' . ucfirst(strtolower($c))
                             . ($d ? ' ' . (int)$d : '');
     $s['a_label'] = $etic($s['a_q'], $s['a_cog'], $s['a_dis']);
@@ -322,10 +361,13 @@ foreach ($pdo->query("
 $tutteLeDate = array_unique(array_merge(array_keys($perData), array_keys($scambiPerData)));
 sort($tutteLeDate);
 
-$totPending  = count(array_filter($tutteRichieste, fn($r) => $r['stato'] === 'pending'));
-$totApproved = count(array_filter($tutteRichieste, fn($r) => $r['stato'] === 'approved'));
-$totRejected = count(array_filter($tutteRichieste, fn($r) => $r['stato'] === 'rejected'));
-$totVigili   = count($perVigile);
+// Statistiche solo sul turno PRIMARIO: quelle degli extra sono lì per consultazione,
+// non vanno confuse coi contatori "tuoi".
+$richiestePrimarie = array_filter($tutteRichieste, fn($r) => $r['turno'] === $TURNO);
+$totPending  = count(array_filter($richiestePrimarie, fn($r) => $r['stato'] === 'pending'));
+$totApproved = count(array_filter($richiestePrimarie, fn($r) => $r['stato'] === 'approved'));
+$totRejected = count(array_filter($richiestePrimarie, fn($r) => $r['stato'] === 'rejected'));
+$totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id')));
 ?>
 <!DOCTYPE html>
 <html lang="it">
@@ -463,6 +505,16 @@ $totVigili   = count($perVigile);
          font-size: .875rem; font-weight: 500; }
 .alert-ok  { background: var(--verde-bg); color: var(--verde); border: 1px solid #a9dfbf; }
 .alert-err { background: #fdf2f2; color: var(--rosso); border: 1px solid #f5b7b1; }
+
+/* ── Turni extra (sola lettura) ── */
+.extra-form { background: var(--bianco); border-radius: var(--radius); box-shadow: var(--shadow);
+              padding: 10px 20px; margin-bottom: 16px; display: flex; align-items: center;
+              gap: 16px; flex-wrap: wrap; font-size: .82rem; }
+.extra-form .lbl { font-weight: 700; color: var(--grigio-md); }
+.extra-form label.opt { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.turno-tag { font-size: .65rem; font-weight: 800; padding: 1px 7px; border-radius: 4px;
+             background: #eaf4fb; color: var(--blu); border: 1px solid #aed6f1; margin-right: 6px; }
+.ro-badge { font-size: .68rem; font-weight: 700; color: var(--grigio-md); white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -472,9 +524,9 @@ $totVigili   = count($perVigile);
     <div class="header-logo">🚒</div>
     <div class="header-testi">
       <h1>Comando Provinciale VVF di Genova</h1>
-      <p>Gestionale — Agenda Turno B</p>
+      <p>Gestionale — Agenda Turno <?= htmlspecialchars($TURNO) ?><?= $turniExtra ? ' + ' . htmlspecialchars(implode(', ', $turniExtra)) . ' (sola lettura)' : '' ?></p>
     </div>
-    <div class="header-badge">TURNO B</div>
+    <div class="header-badge">TURNO&nbsp;<?= htmlspecialchars($TURNO) ?></div>
   </div>
 </header>
 
@@ -500,6 +552,24 @@ $totVigili   = count($perVigile);
     <h2>🗓️ Agenda — <?= $mesiNomi[$meseP] ?> <?= $annoP ?></h2>
     <a href="?anno=<?= $annoNext ?>&mese=<?= $meseNext ?>" class="btn btn-grigio btn-sm">▶</a>
   </div>
+
+  <!-- Turni extra in sola lettura: affianca le richieste di altri turni visibili -->
+  <?php $turniAltri = array_diff(turniVisibili(), [$TURNO]);
+  if ($turniAltri): ?>
+  <form method="GET" class="extra-form">
+    <input type="hidden" name="anno" value="<?= $annoP ?>">
+    <input type="hidden" name="mese" value="<?= $meseP ?>">
+    <span class="lbl">👁 Mostra anche (sola lettura):</span>
+    <?php foreach ($turniAltri as $t): ?>
+      <label class="opt">
+        <input type="checkbox" name="extra[]" value="<?= htmlspecialchars($t) ?>"
+               <?= in_array($t, $turniExtra, true) ? 'checked' : '' ?>
+               onchange="this.form.submit()">
+        Turno <?= htmlspecialchars($t) ?>
+      </label>
+    <?php endforeach; ?>
+  </form>
+  <?php endif; ?>
 
   <!-- Stat bar -->
   <div class="stat-bar">
@@ -537,7 +607,8 @@ $totVigili   = count($perVigile);
       <?php foreach ($scambiPending as $s): ?>
       <div class="blocco-row" id="scambio-<?= (int)$s['id'] ?>" style="cursor:default;flex-wrap:wrap;">
         <span class="toggle-icon">🔄</span>
-        <span class="blocco-nome"><?= htmlspecialchars($s['a_label']) ?> <span style="color:var(--grigio-md);">(B<?= (int)$s['slot_a'] ?>)</span> ⇄ <?= htmlspecialchars($s['b_label']) ?> <span style="color:var(--grigio-md);">(B<?= (int)$s['slot_b'] ?>)</span></span>
+        <?php if ($turniExtra): ?><span class="turno-tag">Turno <?= htmlspecialchars($s['turno']) ?></span><?php endif; ?>
+        <span class="blocco-nome"><?= htmlspecialchars($s['a_label']) ?> <span style="color:var(--grigio-md);">(<?= htmlspecialchars($s['turno']) ?><?= (int)$s['slot_a'] ?>)</span> ⇄ <?= htmlspecialchars($s['b_label']) ?> <span style="color:var(--grigio-md);">(<?= htmlspecialchars($s['turno']) ?><?= (int)$s['slot_b'] ?>)</span></span>
         <span class="blocco-spacer"></span>
         <span style="font-size:.74rem;color:var(--grigio-md);white-space:nowrap;">
           <?= htmlspecialchars($s['a_label']) ?> → riposa <?= $fmtOcc($s['b_occ']) ?>
@@ -545,6 +616,7 @@ $totVigili   = count($perVigile);
           <?= htmlspecialchars($s['b_label']) ?> → riposa <?= $fmtOcc($s['a_occ']) ?>
         </span>
         <span class="stato-badge stato-pending" style="margin-left:8px;"><?= $s['stato'] === 'proposto' ? 'in attesa conferma' : 'da approvare' ?></span>
+        <?php if ($s['turno'] === $TURNO): ?>
         <div class="blocco-azioni" onclick="event.stopPropagation()">
           <button class="btn-mini accetta"
                   onclick='approvaScambio(<?= (int)$s['id'] ?>)'
@@ -553,6 +625,9 @@ $totVigili   = count($perVigile);
                   onclick='rifiutaScambio(<?= (int)$s['id'] ?>)'
                   title="Rifiuta lo scambio e avvisa i due vigili">✗ rifiuta</button>
         </div>
+        <?php else: ?>
+        <span class="ro-badge" style="margin-left:8px;">👁 sola lettura</span>
+        <?php endif; ?>
       </div>
       <?php endforeach; ?>
     </div>
@@ -574,18 +649,20 @@ $totVigili   = count($perVigile);
     $conteggio  = [];
     if ($gruppo) $conteggio[] = count($gruppo) . ' vigil' . (count($gruppo) === 1 ? 'e' : 'i') . ' in ferie';
     if ($scambi) $conteggio[] = count($scambi) . (count($scambi) === 1 ? ' scambio' : ' scambi') . ' salto';
-    // Quel giorno il turno B è in servizio diurno (☀️) o notturno (🌙):
-    // mostro un'icona sola, col salto a riposo del foglio corrispondente.
+    // Quel giorno il turno PRIMARIO è in servizio diurno (☀️) o notturno (🌙):
+    // mostro un'icona sola, col salto a riposo del foglio corrispondente (l'ancora
+    // resta il turno primario anche in vista multi-turno).
     $tgB = getTurnoGiorno($dataInizio);
-    if ($tgB['diurno']['turno'] === 'B') {
+    if ($tgB['diurno']['turno'] === $TURNO) {
         $saltoTipo = 'D'; $saltoIco = '☀️';
-    } elseif ($tgB['notte']['turno'] === 'B') {
+    } elseif ($tgB['notte']['turno'] === $TURNO) {
         $saltoTipo = 'N'; $saltoIco = '🌙';
     } else {
         $saltoTipo = 'D'; $saltoIco = '';
     }
     $saltoNum  = saltoRiposoNum($dataInizio, $saltoTipo);
-    $urlFoglio = '../foglio/nuovo.php?data=' . urlencode($dataInizio) . '&tipo=' . $saltoTipo;
+    $urlFoglio = '../foglio/nuovo.php?data=' . urlencode($dataInizio) . '&tipo=' . $saltoTipo
+               . '&turno=' . $TURNO;
   ?>
   <div class="data-section" id="giorno-<?= htmlspecialchars($dataInizio) ?>" data-giorno="<?= htmlspecialchars($dataInizio) ?>">
 
@@ -596,7 +673,7 @@ $totVigili   = count($perVigile);
          style="font-size:.95rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--rosso);text-decoration:none;">📋 <?= $dataHeader ?></a>
       <span class="data-count" style="font-size:.72rem;color:var(--grigio-md);font-weight:600;"><?= implode(' · ', $conteggio) ?></span>
       <a href="<?= $urlFoglio ?>" title="Apri il foglio di servizio di questo giorno"
-         style="margin-left:auto;font-size:.8rem;font-weight:700;color:var(--grigio-sc);text-decoration:none;white-space:nowrap;"><?= $saltoIco ?> B<?= $saltoNum ?></a>
+         style="margin-left:auto;font-size:.8rem;font-weight:700;color:var(--grigio-sc);text-decoration:none;white-space:nowrap;"><?= $saltoIco ?> <?= htmlspecialchars($TURNO) ?><?= $saltoNum ?></a>
     </div>
 
     <?php if ($scambi): ?>
@@ -605,9 +682,10 @@ $totVigili   = count($perVigile);
       <?php foreach ($scambi as $sc): ?>
       <div class="blocco-row" style="cursor:default;">
         <span class="toggle-icon">🔄</span>
+        <?php if ($turniExtra): ?><span class="turno-tag">Turno <?= htmlspecialchars($sc['turno']) ?></span><?php endif; ?>
         <span class="blocco-nome" style="color:#0a58ca;"><?= htmlspecialchars($sc['resta']) ?> riposa</span>
         <span class="blocco-spacer"></span>
-        <span style="font-size:.78rem;color:var(--grigio-md);">scambio salto con <?= htmlspecialchars($sc['altro']) ?> (B<?= $sc['slot_a'] ?>⇄B<?= $sc['slot_b'] ?>)</span>
+        <span style="font-size:.78rem;color:var(--grigio-md);">scambio salto con <?= htmlspecialchars($sc['altro']) ?> (<?= htmlspecialchars($sc['turno']) ?><?= $sc['slot_a'] ?>⇄<?= htmlspecialchars($sc['turno']) ?><?= $sc['slot_b'] ?>)</span>
       </div>
       <?php endforeach; ?>
     </div>
@@ -625,11 +703,13 @@ $totVigili   = count($perVigile);
       $stato      = statoBlock($block);
       $detailId   = 'detail-' . $meta['vigile_id'] . '-' . md5($dataInizio);
       $allIds     = array_column($block, 'id');
+      $editabile  = ($meta['turno'] === $TURNO);
     ?>
     <!-- Riga vigile -->
     <div class="blocco-row" id="row-<?= $detailId ?>"
          onclick="toggleDetail('<?= $detailId ?>')">
       <span class="toggle-icon" id="icon-<?= $detailId ?>">▶</span>
+      <?php if ($turniExtra): ?><span class="turno-tag">Turno <?= htmlspecialchars($meta['turno']) ?></span><?php endif; ?>
       <span class="blocco-nome"><?= htmlspecialchars($label) ?></span>
       <?php if (!$isCentrale): ?>
         <span class="blocco-sede"><?= htmlspecialchars($meta['sede_codice']) ?></span>
@@ -638,6 +718,7 @@ $totVigili   = count($perVigile);
       <span class="blocco-turni"><?= $turni ?> turni</span>
       <span class="blocco-spacer"></span>
       <span class="stato-badge stato-<?= $stato ?>" id="badge-<?= $detailId ?>"><?= $stato ?></span>
+      <?php if ($editabile): ?>
       <div class="blocco-azioni" onclick="event.stopPropagation()">
         <button class="btn-mini accetta"
                 onclick='setStato(<?= htmlspecialchars(json_encode($allIds)) ?>, "pending")'
@@ -646,6 +727,9 @@ $totVigili   = count($perVigile);
                 onclick='setStato(<?= htmlspecialchars(json_encode($allIds)) ?>, "rejected")'
                 title="Respingi tutto il periodo">✗ tutti</button>
       </div>
+      <?php else: ?>
+      <span class="ro-badge">👁 sola lettura</span>
+      <?php endif; ?>
     </div>
 
     <!-- Tendina singoli turni -->
@@ -673,6 +757,7 @@ $totVigili   = count($perVigile);
         </span>
         <span class="turno-spacer"></span>
         <span class="com-badge com-<?= $comCls ?>" id="com-<?= $r['id'] ?>"><?= $comLbl ?></span>
+        <?php if ($editabile): ?>
         <div class="scelta">
           <label class="lbl-si">
             <input type="checkbox" class="chk-si" <?= $r['stato'] !== 'rejected' ? 'checked' : '' ?>
@@ -685,6 +770,7 @@ $totVigili   = count($perVigile);
         </div>
         <button class="btn-elimina" title="Elimina definitivamente la richiesta"
                 onclick="eliminaTurno(<?= $r['id'] ?>, this)">🗑️</button>
+        <?php endif; ?>
       </div>
       <?php endforeach; ?>
     </div>

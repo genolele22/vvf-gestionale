@@ -4,7 +4,7 @@ require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/auth.php';
 richiediAdmin();
 $pdo   = getDB();
-$TURNO = turnoAttivo();   // Amministrazione segue il turno attivo (multi-turno)
+$TURNO = turnoAmministrazione();   // fisso sul turno di casa (admin/user niente switch qui)
 
 // ── Pausa bot (flag condiviso 'bot_pausa' nella tabella parametri) ───────────
 // Quando è ON il bot Telegram rifiuta nuove richieste (ferie e scambi salto):
@@ -84,9 +84,9 @@ $nFur     = contaTab($pdo, "SELECT COUNT(*) FROM furieri_fissi ff JOIN vigili v 
     <div class="header-logo">🚒</div>
     <div class="header-testi">
       <h1>Comando Provinciale VVF di Genova</h1>
-      <p>Gestionale Foglio di Servizio &mdash; Turno B</p>
+      <p>Gestionale Foglio di Servizio &mdash; Turno <?= htmlspecialchars($TURNO) ?></p>
     </div>
-    <div class="header-badge">TURNO&nbsp;B</div>
+    <div class="header-badge">TURNO&nbsp;<?= htmlspecialchars($TURNO) ?></div>
   </div>
 </header>
 <nav class="navbar">
