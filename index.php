@@ -5,7 +5,9 @@ require_once __DIR__ . '/includes/turni.php';
 require_once __DIR__ . '/includes/auth.php';
 richiediLogin();   // soft: non blocca finché AUTH_ENFORCE è false
 
-$TURNO = turnoAttivo();   // turno evidenziato nel cruscotto (A/B/C/D); default B
+// Turno di casa: usato per le statistiche e per evidenziare "il tuo turno" nel
+// calendario. Comando (senza turno di casa) segue l'attivo di sessione.
+$TURNO = turnoCorrente() ?: turnoAttivo();
 
 // ── Navigazione mese ────────────────────────────────────────
 $oggi  = new DateTime('today');
@@ -90,14 +92,7 @@ $saltoOggi = $turnoOggi['diurno']['turno'] . $turnoOggi['diurno']['salto']
 <title>VVF Genova – Gestionale Turno <?= htmlspecialchars($TURNO) ?></title>
 <link rel="stylesheet" href="assets/css/stile.css?v=<?= @filemtime(__DIR__.'/assets/css/stile.css') ?>">
 <style>
-  .turno-tabs { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; }
-  .turno-tab { display:inline-flex; align-items:center; gap:5px; padding:7px 14px;
-               border-radius:8px; text-decoration:none; font-size:.85rem; font-weight:700;
-               background:var(--bianco); box-shadow:var(--shadow); color:var(--grigio-sc);
-               border:1px solid #e4e7ea; transition:border-color .15s, transform .1s; }
-  .turno-tab:hover { border-color:var(--rosso); transform:translateY(-1px); }
-  .turno-tab.active { background:var(--rosso); color:#fff; border-color:var(--rosso); }
-  .turno-tab.ro:not(.active) { color:var(--grigio-md); }
+  .pill.ro { opacity: .72; }
 </style>
 </head>
 
@@ -143,22 +138,6 @@ $saltoOggi = $turnoOggi['diurno']['turno'] . $turnoOggi['diurno']['salto']
 
 <!-- ══ MAIN ══════════════════════════════════════════════════ -->
 <main class="main">
-
-  <!-- TAB TURNI: cliccabili, niente tendina. Un turno solo se puoModificareTurno(),
-       altrimenti sola lettura (👁) — nascoste se l'utente vede un solo turno. -->
-  <?php $turniVis = turniVisibili(); if (count($turniVis) > 1): ?>
-  <div class="turno-tabs">
-    <?php foreach ($turniVis as $t):
-        $qs = $_GET; $qs['turno'] = $t;
-        $mod = puoModificareTurno($t);
-    ?>
-      <a href="?<?= htmlspecialchars(http_build_query($qs)) ?>"
-         class="turno-tab<?= $t === $TURNO ? ' active' : '' ?><?= $mod ? ' mod' : ' ro' ?>">
-        <?= $mod ? '✏️' : '👁' ?> Turno <?= htmlspecialchars($t) ?>
-      </a>
-    <?php endforeach; ?>
-  </div>
-  <?php endif; ?>
 
   <!-- STAT CARDS -->
   <div class="stat-grid">
@@ -234,15 +213,15 @@ $saltoOggi = $turnoOggi['diurno']['turno'] . $turnoOggi['diurno']['salto']
     $isOggi  = ($dataStr === $oggiStr);
     $turnoG  = $turniMese[$dataStr] ?? null;
 
-    // Evidenzia la cella SOLO se il turno ATTIVO è in servizio
-    $turnoAttivoInServizio = $turnoG && (
+    // Evidenzia la cella se il turno DI CASA è in servizio quel giorno (diurno o notte)
+    $turnoCasaInServizio = $turnoG && (
         $turnoG['D']['turno'] === $TURNO ||
         $turnoG['N']['turno'] === $TURNO
     );
 
     $classeCell = 'cal-cell';
-    if ($isOggi)                     $classeCell .= ' oggi-cell';
-    elseif ($turnoAttivoInServizio)  $classeCell .= ' turno-b';
+    if ($isOggi)                  $classeCell .= ' oggi-cell';
+    elseif ($turnoCasaInServizio) $classeCell .= ' turno-b';
 ?>
     <div class="<?= $classeCell ?>">
 
@@ -260,19 +239,21 @@ $saltoOggi = $turnoOggi['diurno']['turno'] . $turnoOggi['diurno']['salto']
         <?php if ($turnoG):
             $d = $turnoG['D'];
             $n = $turnoG['N'];
-            $isBd = ($d['turno'] === $TURNO);
-            $iBn  = ($n['turno'] === $TURNO);
+            $vedeD = puoVedereTurno($d['turno']);
+            $vedeN = puoVedereTurno($n['turno']);
+            $modD  = puoModificareTurno($d['turno']);
+            $modN  = puoModificareTurno($n['turno']);
             $compilatoD = !empty($fogliCompilati[$dataStr]['D']);
             $compilatoN = !empty($fogliCompilati[$dataStr]['N']);
         ?>
 
-            <!-- DIURNO -->
-            <?php if ($isBd): ?>
+            <!-- DIURNO: cliccabile per ogni turno che l'utente può vedere, non solo
+                 quello "attivo" — ✏️/👁 nel badge segnala se è anche modificabile. -->
+            <?php if ($vedeD): ?>
                 <?php
-                // Turno B diurno: pill colorata e cliccabile
-                $classd = 'pill diurno' . ($compilatoD ? ' compilato' : '');
+                $classd = 'pill diurno' . ($compilatoD ? ' compilato' : '') . (!$modD ? ' ro' : '');
                 $linkD  = 'foglio/' . ($compilatoD ? 'visualizza' : 'nuovo')
-                        . '.php?data=' . $dataStr . '&tipo=D&turno=' . $TURNO;
+                        . '.php?data=' . $dataStr . '&tipo=D&turno=' . $d['turno'];
                 ?>
                 <a href="<?= htmlspecialchars($linkD) ?>" class="<?= $classd ?>">
                     <span class="pill-label">
@@ -282,22 +263,21 @@ $saltoOggi = $turnoOggi['diurno']['turno'] . $turnoOggi['diurno']['salto']
                         </span>
                         <span class="pill-ora">08:00→20:00</span>
                     </span>
-                    <span class="pill-badge-b"><?= htmlspecialchars($TURNO) ?></span>
+                    <span class="pill-badge-b" title="<?= $modD ? 'Modificabile' : 'Sola lettura' ?>"><?= $modD ? '✏️' : '👁' ?></span>
                 </a>
             <?php else: ?>
-                <!-- Altri turni diurni: solo testo discreto, non cliccabile -->
+                <!-- Turno non visibile a questo login: solo testo discreto, non cliccabile -->
                 <div class="pill-altri">
                     🌅 <?= htmlspecialchars($d['turno'] . $d['salto']) ?>
                 </div>
             <?php endif; ?>
 
             <!-- NOTTURNO -->
-            <?php if ($iBn): ?>
+            <?php if ($vedeN): ?>
                 <?php
-                // Turno B notturno: pill colorata e cliccabile
-                $classn = 'pill notte' . ($compilatoN ? ' compilato' : '');
+                $classn = 'pill notte' . ($compilatoN ? ' compilato' : '') . (!$modN ? ' ro' : '');
                 $linkN  = 'foglio/' . ($compilatoN ? 'visualizza' : 'nuovo')
-                        . '.php?data=' . $dataStr . '&tipo=N&turno=' . $TURNO;
+                        . '.php?data=' . $dataStr . '&tipo=N&turno=' . $n['turno'];
                 ?>
                 <a href="<?= htmlspecialchars($linkN) ?>" class="<?= $classn ?>">
                     <span class="pill-label">
@@ -307,10 +287,10 @@ $saltoOggi = $turnoOggi['diurno']['turno'] . $turnoOggi['diurno']['salto']
                         </span>
                         <span class="pill-ora">20:00→08:00</span>
                     </span>
-                    <span class="pill-badge-b"><?= htmlspecialchars($TURNO) ?></span>
+                    <span class="pill-badge-b" title="<?= $modN ? 'Modificabile' : 'Sola lettura' ?>"><?= $modN ? '✏️' : '👁' ?></span>
                 </a>
             <?php else: ?>
-                <!-- Altri turni notturni: solo testo discreto, non cliccabile -->
+                <!-- Turno non visibile a questo login: solo testo discreto, non cliccabile -->
                 <div class="pill-altri">
                     🌙 <?= htmlspecialchars($n['turno'] . $n['salto']) ?>
                 </div>
@@ -346,11 +326,13 @@ $saltoOggi = $turnoOggi['diurno']['turno'] . $turnoOggi['diurno']['salto']
       </div>
       <div class="leg">
         <div class="leg-box" style="background:#f0f7ff;border:1px solid #aac"></div>
-        Turno <?= htmlspecialchars($TURNO) ?> in servizio
+        Il tuo turno (<?= htmlspecialchars($TURNO) ?>) in servizio
       </div>
       <div class="leg">
-        <span class="pill-badge-b"><?= htmlspecialchars($TURNO) ?></span>
-        &nbsp;= Turno <?= htmlspecialchars($TURNO) ?> attivo su quel turno
+        <span class="pill-badge-b">✏️</span>
+        &nbsp;modificabile &nbsp;·&nbsp;
+        <span class="pill-badge-b">👁</span>
+        &nbsp;sola lettura
       </div>
     </div>
 
