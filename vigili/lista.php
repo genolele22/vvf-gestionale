@@ -194,7 +194,7 @@ $vigili = $stmtV->fetchAll();
 // ── DATI PER I SELECT ────────────────────────────────────────
 $qualifiche   = $pdo->query("SELECT * FROM qualifiche ORDER BY id DESC")->fetchAll();
 $sedi         = $pdo->query("SELECT * FROM sedi ORDER BY ordine")->fetchAll();
-$salti        = $pdo->query("SELECT * FROM salti_turno ORDER BY id")->fetchAll();
+$salti        = $pdo->query("SELECT * FROM salti_turno ORDER BY turno, id")->fetchAll();
 $patentiAll   = $pdo->query("SELECT * FROM patenti ORDER BY id")->fetchAll();
 $abilitazAll  = $pdo->query("SELECT * FROM abilitazioni ORDER BY id")->fetchAll();
 
@@ -363,23 +363,10 @@ if (!empty($vigili)) {
               <?php endforeach; ?>
             </select>
           </div>
-          <div class="form-group">
-            <label>Salto turno *</label>
-            <select name="salto_id" required>
-              <option value="">— seleziona —</option>
-              <?php foreach ($salti as $st): ?>
-                <option value="<?= $st['id'] ?>"
-                  <?= ($vigileEdit && $vigileEdit['salto_id']==$st['id'])
-                      ? 'selected' : '' ?>>
-                  <?= htmlspecialchars($st['codice']) ?>
-                </option>
-              <?php endforeach; ?>
-            </select>
-          </div>
           <?php if (isComando()): ?>
           <div class="form-group">
             <label>Turno *</label>
-            <select name="turno" required>
+            <select name="turno" id="turnoSelect" required>
               <?php foreach (['A', 'B', 'C', 'D'] as $t): ?>
                 <option value="<?= $t ?>"
                   <?= ($vigileEdit ? $vigileEdit['turno'] : $TURNO) === $t ? 'selected' : '' ?>>
@@ -389,6 +376,21 @@ if (!empty($vigili)) {
             </select>
           </div>
           <?php endif; ?>
+          <div class="form-group">
+            <label>Salto turno *</label>
+            <select name="salto_id" id="saltoSelect" required>
+              <option value="">— seleziona —</option>
+              <?php foreach ($salti as $st):
+                  if (!isComando() && $st['turno'] !== $TURNO) continue;   // admin/user: solo il proprio turno
+              ?>
+                <option value="<?= $st['id'] ?>" data-turno="<?= htmlspecialchars($st['turno']) ?>"
+                  <?= ($vigileEdit && $vigileEdit['salto_id']==$st['id'])
+                      ? 'selected' : '' ?>>
+                  <?= htmlspecialchars($st['codice']) ?>
+                </option>
+              <?php endforeach; ?>
+            </select>
+          </div>
           <div class="form-group full">
             <label>Patenti</label>
             <div class="patenti-group" id="patentiGroup">
@@ -501,7 +503,9 @@ if (!empty($vigili)) {
         <label>Salto turno</label>
         <select name="salto">
           <option value="0">Tutti i salti</option>
-          <?php foreach ($salti as $st): ?>
+          <?php foreach ($salti as $st):
+              if ($st['turno'] !== $TURNO) continue;   // solo i salti del turno in vista
+          ?>
             <option value="<?= $st['id'] ?>"
               <?= $filtroSalto==$st['id'] ? 'selected' : '' ?>>
               <?= htmlspecialchars($st['codice']) ?>
@@ -749,6 +753,28 @@ if (!empty($vigili)) {
 </main>
 
 <script>
+// ── Salto turno filtrato dal Turno scelto (solo Comando: admin/user hanno
+// già il select "Salto turno" pre-filtrato lato server sul proprio turno) ──
+(function () {
+    const selTurno = document.getElementById('turnoSelect');
+    const selSalto = document.getElementById('saltoSelect');
+    if (!selTurno || !selSalto) return;
+    function filtra() {
+        const t = selTurno.value;
+        let primaValida = null;
+        Array.from(selSalto.options).forEach(opt => {
+            if (!opt.value) return;   // placeholder "— seleziona —"
+            const visibile = opt.dataset.turno === t;
+            opt.hidden = !visibile;
+            if (visibile && primaValida === null) primaValida = opt;
+        });
+        const sel = selSalto.selectedOptions[0];
+        if (sel && sel.hidden) selSalto.value = primaValida ? primaValida.value : '';
+    }
+    selTurno.addEventListener('change', filtra);
+    filtra();
+})();
+
 // Aggiorna la label del toggle attivo/non attivo in tempo reale
 const tog = document.getElementById('toggleAttivo');
 const lbl = document.getElementById('toggleLabel');
