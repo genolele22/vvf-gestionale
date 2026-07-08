@@ -17,7 +17,7 @@ $TABELLE = [
     'qualifiche'   => ['label' => 'Qualifiche', 'icona' => '🎖️',
         'cols' => ['codice' => ['Codice','text'], 'nome' => ['Nome','text']]],
     'salti_turno'  => ['label' => 'Salti turno', 'icona' => '😴',
-        'cols' => ['codice' => ['Codice','text']]],
+        'cols' => ['codice' => ['Codice','text'], 'turno' => ['Turno','turno']]],
     'tipo_assenza' => ['label' => 'Tipi assenza', 'icona' => '📋',
         'cols' => ['codice' => ['Codice','text'], 'nome' => ['Nome','text']]],
     'patenti'      => ['label' => 'Patenti', 'icona' => '🪪',
@@ -54,12 +54,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $raw = trim($_POST[$c] ?? '');
             if ($tipo === 'int' || $tipo === 'fk_sedi') {
                 $vals[$c] = ($raw === '') ? 0 : (int)$raw;
+            } elseif ($tipo === 'turno') {
+                $vals[$c] = strtoupper(substr($raw, 0, 1)) ?: 'B';
             } else {
                 $vals[$c] = $raw;
             }
         }
 
-        if ($azione === 'salva') {
+        // ── Genera in blocco i salti 1..8 di un turno (solo Comando) ──
+        // Serve quando si aggiunge un turno nuovo: crea A1..A8 (o C/D) con lo
+        // stesso schema di B1..B8 invece di 8 inserimenti manuali uno a uno.
+        if ($azione === 'genera_salti' && $tab === 'salti_turno') {
+            if (!isComando()) {
+                $errore = 'Solo il Comando può generare i salti di un turno.';
+            } else {
+                $turnoGen = strtoupper(substr(trim($_POST['turno_gen'] ?? ''), 0, 1));
+                if (!in_array($turnoGen, ['A', 'B', 'C', 'D'], true)) {
+                    $errore = 'Turno non valido.';
+                } else {
+                    $creati = 0; $saltati = 0;
+                    for ($n = 1; $n <= 8; $n++) {
+                        $codiceGen = $turnoGen . $n;
+                        $chk = $pdo->prepare("SELECT 1 FROM salti_turno WHERE codice=?");
+                        $chk->execute([$codiceGen]);
+                        if ($chk->fetchColumn()) { $saltati++; continue; }
+                        $newId = nextId($pdo, 'salti_turno');
+                        $pdo->prepare("INSERT INTO salti_turno (id, codice, turno) VALUES (?,?,?)")
+                            ->execute([$newId, $codiceGen, $turnoGen]);
+                        $creati++;
+                    }
+                    $sucesso = "Turno $turnoGen: $creati salti creati" . ($saltati ? ", $saltati già esistenti (saltati)" : '') . '.';
+                }
+            }
+        } elseif ($azione === 'salva') {
             $id = (int)($_POST['id'] ?? 0);
             // Validazione minima: il primo campo testo non vuoto
             $primo = array_key_first($cols);
@@ -108,7 +135,7 @@ if (isset($_GET['modifica'])) {
 }
 
 // Righe della tabella corrente
-$orderBy = isset($cols['ordine']) ? 'ordine, id' : 'id';
+$orderBy = isset($cols['ordine']) ? 'ordine, id' : (isset($cols['turno']) ? 'turno, id' : 'id');
 $righe = $pdo->query("SELECT * FROM `$tab` ORDER BY $orderBy")->fetchAll();
 
 // Mappa sedi id→etichetta per la colonna fk
@@ -177,6 +204,33 @@ function valoreColonna(string $tipo, $v, array $sediMap): string {
     <?php endforeach; ?>
   </div>
 
+  <!-- Genera in blocco i salti 1..8 di un turno (solo Comando, solo tab Salti turno) -->
+  <?php if ($tab === 'salti_turno' && isComando()): ?>
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-head">⚡ Genera salti per un turno</div>
+    <div style="padding:14px">
+      <form method="POST" action="anagrafiche.php?tab=salti_turno" class="anag-form">
+        <input type="hidden" name="azione" value="genera_salti">
+        <input type="hidden" name="tab" value="salti_turno">
+        <div class="ff">
+          <label>Turno</label>
+          <select name="turno_gen">
+            <?php foreach (['A', 'B', 'C', 'D'] as $t): ?>
+              <option value="<?= $t ?>">Turno <?= $t ?></option>
+            <?php endforeach; ?>
+          </select>
+        </div>
+        <div class="ff">
+          <button type="submit" class="btn btn-rosso">Genera 8 salti (1..8)</button>
+        </div>
+        <div class="ff" style="font-size:.78rem;color:var(--grigio-md);align-self:center">
+          Crea i codici mancanti (es. A1..A8): quelli già esistenti non si toccano.
+        </div>
+      </form>
+    </div>
+  </div>
+  <?php endif; ?>
+
   <!-- Form aggiungi / modifica -->
   <div class="card">
     <div class="card-head"><?= $rigaEdit ? '✏️ Modifica' : '➕ Aggiungi' ?> — <?= htmlspecialchars($def['label']) ?></div>
@@ -195,6 +249,12 @@ function valoreColonna(string $tipo, $v, array $sediMap): string {
                   <option value="<?= (int)$s['id'] ?>" <?= (int)$val === (int)$s['id'] ? 'selected' : '' ?>>
                     <?= htmlspecialchars($s['codice'] . ' · ' . $s['nome']) ?>
                   </option>
+                <?php endforeach; ?>
+              </select>
+            <?php elseif ($tipo === 'turno'): ?>
+              <select name="<?= $c ?>">
+                <?php foreach (['A', 'B', 'C', 'D'] as $t): ?>
+                  <option value="<?= $t ?>" <?= (string)$val === $t ? 'selected' : '' ?>>Turno <?= $t ?></option>
                 <?php endforeach; ?>
               </select>
             <?php elseif ($tipo === 'int'): ?>
