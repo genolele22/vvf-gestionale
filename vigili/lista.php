@@ -88,10 +88,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $vid = nextId($pdo, 'vigili');
             $pdo->prepare(
                 "INSERT INTO vigili
-                 (id,cognome,nome,disambiguatore,email,qualifica_id,sede_id,salto_id,attivo,specialista,note)
-                 VALUES (?,?,?,?,?,?,?,?,?,?,?)"
+                 (id,cognome,nome,disambiguatore,email,qualifica_id,sede_id,salto_id,attivo,specialista,note,turno)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
             )->execute([$vid,$cognome,$nome,$disambiguatore,$email,
-                        $qualifica_id,$sede_id,$salto_id,$attivo,$specialista,$note]);
+                        $qualifica_id,$sede_id,$salto_id,$attivo,$specialista,$note,turnoAttivo()]);
 
             foreach ($patenti as $pid) {
                 $pdo->prepare(

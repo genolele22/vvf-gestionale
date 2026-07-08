@@ -2,7 +2,12 @@
 session_start();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/auth.php';
-richiediComando();   // gestione account = solo Comando
+richiediLogin();
+// Gerarchia: comando gestisce tutto (crea/modifica/elimina/ruoli/permessi);
+// admin e user possono SOLO reimpostare le password, in autonomia senza il
+// Comando — admin sui profili admin e user, user solo sui profili user.
+$RUOLI_PASSWORD = isComando() ? ['comando', 'admin', 'user']
+                : (isAdmin() ? ['admin', 'user'] : ['user']);
 $pdo = getDB();
 $errore = '';
 $ok     = '';
@@ -13,7 +18,23 @@ $TURNI  = ['A','B','C','D'];
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $azione = $_POST['azione'] ?? '';
     try {
-        if ($azione === 'salva') {
+        if (in_array($azione, ['salva', 'elimina'], true) && !isComando()) {
+            throw new RuntimeException('Solo il Comando può creare, modificare o eliminare utenti.');
+        }
+        if ($azione === 'password') {
+            $id       = (int)($_POST['id'] ?? 0);
+            $password = (string)($_POST['password'] ?? '');
+            $st = $pdo->prepare("SELECT username, ruolo FROM utenti WHERE id=?");
+            $st->execute([$id]);
+            $target = $st->fetch();
+            if (!$target) throw new RuntimeException('Utente non trovato.');
+            if (!in_array($target['ruolo'], $RUOLI_PASSWORD, true))
+                throw new RuntimeException('Non puoi gestire la password di questo profilo.');
+            if (strlen($password) < 6) throw new RuntimeException('La password deve avere almeno 6 caratteri.');
+            $pdo->prepare("UPDATE utenti SET password=? WHERE id=?")
+                ->execute([password_hash($password, PASSWORD_BCRYPT), $id]);
+            $ok = 'Password di ' . $target['username'] . ' aggiornata.';
+        } elseif ($azione === 'salva') {
             $id       = (int)($_POST['id'] ?? 0);
             $username = strtolower(trim($_POST['username'] ?? ''));
             $nome     = trim($_POST['nome'] ?? '');
@@ -83,7 +104,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $rigaEdit = null;
-if (isset($_GET['modifica'])) {
+if (isset($_GET['modifica']) && isComando()) {
     $st = $pdo->prepare("SELECT * FROM utenti WHERE id=?");
     $st->execute([(int)$_GET['modifica']]);
     $rigaEdit = $st->fetch() ?: null;
@@ -102,6 +123,9 @@ try {
         $grantsById[(int)$g['utente_id']][$g['turno']] = $g['livello'];
 } catch (Throwable $e) { /* tabella assente */ }
 $righe = $pdo->query("SELECT * FROM utenti ORDER BY ruolo, turno, username")->fetchAll();
+// Non-comando: vede solo i profili di cui può gestire la password.
+if (!isComando())
+    $righe = array_values(array_filter($righe, fn($r) => in_array($r['ruolo'], $RUOLI_PASSWORD, true)));
 ?>
 <!DOCTYPE html>
 <html lang="it">
@@ -135,7 +159,9 @@ $righe = $pdo->query("SELECT * FROM utenti ORDER BY ruolo, turno, username")->fe
 <nav class="navbar">
   <div class="navbar-inner">
     <a href="../index.php"  class="nav-btn">🏠 Cruscotto</a>
+    <?php if (isAdmin()): ?>
     <a href="index.php"     class="nav-btn">⚙️ Amministrazione</a>
+    <?php endif; ?>
     <a href="utenti.php"    class="nav-btn active">👤 Utenti</a>
     <a href="../logout.php" class="nav-btn ml-auto">🚪 Esci</a>
   </div>
@@ -143,12 +169,23 @@ $righe = $pdo->query("SELECT * FROM utenti ORDER BY ruolo, turno, username")->fe
 <main class="main">
   <div class="page-title">
     <h2>👤 Gestione utenti</h2>
+    <?php if (isAdmin()): ?>
     <a href="index.php" class="btn btn-grigio">← Amministrazione</a>
+    <?php endif; ?>
   </div>
 
   <?php if ($ok):     ?><div class="alert alert-ok">✅ <?= htmlspecialchars($ok) ?></div><?php endif; ?>
   <?php if ($errore): ?><div class="alert alert-err">⚠️ <?= htmlspecialchars($errore) ?></div><?php endif; ?>
 
+  <?php if (!isComando()): ?>
+  <p style="color:var(--grigio-md);margin:0 0 14px">
+    Da qui puoi reimpostare la password dei profili
+    <strong><?= implode(' e ', $RUOLI_PASSWORD) ?></strong>.
+    Creazione utenti, ruoli e permessi per turno li gestisce il Comando.
+  </p>
+  <?php endif; ?>
+
+  <?php if (isComando()): ?>
   <div class="card">
     <div class="card-head"><?= $rigaEdit ? '✏️ Modifica utente' : '➕ Nuovo utente' ?></div>
     <div style="padding:14px">
@@ -203,6 +240,7 @@ $righe = $pdo->query("SELECT * FROM utenti ORDER BY ruolo, turno, username")->fe
       </form>
     </div>
   </div>
+  <?php endif; ?>
 
   <div class="tabella-wrap" style="margin-top:16px">
     <table>
@@ -227,6 +265,7 @@ $righe = $pdo->query("SELECT * FROM utenti ORDER BY ruolo, turno, username")->fe
             <td><?= $r['attivo'] ? '● Attivo' : '○ Disattivato' ?></td>
             <td>
               <div class="azioni">
+                <?php if (isComando()): ?>
                 <a href="utenti.php?modifica=<?= (int)$r['id'] ?>" class="btn btn-grigio btn-sm">✏️ Modifica</a>
                 <?php if ((int)$r['id'] !== (int)utenteCorrente()['id']): ?>
                 <form method="POST" action="utenti.php"
@@ -234,6 +273,16 @@ $righe = $pdo->query("SELECT * FROM utenti ORDER BY ruolo, turno, username")->fe
                   <input type="hidden" name="azione" value="elimina">
                   <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
                   <button type="submit" class="btn btn-sm" style="background:var(--rosso);color:#fff">🗑️</button>
+                </form>
+                <?php endif; ?>
+                <?php else: ?>
+                <form method="POST" action="utenti.php" style="display:flex;gap:6px;justify-content:center"
+                      onsubmit="return confermaSubmit(this, 'Reimpostare la password di <?= htmlspecialchars(addslashes($r['username'])) ?>?', {titolo:'Nuova password', okLabel:'🔑 Imposta'})">
+                  <input type="hidden" name="azione" value="password">
+                  <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
+                  <input type="text" name="password" placeholder="nuova password" required minlength="6"
+                         style="padding:6px 8px;border:1px solid #d5d8dc;border-radius:6px;font-size:.82rem;width:140px">
+                  <button type="submit" class="btn btn-grigio btn-sm">🔑 Imposta</button>
                 </form>
                 <?php endif; ?>
               </div>

@@ -1092,11 +1092,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     // ── AJAX: reset foglio ───────────────────────────────────
-    // Riporta il foglio allo stato CANONICO, annullando ogni modifica manuale:
+    // Ricostruisce salti e assegnazioni dallo stato CANONICO:
     //   - salti = salto_id ± scambi salto APPROVATI (resterEffettivi)
-    //   - ferie = richieste fatte sul bot (le respinte tornano richieste)
-    //   - assegnazioni = ripopolate da zero
-    //   - assenze manuali (ferie d'ufficio, malattia, missione, permessi) = rimosse
+    //   - ferie respinte tornano richieste (rejected → pending) e riavranno l'assenza
+    //   - le assenze GIÀ INSERITE (ferie, ferie d'ufficio, malattia, missione,
+    //     permessi) RESTANO: il reset non le tocca, aggiunge solo le ferie bot
+    //     attive eventualmente senza assenza (es. quelle appena tornate pending)
     if ($azione === 'reset_foglio') {
         $tipiTurno = ($tipoParam === 'D') ? ['D', 'DN'] : ['N', 'DN'];
         $phTt      = implode(',', array_fill(0, count($tipiTurno), '?'));
@@ -1108,30 +1109,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
              WHERE data_richiesta=? AND stato='rejected' AND tipo_turno IN ($phTt)"
         )->execute(array_merge([$dataStr], $tipiTurno));
 
-        // 2. Via TUTTE le assenze del foglio (anche le manuali): vengono
-        //    ricostruite sotto solo quelle che derivano da una richiesta bot.
-        $pdo->prepare("DELETE FROM assenze WHERE foglio_id=?")->execute([$foglioId]);
-
-        // 3. Ricrea le ferie (tipo_assenza 1) da TUTTE le richieste bot attive
-        //    (pending/approved) per questo turno.
+        // 2. Ferie bot attive (pending/approved) sul turno: chi non ha ancora
+        //    un'assenza su questo foglio (di qualunque tipo) riceve l'assenza
+        //    ferie (tipo 1). Tutte le assenze esistenti restano com'erano.
         $stReq = $pdo->prepare(
             "SELECT DISTINCT vigile_id FROM bot_requests
              WHERE data_richiesta=? AND stato IN ('pending','approved') AND tipo_turno IN ($phTt)"
         );
         $stReq->execute(array_merge([$dataStr], $tipiTurno));
-        $reqVigili = $stReq->fetchAll(PDO::FETCH_COLUMN);
-        if ($reqVigili) {
+        $reqVigili = array_map('intval', $stReq->fetchAll(PDO::FETCH_COLUMN));
+
+        $stAss = $pdo->prepare("SELECT vigile_id FROM assenze WHERE foglio_id=?");
+        $stAss->execute([$foglioId]);
+        $giaAssenti = array_flip(array_map('intval', $stAss->fetchAll(PDO::FETCH_COLUMN)));
+
+        $mancanti = array_values(array_filter($reqVigili, fn($v) => !isset($giaAssenti[$v])));
+        if ($mancanti) {
             $nid = nextId($pdo, 'assenze');
             $insAss = $pdo->prepare(
                 "INSERT INTO assenze (id, foglio_id, vigile_id, tipo_assenza_id) VALUES (?,?,?,1)"
             );
-            foreach ($reqVigili as $vid) {
-                $insAss->execute([$nid++, $foglioId, (int)$vid]);
+            foreach ($mancanti as $vid) {
+                $insAss->execute([$nid++, $foglioId, $vid]);
             }
         }
 
-        // 4. Ricostruisci salti + assegnazioni dallo stato canonico.
-        //    prepopolaAssegnazioni salta chi è in ferie (assenze appena ricreate).
+        // 3. Ricostruisci salti + assegnazioni dallo stato canonico.
+        //    prepopolaAssegnazioni salta chi ha un'assenza (di qualunque tipo).
         prepopolaFoglio($pdo, $foglioId, $saltoRiposoId,
             resterEffettivi($pdo, $dataStr, $tipoParam, $saltoRiposoId), $dataStr, $tipoParam);
 
@@ -1674,7 +1678,7 @@ function colorePatentePHP(?string $patente): string {
             <div style="font-size:1.4rem;font-weight:700;margin-bottom:8px">Reset servizio</div>
             <div style="color:#555;margin-bottom:24px">
                 Tutte le assegnazioni verranno cancellate e ricostruite da zero.<br><br>
-              <strong>Salti e ferie/assenze restano invariati.</strong><br><br>
+              <strong>Le assenze inserite (ferie, malattie, missioni, permessi) restano invariate.</strong><br><br>
               Continuare?
             </div>
             <div style="display:flex;gap:12px;justify-content:center">

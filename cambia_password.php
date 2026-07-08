@@ -53,6 +53,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <nav class="navbar">
   <div class="navbar-inner">
     <a href="index.php" class="nav-btn">🏠 Cruscotto</a>
+    <?php if (!isAdmin()): ?>
+    <a href="admin/utenti.php" class="nav-btn">👤 Password profili user</a>
+    <?php endif; ?>
     <a href="logout.php" class="nav-btn ml-auto">🚪 Esci</a>
   </div>
 </nav>

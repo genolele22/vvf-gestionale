@@ -138,14 +138,14 @@ $nFur     = contaTab($pdo, "SELECT COUNT(*) FROM furieri_fissi ff JOIN vigili v 
 
   <div class="admin-grid">
 
-    <?php if (isComando()): ?>
     <a href="utenti.php" class="admin-card">
       <div class="ac-ico">👤</div>
       <h3>Gestione utenti</h3>
-      <p>Account di accesso: comando, admin e user per turno. Crea utenti, assegna ruolo/turno, reimposta password.</p>
+      <p><?= isComando()
+          ? 'Account di accesso: comando, admin e user per turno. Crea utenti, assegna ruolo/turno, reimposta password.'
+          : 'Reimposta in autonomia la password dei profili admin e user, senza passare dal Comando.' ?></p>
       <div class="ac-meta"><?= contaTab($pdo, "SELECT COUNT(*) FROM utenti") ?> utenti</div>
     </a>
-    <?php endif; ?>
 
     <a href="anagrafiche.php" class="admin-card">
       <div class="ac-ico">🗂️</div>
