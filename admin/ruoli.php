@@ -140,6 +140,7 @@ $furRows = $pdo->query(
     <a href="../vigili/lista.php" class="nav-btn">👥 Personale</a>
     <a href="../ferie/index.php"  class="nav-btn">🗓️ Agenda</a>
     <a href="index.php"           class="nav-btn active">⚙️ Amministrazione</a>
+    <span style="margin-left:auto"><?= turnoComandoHtml() ?></span>
   </div>
 </nav>
 <main class="main">

@@ -538,7 +538,8 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
     <a href="index.php"             class="nav-btn active">🗓️ Agenda</a>
     <a href="../report/index.php"   class="nav-btn">📊 Reportistica</a>
     <a href="../admin/index.php"    class="nav-btn">⚙️ Amministrazione</a>
-    <a href="../logout.php"         class="nav-btn ml-auto">🚪 Esci</a>
+    <span style="margin-left:auto"><?= turnoComandoHtml() ?></span>
+    <a href="../logout.php"         class="nav-btn">🚪 Esci</a>
   </div>
 </nav>
 

@@ -82,8 +82,8 @@ function puoModificareTurnoAttivo(): bool { return puoModificareTurno(turnoAttiv
 /**
  * Turno per le pagine di Amministrazione: fisso sul turno di casa (admin/user
  * non possono cambiarlo, niente tendina). Comando non ha un turno di casa
- * (gestisce tutti i turni): per lui segue il turno attivo di sessione, lo
- * stesso scelto con le tab del cruscotto — nessuna UI separata da costruire.
+ * (gestisce tutti i turni): per lui segue il turno attivo di sessione, scelto
+ * col selettore di `turnoComandoHtml()` qui sotto.
  */
 function turnoAmministrazione(): string { return turnoCorrente() ?: turnoAttivo(); }
 
@@ -93,6 +93,28 @@ function soloLetturaAttivo(): bool { return !puoModificareTurnoAttivo(); }
 /** Elenco dei turni che l'utente può VEDERE (per la tendina in navbar). */
 function turniVisibili(): array {
     return array_values(array_filter(['A', 'B', 'C', 'D'], 'puoVedereTurno'));
+}
+
+/**
+ * Selettore turno per il SOLO Comando: unico ruolo senza un turno di casa, che
+ * quindi lavora su tutti i turni cambiando quello attivo di sessione (usato come
+ * fallback da `turnoAmministrazione()` e da `turnoCorrente() ?: turnoAttivo()`
+ * nelle pagine turno-scoped). Vuoto per admin/user: per loro il turno resta
+ * fisso sul proprio, niente da scegliere.
+ */
+function turnoComandoHtml(): string {
+    if (!isComando()) return '';
+    $att  = turnoAttivo();
+    $opts = '';
+    foreach (turniVisibili() as $t) {
+        $opts .= '<option value="' . $t . '"' . ($t === $att ? ' selected' : '') . '>Turno ' . $t . '</option>';
+    }
+    return '<select class="nav-turno" title="Turno su cui sta lavorando il Comando" '
+         . 'style="padding:5px 8px;border-radius:6px;border:1px solid #cbd2d9;'
+         . 'font:inherit;font-size:.82rem;font-weight:700;background:#fff;cursor:pointer" '
+         . 'onchange="var p=new URLSearchParams(location.search);p.set(\'turno\',this.value);'
+         . 'location.href=location.pathname+\'?\'+p.toString()">'
+         . $opts . '</select>';
 }
 
 /**

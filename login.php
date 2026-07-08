@@ -18,6 +18,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $u = $st->fetch();
         if ($u && password_verify($password, $u['password'])) {
             session_regenerate_id(true);
+            unset($_SESSION['turno_attivo']);   // niente turno ereditato da una sessione precedente
             $_SESSION['utente'] = [
                 'id'       => (int)$u['id'],
                 'username' => $u['username'],

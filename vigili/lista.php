@@ -8,10 +8,14 @@ $pdo     = getDB();
 $errore  = '';
 $sucesso = '';
 
+// Turno fisso sul turno di casa (admin/user niente switch qui); Comando segue
+// l'attivo di sessione, cambiabile col selettore in navbar (turnoComandoHtml()).
+$TURNO = turnoAmministrazione();
+
 // ── AZIONI POST (solo admin/comando: l'anagrafica si modifica da admin) ──────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     richiediAdmin();
-    vietaSeSolaLetturaTurno();   // anagrafica modificabile solo se hai scrittura sul turno attivo
+    vietaSeSolaLetturaTurno($TURNO);   // anagrafica modificabile solo se hai scrittura sul turno
     $azione         = $_POST['azione']                  ?? '';
     $cognome        = strtoupper(trim($_POST['cognome'] ?? ''));
     $nome           = trim($_POST['nome']               ?? '');
@@ -25,6 +29,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $attivo         = isset($_POST['attivo'])           ? 1 : 0;
     $specialista    = isset($_POST['specialista'])      ? 1 : 0;
     $note           = trim($_POST['note']               ?? '');
+    // Cambio turno al vigile: solo Comando può farlo (capita spesso nei trasferimenti
+    // tra turni). Per admin/user il vigile resta/nasce sempre nel proprio turno di casa.
+    $turnoVigile    = isComando() ? strtoupper(substr((string)($_POST['turno'] ?? ''), 0, 1)) : $TURNO;
 
     // Coerenza patenti: la 4 presuppone la 3. Se arriva la 4 senza la 3
     // (es. JS bypassato), aggiungo la 3 lato server.
@@ -44,8 +51,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // obbligatori" le bloccherebbe (la form manda solo azione + id).
     if (in_array($azione, ['elimina', 'riattiva', 'elimina_def'], true)) {
         $id = (int)($_POST['id'] ?? 0);
-        if ($id <= 0) {
+        $turnoTarget = false;
+        if ($id > 0) {
+            $stT = $pdo->prepare("SELECT turno FROM vigili WHERE id=?");
+            $stT->execute([$id]);
+            $turnoTarget = $stT->fetchColumn();
+        }
+        if ($id <= 0 || $turnoTarget === false) {
             $errore = 'Vigile non valido.';
+        } elseif (!puoModificareTurno($turnoTarget)) {
+            $errore = 'Non puoi modificare un vigile di un altro turno.';
         } elseif ($azione === 'elimina') {
             $pdo->prepare("UPDATE vigili SET attivo=0 WHERE id=?")->execute([$id]);
             $sucesso = 'Vigile disattivato.';
@@ -82,6 +97,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errore = 'Cognome, qualifica, sede e salto turno sono obbligatori.';
     } elseif ($email !== null && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $errore = 'Indirizzo email non valido.';
+    } elseif (!in_array($turnoVigile, ['A', 'B', 'C', 'D'], true)) {
+        $errore = 'Turno non valido.';
     } else {
 
         if ($azione === 'inserisci') {
@@ -91,7 +108,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                  (id,cognome,nome,disambiguatore,email,qualifica_id,sede_id,salto_id,attivo,specialista,note,turno)
                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
             )->execute([$vid,$cognome,$nome,$disambiguatore,$email,
-                        $qualifica_id,$sede_id,$salto_id,$attivo,$specialista,$note,turnoAttivo()]);
+                        $qualifica_id,$sede_id,$salto_id,$attivo,$specialista,$note,$turnoVigile]);
 
             foreach ($patenti as $pid) {
                 $pdo->prepare(
@@ -107,28 +124,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         } elseif ($azione === 'modifica') {
             $id = (int)($_POST['id'] ?? 0);
-            $pdo->prepare(
-                "UPDATE vigili
-                 SET cognome=?,nome=?,disambiguatore=?,email=?,qualifica_id=?,
-                     sede_id=?,salto_id=?,attivo=?,specialista=?,note=?
-                 WHERE id=?"
-            )->execute([$cognome,$nome,$disambiguatore,$email,
-                        $qualifica_id,$sede_id,$salto_id,$attivo,$specialista,$note,$id]);
+            $stT = $pdo->prepare("SELECT turno FROM vigili WHERE id=?");
+            $stT->execute([$id]);
+            $turnoAttuale = $stT->fetchColumn();
 
-            $pdo->prepare("DELETE FROM vigili_patenti WHERE vigile_id=?")->execute([$id]);
-            foreach ($patenti as $pid) {
+            if ($turnoAttuale === false || !puoModificareTurno($turnoAttuale)) {
+                $errore = 'Non puoi modificare un vigile di un altro turno.';
+            } else {
+                // Il turno si tocca SOLO se Comando (per admin/user $turnoVigile === $TURNO,
+                // già quello che ha il vigile: la UPDATE lo riscrive senza cambiarlo).
                 $pdo->prepare(
-                    "INSERT INTO vigili_patenti (vigile_id,patente_id) VALUES (?,?)"
-                )->execute([$id,(int)$pid]);
-            }
+                    "UPDATE vigili
+                     SET cognome=?,nome=?,disambiguatore=?,email=?,qualifica_id=?,
+                         sede_id=?,salto_id=?,attivo=?,specialista=?,note=?,turno=?
+                     WHERE id=?"
+                )->execute([$cognome,$nome,$disambiguatore,$email,
+                            $qualifica_id,$sede_id,$salto_id,$attivo,$specialista,$note,$turnoVigile,$id]);
 
-            $pdo->prepare("DELETE FROM vigili_abilitazioni WHERE vigile_id=?")->execute([$id]);
-            foreach ($abilitazioni as $aid) {
-                $pdo->prepare(
-                    "INSERT INTO vigili_abilitazioni (vigile_id,abilitazione_id) VALUES (?,?)"
-                )->execute([$id,(int)$aid]);
+                $pdo->prepare("DELETE FROM vigili_patenti WHERE vigile_id=?")->execute([$id]);
+                foreach ($patenti as $pid) {
+                    $pdo->prepare(
+                        "INSERT INTO vigili_patenti (vigile_id,patente_id) VALUES (?,?)"
+                    )->execute([$id,(int)$pid]);
+                }
+
+                $pdo->prepare("DELETE FROM vigili_abilitazioni WHERE vigile_id=?")->execute([$id]);
+                foreach ($abilitazioni as $aid) {
+                    $pdo->prepare(
+                        "INSERT INTO vigili_abilitazioni (vigile_id,abilitazione_id) VALUES (?,?)"
+                    )->execute([$id,(int)$aid]);
+                }
+                $sucesso = 'Vigile aggiornato correttamente.';
             }
-            $sucesso = 'Vigile aggiornato correttamente.';
         }
     }
 }
@@ -140,7 +167,7 @@ $filtroStato = $_GET['stato']        ?? 'attivi';
 $filtroTesto = trim($_GET['cerca']   ?? '');
 
 $where  = ['v.turno = ?'];                 // multi-turno: solo il turno in vista
-$params = [turnoAttivo()];
+$params = [$TURNO];
 if ($filtroStato === 'attivi') { $where[] = 'v.attivo = 1'; }
 if ($filtroSede  > 0) { $where[] = 'v.sede_id = ?';  $params[] = $filtroSede;  }
 if ($filtroSalto > 0) { $where[] = 'v.salto_id = ?'; $params[] = $filtroSalto; }
@@ -239,9 +266,9 @@ if (!empty($vigili)) {
     <div class="header-logo">🚒</div>
     <div class="header-testi">
       <h1>Comando Provinciale VVF di Genova</h1>
-      <p>Gestionale Foglio di Servizio &mdash; Turno B</p>
+      <p>Gestionale Foglio di Servizio &mdash; Turno <?= htmlspecialchars($TURNO) ?></p>
     </div>
-    <div class="header-badge">TURNO&nbsp;B</div>
+    <div class="header-badge">TURNO&nbsp;<?= htmlspecialchars($TURNO) ?></div>
   </div>
 </header>
 <!-- NAVBAR -->
@@ -253,13 +280,14 @@ if (!empty($vigili)) {
     <a href="../ferie/index.php"  class="nav-btn">🗓️ Agenda</a>
     <a href="../report/index.php" class="nav-btn">📊 Reportistica</a>
     <a href="../admin/index.php"  class="nav-btn">⚙️ Amministrazione</a>
-    <a href="../logout.php"       class="nav-btn ml-auto">🚪 Esci</a>
+    <span style="margin-left:auto"><?= turnoComandoHtml() ?></span>
+    <a href="../logout.php"       class="nav-btn">🚪 Esci</a>
   </div>
 </nav>
 <!-- MAIN -->
 <main class="main">
   <div class="page-title">
-    <h2>👥 Gestione Personale — Turno B</h2>
+    <h2>👥 Gestione Personale — Turno <?= htmlspecialchars($TURNO) ?></h2>
     <?php if (isAdmin() && !$vigileEdit && !isset($_GET['nuovo'])): ?>
       <a href="lista.php?nuovo=1" class="btn btn-rosso">➕ Nuovo Vigile</a>
     <?php endif; ?>
@@ -348,6 +376,19 @@ if (!empty($vigili)) {
               <?php endforeach; ?>
             </select>
           </div>
+          <?php if (isComando()): ?>
+          <div class="form-group">
+            <label>Turno *</label>
+            <select name="turno" required>
+              <?php foreach (['A', 'B', 'C', 'D'] as $t): ?>
+                <option value="<?= $t ?>"
+                  <?= ($vigileEdit ? $vigileEdit['turno'] : $TURNO) === $t ? 'selected' : '' ?>>
+                  Turno <?= $t ?>
+                </option>
+              <?php endforeach; ?>
+            </select>
+          </div>
+          <?php endif; ?>
           <div class="form-group full">
             <label>Patenti</label>
             <div class="patenti-group" id="patentiGroup">
