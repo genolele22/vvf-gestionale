@@ -225,8 +225,10 @@ class FoglioRenderer
     private function arricchisciFerie(): void
     {
         if (empty($this->perTipo['FER'])) return;
+        // stato serve a blocchiContigui() per isolare le richieste RESPINTE (non
+        // devono mai far da ponte tra due periodi accettati, vedi ferie_blocchi.php).
         $req = $this->pdo->prepare(
-            "SELECT data_richiesta, tipo_turno FROM bot_requests
+            "SELECT data_richiesta, tipo_turno, stato FROM bot_requests
               WHERE vigile_id=? ORDER BY data_richiesta"
         );
         foreach ($this->perTipo['FER'] as $i => $a) {
