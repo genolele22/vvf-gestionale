@@ -2542,10 +2542,14 @@ function showMsg(txt, tipo = 'ok') {
     setTimeout(() => b.innerHTML = '', 3500);
 }
 
+// "Disponibile" = card in organico non occupata (.assente = occupato altrove).
+function contaDisponibili() {
+    return document.querySelectorAll('#organicoList .persona-card:not(.assente)').length;
+}
+
 function aggiornaContatore() {
     // Conteggio separato: operativi vs specialisti (gli specialisti vanno calcolati
-    // a parte e in futuro restano fuori dalla reportistica). "Disponibile" = card
-    // in organico non occupata (.assente = occupato altrove).
+    // a parte e in futuro restano fuori dalla reportistica).
     const liberi = document.querySelectorAll('#organicoList .persona-card:not(.assente)');
     let op = 0, spec = 0;
     liberi.forEach(c => (c.dataset.spec === '1' ? spec++ : op++));
@@ -2555,6 +2559,25 @@ function aggiornaContatore() {
             ? `${op + spec} disponibili · ${op} op + ${spec} spec`
             : `${op} disponibili`;
     }
+}
+
+// Avvisa se resta personale in Disponibili prima di un'azione di chiusura
+// servizio (genera .odt / invio comunicazioni): a servizio concluso quella
+// casella dovrebbe essere vuota (tutti assegnati, in salto o assenti).
+// Non blocca — è solo un promemoria, l'operatore può procedere comunque.
+function avvisaSeDisponibiliResidui(messaggioAzione, onProcedi) {
+    const n = contaDisponibili();
+    if (n === 0) { onProcedi(); return; }
+    chiediConferma({
+        titolo:  '⚠️ Personale ancora disponibile',
+        testo:   `Ci sono ancora <b>${n}</b> vigile${n === 1 ? '' : 'i'} in <b>Disponibili</b>, `
+               + `non assegnati a nessuna posizione.<br>`
+               + `A servizio concluso la casella dovrebbe essere vuota.<br><br>`
+               + `Vuoi procedere comunque con ${messaggioAzione}?`,
+        okLabel: 'Procedi comunque',
+        okStyle: 'background:var(--rosso);color:#fff',
+        onOk:    onProcedi,
+    });
 }
 
 async function ajax(data) {
@@ -3876,15 +3899,30 @@ async function annullaScambio(scambioId) {
 }
 
 // Scarica ODT = solo export del documento. NON approva ferie né notifica:
-// quello avviene dal tasto Salva (con conferma). Download diretto.
+// quello avviene dal tasto Salva (con conferma). Download diretto, salvo
+// l'avviso se resta personale in Disponibili (blocca la navigazione di
+// default finché non si conferma, poi riparte manualmente).
 function scaricaOdt(a) {
+    if (contaDisponibili() > 0) {
+        avvisaSeDisponibiliResidui('lo scarico del .odt', () => { window.location.href = a.href; });
+        return false;
+    }
     return true;
 }
 
-// proponiFerie: solo il tasto "💾 Salva" propone di approvare le ferie pending.
-// Drag/svuota di capo/vice salvano in silenzio (niente popup approva ferie).
+// proponiFerie: solo il tasto "✉️ Invia" propone di approvare le ferie pending
+// (e qui avvisa se resta personale in Disponibili). Drag/svuota di capo/vice
+// salvano in silenzio (niente popup, né approva-ferie né disponibili-residui).
 async function salvaIntestazioneAjax(proponiFerie = false) {
     if (BLOCCATO) { showMsg('🔒 Foglio bloccato.', 'err'); return; }
+    if (proponiFerie && contaDisponibili() > 0) {
+        avvisaSeDisponibiliResidui('l\'invio delle comunicazioni', () => _salvaIntestazioneEsegui(proponiFerie));
+        return;
+    }
+    await _salvaIntestazioneEsegui(proponiFerie);
+}
+
+async function _salvaIntestazioneEsegui(proponiFerie) {
     const res = await ajax({
         azione:           'salva_intestazione',
         capo_servizio_id: document.getElementById('csId').value,
