@@ -832,8 +832,12 @@ async function setStato(ids, stato) {
         return;
     }
 
-    // Aggiorna lo stato in pagina senza reload usando gli esiti reali dal server
-    // (accettare NON retrocede una ferie già approvata/comunicata → resta approved).
+    // Aggiorna subito le spunte/badge (feedback immediato), poi ricarica: i blocchi
+    // (quali turni stanno nella stessa card, periodo/nr_turni mostrati) li calcola
+    // solo PHP con blocchiContigui() al render — un turno che cambia stato può
+    // dover uscire dal blocco corrente o unirsi a un altro, cosa che l'update in
+    // pagina da solo non può rappresentare (restava "accorpato"/"disaccorpato"
+    // finché non si premeva F5).
     const esiti = res.esiti || {};
     ids.forEach(id => {
         const riga = document.querySelector(`.turno-riga[data-id="${id}"]`);
@@ -844,6 +848,8 @@ async function setStato(ids, stato) {
         ? ` — ⚠️ ${res.gia_notificati} già notificato/i: avvisa il vigile a voce`
         : '';
     showMsg(`✅ ${res.aggiornati} turno/i → ${STATO_LABEL[stato]}${extra}`, 'ok');
+    sessionStorage.setItem('agendaScrollY', window.scrollY);
+    setTimeout(() => location.reload(), 700);
 }
 
 // Badge comunicazione di un turno, calcolato dallo stato + dai flag sent per esito
