@@ -128,9 +128,9 @@ $furRows = $pdo->query(
     <div class="header-logo">🚒</div>
     <div class="header-testi">
       <h1>Comando Provinciale VVF di Genova</h1>
-      <p>Gestionale Foglio di Servizio &mdash; Turno B</p>
+      <p>Gestionale Foglio di Servizio &mdash; Turno <?= htmlspecialchars($TURNO) ?></p>
     </div>
-    <div class="header-badge">TURNO&nbsp;B</div>
+    <div class="header-badge">TURNO&nbsp;<?= htmlspecialchars($TURNO) ?></div>
   </div>
 </header>
 <nav class="navbar">

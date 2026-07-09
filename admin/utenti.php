@@ -15,6 +15,16 @@ $ok     = '';
 $RUOLI  = ['comando' => 'Comando', 'admin' => 'Admin di turno', 'user' => 'User (sola lettura)'];
 $TURNI  = ['A','B','C','D'];
 
+// Revoca le sessioni attive di un utente (tabella `sessioni`, dati PHP-serializzati:
+// la chiave 'id' dentro $_SESSION['utente'] compare come s:2:"id";i:<id>;).
+// Senza questa, un utente eliminato o disattivato resterebbe loggato fino a 12h.
+function revocaSessioniUtente(PDO $pdo, int $utenteId): void {
+    try {
+        $pdo->prepare("DELETE FROM sessioni WHERE data LIKE ?")
+            ->execute(['%s:2:"id";i:' . $utenteId . ';%']);
+    } catch (Throwable $e) { /* tabella assente (sessioni su file): niente da revocare */ }
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $azione = $_POST['azione'] ?? '';
     try {
@@ -87,11 +97,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             $pdo->prepare("UPDATE utenti SET turno=? WHERE id=?")->execute([$homeTurno, $targetId]);
             $pdo->commit();
+            if (!$attivo && $targetId !== (int)utenteCorrente()['id']) {
+                revocaSessioniUtente($pdo, $targetId);   // disattivato → fuori subito
+            }
         } elseif ($azione === 'elimina') {
             $id = (int)($_POST['id'] ?? 0);
             if ($id === (int)utenteCorrente()['id']) throw new RuntimeException('Non puoi eliminare il tuo stesso account.');
             $pdo->prepare("DELETE FROM utenti_turni WHERE utente_id=?")->execute([$id]);
             $pdo->prepare("DELETE FROM utenti WHERE id=?")->execute([$id]);
+            revocaSessioniUtente($pdo, $id);
             $ok = 'Utente eliminato.';
         }
     } catch (Throwable $e) {
@@ -151,9 +165,9 @@ if (!isComando())
     <div class="header-logo">🚒</div>
     <div class="header-testi">
       <h1>Comando Provinciale VVF di Genova</h1>
-      <p>Gestionale Foglio di Servizio &mdash; Turno B</p>
+      <p>Gestionale Foglio di Servizio &mdash; Turno <?= htmlspecialchars(turnoCorrente() ?: turnoAttivo()) ?></p>
     </div>
-    <div class="header-badge">TURNO&nbsp;B</div>
+    <div class="header-badge">TURNO&nbsp;<?= htmlspecialchars(turnoCorrente() ?: turnoAttivo()) ?></div>
   </div>
 </header>
 <nav class="navbar">

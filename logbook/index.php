@@ -76,7 +76,7 @@ foreach ($voci as $v) { $v['fatto'] ? $nFatte++ : $nDaFare++; }
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Logbook – Gestionale Turno B</title>
+<title>Logbook – Gestionale VVF</title>
 <link rel="stylesheet" href="../assets/css/stile.css">
 <style>
   .lb-wrap   { max-width: 820px; margin: 0 auto; }
@@ -108,9 +108,9 @@ foreach ($voci as $v) { $v['fatto'] ? $nFatte++ : $nDaFare++; }
     <div class="header-logo">🚒</div>
     <div class="header-testi">
       <h1>Comando Provinciale VVF di Genova</h1>
-      <p>Gestionale Foglio di Servizio &mdash; Turno B</p>
+      <p>Gestionale Foglio di Servizio &mdash; Turno <?= htmlspecialchars(turnoCorrente() ?: turnoAttivo()) ?></p>
     </div>
-    <div class="header-badge">TURNO&nbsp;B</div>
+    <div class="header-badge">TURNO&nbsp;<?= htmlspecialchars(turnoCorrente() ?: turnoAttivo()) ?></div>
   </div>
 </header>
 
