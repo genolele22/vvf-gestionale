@@ -258,7 +258,6 @@ if ($reqIds) {
 function comunicazioneTurno(array $r, array $outboxReq): array {
     $kind = $r['stato'] === 'rejected' ? 'neg' : 'ok';
     if (($outboxReq[(int)$r['id']][$kind] ?? null) === 'sent') return ['comunicata', '✉️ comunicata'];
-    if ($r['stato'] === 'pending')                             return ['attesa',     '⏳ attesa'];
     return ['dainviare', '📨 da inviare'];
 }
 
@@ -466,12 +465,11 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
 .turno-riga:last-child { border-bottom: none; }
 .turno-riga[data-stato="rejected"] { opacity: .6; }
 
-/* Badge comunicazione per-turno (comunicata / da inviare / attesa) */
+/* Badge comunicazione per-turno (comunicata / da inviare) */
 .com-badge { font-size: .72rem; font-weight: 600; padding: 1px 7px; border-radius: 10px;
              white-space: nowrap; margin-right: 8px; }
 .com-comunicata { background: var(--verde-bg); color: var(--verde); border: 1px solid #a9dfbf; }
 .com-dainviare  { background: #fff3e0; color: #b56a00; border: 1px solid #f5c896; }
-.com-attesa     { background: #fef9e7; color: #b7950b; border: 1px solid #f9e79f; }
 
 .turno-data { font-weight: 600; color: var(--grigio-sc); width: 60px; }
 .turno-dow  { color: var(--grigio-md); width: 28px; }
@@ -857,8 +855,7 @@ async function setStato(ids, stato) {
 function comBadgeTurno(riga) {
     const st   = riga.dataset.stato;
     const sent = st === 'rejected' ? riga.dataset.sneg === '1' : riga.dataset.sok === '1';
-    if (sent)             return ['comunicata', '✉️ comunicata'];
-    if (st === 'pending') return ['attesa',     '⏳ attesa'];
+    if (sent) return ['comunicata', '✉️ comunicata'];
     return ['dainviare', '📨 da inviare'];
 }
 

@@ -3,14 +3,13 @@
 // l'ODT (FoglioRenderer.php), così il conteggio turni e il periodo sono
 // calcolati nello stesso identico modo.
 //
-// Un "blocco" = richieste di ferie consecutive di un vigile con gap <= 3 giorni,
-// nessuna delle quali respinta. Una richiesta RESPINTA non ha assenza sul foglio
-// (vedi feriaSyncAssenza) → non è mai parte di un'assenza reale e quindi non può
-// "far da ponte" tra due richieste accettate: rompe sempre la contiguità, anche
-// se la sua distanza è <= 3 giorni. Senza questa regola, una sequenza tipo
-// accettato-respinto-respinto-accettato veniva letta come UN blocco di 4 turni
-// (sbagliato sia sull'ODT che sull'aggregato in Agenda): la richiesta respinta
-// va isolata nel suo blocco singolo, gli accettati restano separati.
+// Un "blocco" = richieste di ferie consecutive di un vigile con gap <= 3 giorni
+// E stesso "gruppo" (respinta o non-respinta). Una richiesta RESPINTA non ha
+// assenza sul foglio (vedi feriaSyncAssenza): non può mai far da ponte tra due
+// richieste ACCETTATE (accettato-respinto-respinto-accettato non è un blocco
+// unico di 4 turni), ma due o più respinte consecutive restano un blocco loro
+// — sono comunque contigue, solo di segno opposto. Il cambio di gruppo rompe
+// sempre il blocco, a prescindere dalla distanza in giorni.
 // turniLabel = nr turni del blocco (DN vale 2). periodLabel = etichetta da–a.
 
 if (!function_exists('blocchiContigui')) {
@@ -24,9 +23,9 @@ function blocchiContigui(array $richieste): array {
         $currReq = $richieste[$i];
         $prev = new DateTime($prevReq['data_richiesta']);
         $curr = new DateTime($currReq['data_richiesta']);
-        $contiguo = (int)$curr->diff($prev)->days <= 3
-                 && ($prevReq['stato'] ?? null) !== 'rejected'
-                 && ($currReq['stato'] ?? null) !== 'rejected';
+        $stessoGruppo = (($prevReq['stato'] ?? null) === 'rejected')
+                      === (($currReq['stato'] ?? null) === 'rejected');
+        $contiguo = (int)$curr->diff($prev)->days <= 3 && $stessoGruppo;
         if ($contiguo) {
             $current[] = $currReq;
         } else {
