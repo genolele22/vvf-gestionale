@@ -979,6 +979,21 @@ async function eseguiScambio(sid, stato) {
 
 sincronizzaDOM();
 
+// ── Auto-refresh: aggiorna la pagina ogni 60s per vedere richieste/scambi
+// nuovi o cambiati da un'altra sessione (bot o altro operatore), senza dover
+// ricaricare a mano. Salta il giro se un dettaglio è aperto (non richiuderlo
+// sotto le mani mentre lo si sta consultando) e mantiene lo scroll tra un
+// refresh e l'altro.
+if (sessionStorage.getItem('agendaScrollY') !== null) {
+    window.scrollTo(0, parseInt(sessionStorage.getItem('agendaScrollY'), 10));
+    sessionStorage.removeItem('agendaScrollY');
+}
+setInterval(() => {
+    if (document.querySelector('.turni-detail.open')) return;
+    sessionStorage.setItem('agendaScrollY', window.scrollY);
+    location.reload();
+}, 60000);
+
 // #87 — apertura da "clic sulla data" del foglio: ?goto=YYYY-MM-DD → scrolla in
 // cima alla sezione di quel giorno; se quel giorno non ha ferie, va alla prima
 // sezione a partire da quella data (così si atterra comunque nel punto giusto).
