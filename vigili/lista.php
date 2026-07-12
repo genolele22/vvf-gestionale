@@ -292,12 +292,6 @@ if (!empty($vigili)) {
       <a href="lista.php?nuovo=1" class="btn btn-rosso">➕ Nuovo Vigile</a>
     <?php endif; ?>
   </div>
-  <?php if ($sucesso): ?>
-    <div class="alert alert-ok">✅ <?= htmlspecialchars($sucesso) ?></div>
-  <?php endif; ?>
-  <?php if ($errore): ?>
-    <div class="alert alert-err">⚠️ <?= htmlspecialchars($errore) ?></div>
-  <?php endif; ?>
   <!-- ══ FORM INSERIMENTO / MODIFICA (solo admin) ═════════════ -->
   <?php if (isAdmin() && (isset($_GET['nuovo']) || $vigileEdit)): ?>
   <div class="card">

@@ -2534,12 +2534,8 @@ let _dragExt    = null;  // nome esterno trascinato: {extId, nome, str, source, 
 // ════════════════════════════════════════════════════════════
 // UTILITY
 // ════════════════════════════════════════════════════════════
-function showMsg(txt, tipo = 'ok') {
-    // Niente striscia di conferma ad ogni movimento: mostro solo gli errori.
-    if (tipo !== 'err') return;
-    const b = document.getElementById('msgBox');
-    b.innerHTML = `<div class="alert alert-${tipo}">${txt}</div>`;
-    setTimeout(() => b.innerHTML = '', 3500);
+function showMsg() {
+    // Nessuno stato/toast a video: silenzioso anche sugli errori.
 }
 
 // "Disponibile" = card in organico non occupata (.assente = occupato altrove).

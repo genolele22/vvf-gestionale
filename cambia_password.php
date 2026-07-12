@@ -66,9 +66,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     (<?= htmlspecialchars(ucfirst($uc['ruolo'])) ?><?= $uc['turno'] ? ' · turno ' . htmlspecialchars($uc['turno']) : '' ?>).
   </p>
 
-  <?php if ($ok):     ?><div class="alert alert-ok">✅ <?= htmlspecialchars($ok) ?></div><?php endif; ?>
-  <?php if ($errore): ?><div class="alert alert-err">⚠️ <?= htmlspecialchars($errore) ?></div><?php endif; ?>
-
   <div class="card" style="max-width:420px">
     <div style="padding:18px">
       <form method="POST" action="cambia_password.php">

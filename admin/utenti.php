@@ -188,9 +188,6 @@ if (!isComando())
     <?php endif; ?>
   </div>
 
-  <?php if ($ok):     ?><div class="alert alert-ok">✅ <?= htmlspecialchars($ok) ?></div><?php endif; ?>
-  <?php if ($errore): ?><div class="alert alert-err">⚠️ <?= htmlspecialchars($errore) ?></div><?php endif; ?>
-
   <?php if (!isComando()): ?>
   <p style="color:var(--grigio-md);margin:0 0 14px">
     Da qui puoi reimpostare la password dei profili

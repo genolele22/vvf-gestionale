@@ -107,10 +107,6 @@ $nFur     = contaTab($pdo, "SELECT COUNT(*) FROM furieri_fissi ff JOIN vigili v 
     Dati fissi del gestionale: anagrafiche di sistema, assegnazioni ricorrenti e parametri.
   </p>
 
-  <?php if ($msgPausa): ?>
-    <div class="alert alert-ok" style="margin-bottom:12px">✅ <?= htmlspecialchars($msgPausa) ?></div>
-  <?php endif; ?>
-
   <!-- Interruttore pausa bot Telegram -->
   <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;
               background:<?= $botPausa ? '#fdecea' : '#eafaf1' ?>;

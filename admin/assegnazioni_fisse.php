@@ -130,9 +130,6 @@ function nomeVigile(array $r): string {
     (l'applicazione automatica sul foglio è il passo successivo).
   </p>
 
-  <?php if ($sucesso): ?><div class="alert alert-ok">✅ <?= htmlspecialchars($sucesso) ?></div><?php endif; ?>
-  <?php if ($errore):  ?><div class="alert alert-err">⚠️ <?= htmlspecialchars($errore) ?></div><?php endif; ?>
-
   <div class="card">
     <div class="card-head">➕ Nuova regola</div>
     <div style="padding:14px">

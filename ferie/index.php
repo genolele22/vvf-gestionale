@@ -794,10 +794,8 @@ function toggleDetail(id) {
     if (icon) icon.textContent = open ? '▼' : '▶';
 }
 
-function showMsg(html, cls) {
-    const box = document.getElementById('msgBox');
-    box.innerHTML = `<div class="alert alert-${cls}">${html}</div>`;
-    setTimeout(() => { box.innerHTML = ''; }, 2500);
+function showMsg() {
+    // Nessuno stato/toast a video: silenzioso anche sugli errori.
 }
 
 // ── Spunta singola accetto/respingo (binaria: una sempre attiva) ───

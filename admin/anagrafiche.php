@@ -193,9 +193,6 @@ function valoreColonna(string $tipo, $v, array $sediMap): string {
     <a href="index.php" class="btn btn-grigio">← Amministrazione</a>
   </div>
 
-  <?php if ($sucesso): ?><div class="alert alert-ok">✅ <?= htmlspecialchars($sucesso) ?></div><?php endif; ?>
-  <?php if ($errore):  ?><div class="alert alert-err">⚠️ <?= htmlspecialchars($errore) ?></div><?php endif; ?>
-
   <div class="tabs">
     <?php foreach ($TABELLE as $k => $t): ?>
       <a href="anagrafiche.php?tab=<?= $k ?>" class="tab <?= $k === $tab ? 'active' : '' ?>">

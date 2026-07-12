@@ -733,6 +733,7 @@ body.cruscotto-bloccato .foglio-layout {
     padding: 12px 18px; border-radius: 6px; margin-bottom: 16px;
     font-size: .875rem; font-weight: 500;
     display: flex; align-items: center; gap: 10px;
+    box-shadow: var(--shadow);
 }
 .alert-ok  { background: var(--verde-bg); color: var(--verde); border: 1px solid #a9dfbf; }
 .alert-err { background: #fdf2f2;         color: var(--rosso); border: 1px solid #f5b7b1; }
