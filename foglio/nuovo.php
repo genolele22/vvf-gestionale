@@ -508,6 +508,25 @@ function countOccupanti(PDO $pdo, int $foglioId, int $posId, int $exclVigile = 0
     return (int)$st->fetchColumn();
 }
 
+// Righe (campo `ordine`) già occupate in una posizione, vigili+esterni (per
+// piazzare senza scavalcare nessuno: niente compattazione automatica, #logbook).
+function ordiniOccupati(PDO $pdo, int $foglioId, int $posId, int $exclVigile = 0): array {
+    $st = $pdo->prepare(
+        "SELECT ordine FROM assegnazioni WHERE foglio_id=? AND posizione_id=? AND vigile_id<>?
+         UNION ALL
+         SELECT ordine FROM assegnazioni_esterni WHERE foglio_id=? AND posizione_id=?"
+    );
+    $st->execute([$foglioId, $posId, $exclVigile, $foglioId, $posId]);
+    return array_map('intval', $st->fetchAll(PDO::FETCH_COLUMN));
+}
+
+// Prima riga libera 1..cap non in $occupate (fallback quando non è stata
+// richiesta una riga precisa, o quella richiesta risulta già occupata).
+function primaRigaLibera(int $cap, array $occupate): int {
+    for ($i = 1; $i <= $cap; $i++) if (!in_array($i, $occupate, true)) return $i;
+    return $cap + 1;   // non dovrebbe succedere (countOccupanti blocca prima)
+}
+
 // ── AJAX: salva intestazione ─────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $azione = $_POST['azione'] ?? '';
@@ -535,7 +554,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $azioniModifica = ['salva_intestazione', 'assegna', 'rimuovi', 'assenza',
                        'rimuovi_assenza', 'metti_salto', 'richiama_salto', 'reset_foglio',
                        'ferie_ufficio', 'rimuovi_ufficio', 'scambia_salto', 'annulla_scambio',
-                       'riordina', 'copia_da_diurno', 'scambia_posizioni',
+                       'sposta_riga', 'copia_da_diurno', 'scambia_posizioni',
                        'assegna_esterno', 'rimuovi_esterno'];
     if ($foglioBloccato && in_array($azione, $azioniModifica, true)) {
         echo json_encode(['ok' => false, 'bloccato' => true,
@@ -597,6 +616,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $vigileId    = (int)($_POST['vigile_id']     ?? 0);
         $posizioneId = (int)($_POST['posizione_id']  ?? 0);
         $straord     = (int)($_POST['straordinario'] ?? 0);
+        $rigaReq     = (int)($_POST['ordine']        ?? 0);   // riga scelta col drop, 0 = nessuna preferenza
 
         // Limite = capienza ODT della posizione: controlla PRIMA di toccare i dati,
         // escludendo il vigile stesso (caso di ri-drop nella stessa squadra)
@@ -623,13 +643,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             "DELETE FROM assenze WHERE foglio_id=? AND vigile_id=?"
         )->execute([$foglioId, $vigileId]);
 
+        $ordine = null;
         if ($posizioneId > 0) {
-            $stOrd = $pdo->prepare(
-                "SELECT COALESCE(MAX(ordine),0)+1
-                 FROM assegnazioni WHERE foglio_id=? AND posizione_id=?"
-            );
-            $stOrd->execute([$foglioId, $posizioneId]);
-            $ordine = (int)$stOrd->fetchColumn();
+            // Riga esatta dove è stato lasciato cadere: niente riallineamento
+            // automatico. Se quella riga è nel frattempo occupata (o non è
+            // stata indicata), prima libera come ripiego.
+            $occupate = ordiniOccupati($pdo, $foglioId, $posizioneId, $vigileId);
+            $ordine = ($rigaReq >= 1 && $rigaReq <= $cap && !in_array($rigaReq, $occupate, true))
+                ? $rigaReq
+                : primaRigaLibera($cap, $occupate);
 
             $nextAssId = nextId($pdo, 'assegnazioni');
             $pdo->prepare(
@@ -639,7 +661,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             )->execute([$nextAssId, $foglioId, $posizioneId, $vigileId, $ordine, $straord]);
         }
 
-        echo json_encode(['ok' => true]);
+        echo json_encode(['ok' => true, 'ordine' => $ordine]);
         exit;
     }
 
@@ -678,23 +700,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         echo json_encode(['ok' => true]); exit;
     }
 
-    // ── AJAX: riordina i vigili dentro UNA posizione (per anzianità) ──
-    // Riceve posizione_id e `ordine` = CSV di vigile_id nel nuovo ordine.
-    // Aggiorna solo il campo `ordine` delle righe già assegnate a quella
-    // posizione (nessun insert/delete): operazione idempotente e sicura.
-    if ($azione === 'riordina') {
+    // ── AJAX: sposta un vigile già assegnato su una riga VUOTA ──────
+    // Stessa squadra o un'altra: aggiorna solo posizione+riga del vigile
+    // trascinato, non tocca nessun altro. Niente riallineamento automatico:
+    // se la riga di destinazione è già occupata, rifiuta (va usato lo scambio).
+    if ($azione === 'sposta_riga') {
+        $vigileId    = (int)($_POST['vigile_id']    ?? 0);
         $posizioneId = (int)($_POST['posizione_id'] ?? 0);
-        $ordineCsv   = trim($_POST['ordine'] ?? '');
-        if ($posizioneId <= 0 || $ordineCsv === '') {
+        $riga        = (int)($_POST['ordine']       ?? 0);
+        if (!$vigileId || $posizioneId <= 0 || $riga < 1) {
             echo json_encode(['ok' => false, 'errore' => 'Dati mancanti.']); exit;
         }
-        $ids = array_values(array_filter(array_map('intval', explode(',', $ordineCsv))));
-        $up  = $pdo->prepare(
-            "UPDATE assegnazioni SET ordine=?
-             WHERE foglio_id=? AND posizione_id=? AND vigile_id=?"
+        $cap = capPos($posizioneId);
+        if ($riga > $cap) {
+            echo json_encode(['ok' => false, 'errore' => 'Riga fuori capienza.']); exit;
+        }
+        $occupate = ordiniOccupati($pdo, $foglioId, $posizioneId, $vigileId);
+        if (in_array($riga, $occupate, true)) {
+            echo json_encode(['ok' => false, 'errore' => 'Riga già occupata.']); exit;
+        }
+        $st = $pdo->prepare(
+            "UPDATE assegnazioni SET posizione_id=?, ordine=? WHERE foglio_id=? AND vigile_id=?"
         );
-        foreach ($ids as $i => $vid) {
-            $up->execute([$i + 1, $foglioId, $posizioneId, $vid]);
+        $st->execute([$posizioneId, $riga, $foglioId, $vigileId]);
+        if ($st->rowCount() === 0) {
+            echo json_encode(['ok' => false, 'errore' => 'Vigile non assegnato a una posizione.']); exit;
         }
         echo json_encode(['ok' => true]);
         exit;
@@ -743,11 +773,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             echo json_encode(['ok' => false, 'pieno' => true, 'errore' => "Posizione al completo (max $cap)."]); exit;
         }
 
-        $stOrd = $pdo->prepare(
-            "SELECT COALESCE(MAX(ordine),0)+1 FROM assegnazioni_esterni WHERE foglio_id=? AND posizione_id=?"
-        );
-        $stOrd->execute([$foglioId, $posizioneId]);
-        $ordine = (int)$stOrd->fetchColumn();
+        // Riga libera 1..cap (non solo tra gli altri esterni: anche i vigili
+        // della stessa squadra occupano una riga, #logbook niente più righe in comune).
+        $ordine = primaRigaLibera($cap, ordiniOccupati($pdo, $foglioId, $posizioneId));
 
         if ($extId > 0) {   // sposta
             $pdo->prepare(
@@ -761,7 +789,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                  VALUES (?,?,?,?,?,?)"
             )->execute([$extId, $foglioId, $posizioneId, $nome, $straord, $ordine]);
         }
-        echo json_encode(['ok' => true, 'ext_id' => $extId]);
+        echo json_encode(['ok' => true, 'ext_id' => $extId, 'ordine' => $ordine]);
         exit;
     }
 
@@ -1314,7 +1342,7 @@ foreach ($assegnazioni as $ass) {
 // Nomi esterni (turno C/sommozzatori/nautici) per posizione
 $esterniPerPosizione = [];
 $stE = $pdo->prepare(
-    "SELECT id, posizione_id, nome, in_straordinario
+    "SELECT id, posizione_id, nome, in_straordinario, ordine
        FROM assegnazioni_esterni WHERE foglio_id=? ORDER BY posizione_id, ordine"
 );
 $stE->execute([$foglioId]);
@@ -2022,8 +2050,42 @@ function colorePatentePHP(?string $patente): string {
               <?= htmlspecialchars($pos['codice']) ?>
             </div>
 
-            <div class="pos-body" id="body-<?= $pos['id'] ?>" data-cap="<?= capPos((int)$pos['id']) ?>">
-              <?php foreach ($assQui as $ass):
+            <?php
+              // Righe indicizzate per `ordine`: niente compattazione, un vigile
+              // lasciato alla riga 3 resta alla riga 3 anche a squadra per il resto
+              // vuota (1 e 2 restano slot-empty finché non ci si mette qualcuno).
+              $cap = capPos((int)$pos['id']);
+              $righe = []; $fuoriRange = [];
+              foreach (array_merge(
+                  array_map(fn($a) => ['tipo'=>'v','d'=>$a], $assQui),
+                  array_map(fn($e) => ['tipo'=>'e','d'=>$e], $extQui)
+              ) as $r) {
+                  $o = (int)$r['d']['ordine'];
+                  // `ordine` storico fuori 1..cap o in collisione (dati pre-esistenti
+                  // a questa modifica): non si perde nessuno, va nella prima riga
+                  // libera invece di sparire dal foglio.
+                  if ($o >= 1 && $o <= $cap && !isset($righe[$o])) $righe[$o] = $r;
+                  else $fuoriRange[] = $r;
+              }
+              // Prima le righe libere 1..cap; se non bastano (dati storici con più
+              // occupanti della capienza attuale) si aggiungono righe extra oltre
+              // cap — meglio una riga in più che perdere qualcuno dal foglio.
+              $prossimaExtra = $cap + 1;
+              foreach ($fuoriRange as $r) {
+                  $posto = null;
+                  for ($o = 1; $o <= $cap; $o++) if (!isset($righe[$o])) { $posto = $o; break; }
+                  if ($posto === null) { $posto = $prossimaExtra++; }
+                  $righe[$posto] = $r;
+              }
+              $maxRiga = max($cap, $righe ? max(array_keys($righe)) : $cap);
+            ?>
+            <div class="pos-body" id="body-<?= $pos['id'] ?>" data-cap="<?= $cap ?>">
+              <?php for ($riga = 1; $riga <= $maxRiga; $riga++):
+                  $r = $righe[$riga] ?? null;
+                  if ($r === null): ?>
+                <div class="slot-empty" data-ordine="<?= $riga ?>"></div>
+              <?php elseif ($r['tipo'] === 'v'):
+                  $ass = $r['d'];
                   $colore = colorePatentePHP($ass['patente_max'] ?? null);
                   // Sigla sede SOLO se il vigile è fuori dalla propria sede (come ODT).
                   $mostraSede = (!empty($ass['sede_codice']) && $ass['sede_codice'] !== ($pos['sede_codice'] ?? null));
@@ -2034,6 +2096,7 @@ function colorePatentePHP(?string $patente): string {
                      id="ass-<?= $ass['vigile_id'] ?>"
                      data-vigile-id="<?= $ass['vigile_id'] ?>"
                      data-pos-id="<?= $pos['id'] ?>"
+                     data-ordine="<?= $riga ?>"
                      draggable="true">
                   <span class="qual-dot <?= htmlspecialchars($ass['qcodice']) ?>"></span>
                   <span class="ass-nome" style="color:<?= $colore ?>"
@@ -2052,15 +2115,15 @@ function colorePatentePHP(?string $patente): string {
                     <?php endif; ?>
                   </span>
                 </div>
-              <?php endforeach; ?>
-              <?php // Nomi esterni al turno (non in `vigili`)
-              foreach ($extQui as $e): ?>
+              <?php else: // esterno al turno (non in `vigili`)
+                  $e = $r['d']; ?>
                 <div class="ass-card esterno"
                      id="extass-<?= (int)$e['id'] ?>"
                      data-ext-id="<?= (int)$e['id'] ?>"
                      data-ext-nome="<?= htmlspecialchars($e['nome']) ?>"
                      data-straord="<?= (int)$e['in_straordinario'] ?>"
                      data-pos-id="<?= $pos['id'] ?>"
+                     data-ordine="<?= $riga ?>"
                      draggable="true">
                   <span class="esterno-dot" title="Personale esterno al turno">★</span>
                   <span class="ass-nome" title="<?= htmlspecialchars($e['nome']) ?> (esterno)">
@@ -2073,10 +2136,7 @@ function colorePatentePHP(?string $patente): string {
                           onclick="rimuoviEsternoPos(<?= (int)$e['id'] ?>)"
                           title="Rimuovi">✕</button>
                 </div>
-              <?php endforeach; ?>
-              <?php // Slot vuoti fino alla capienza della posizione (vigili + esterni)
-              for ($i = count($assQui) + count($extQui); $i < capPos((int)$pos['id']); $i++): ?>
-                <div class="slot-empty"></div>
+              <?php endif; ?>
               <?php endfor; ?>
             </div>
           </div><!-- /.pos-card -->
@@ -2680,70 +2740,71 @@ function _ruoloOccupatoAltrove(id, isCapo) {
     return altroId === id;
 }
 
-// Mantiene gli slot di una posizione = capienza ODT (data-cap): card + placeholder vuoti
+// Ricostruisce le righe di una squadra secondo `data-ordine`: NIENTE
+// compattazione, un buco resta un buco finché non ci si mette qualcuno
+// (stessa riga dove è stato lasciato cadere il vigile). Le card con ordine
+// mancante/duplicato/fuori capienza (dati incoerenti) finiscono nella prima
+// riga libera — non si perde comunque nessuno dal foglio.
 function sincronizzaSlot(body) {
     if (!body) return;
     const cap = parseInt(body.dataset.cap || '7');
+    const cards = [...body.querySelectorAll('.ass-card')];
+    const righe = new Map();
+    const fuoriRange = [];
+    cards.forEach(c => {
+        const o = parseInt(c.dataset.ordine);
+        if (o >= 1 && o <= cap && !righe.has(o)) righe.set(o, c);
+        else fuoriRange.push(c);
+    });
+    let extra = cap + 1;
+    fuoriRange.forEach(c => {
+        let posto = null;
+        for (let o = 1; o <= cap; o++) if (!righe.has(o)) { posto = o; break; }
+        if (posto === null) posto = extra++;
+        c.dataset.ordine = posto;
+        righe.set(posto, c);
+    });
+    const maxRiga = Math.max(cap, ...righe.keys());
     body.querySelectorAll('.slot-empty').forEach(s => s.remove());
-    const n = body.querySelectorAll('.ass-card').length;
-    for (let i = n; i < cap; i++) {
-        body.insertAdjacentHTML('beforeend', '<div class="slot-empty"></div>');
+    cards.forEach(c => c.remove());   // stacca tutto, si reinserisce nell'ordine giusto
+    for (let i = 1; i <= maxRiga; i++) {
+        const c = righe.get(i);
+        if (c) { body.appendChild(c); continue; }
+        const s = document.createElement('div');
+        s.className = 'slot-empty';
+        s.dataset.ordine = i;
+        body.appendChild(s);
     }
 }
 
-// Riordino dentro una posizione: trova la card sopra cui inserire quella
-// trascinata, in base alla Y del cursore (la card il cui centro sta sotto Y).
-// Ritorna null se va in fondo.
-function getDragAfterElement(body, y) {
-    const cards = [...body.querySelectorAll('.ass-card:not(.dragging)')];
-    let closest = { offset: Number.NEGATIVE_INFINITY, element: null };
-    for (const card of cards) {
-        const box = card.getBoundingClientRect();
-        const offset = y - box.top - box.height / 2;
-        if (offset < 0 && offset > closest.offset) {
-            closest = { offset, element: card };
-        }
+// Riga (ass-card o slot-empty) sotto il cursore durante un drag, per capire
+// esattamente su quale posto della squadra si sta rilasciando.
+function rigaAtY(body, y) {
+    const kids = [...body.children];
+    if (!kids.length) return null;
+    let best = kids[0], bestDist = Infinity;
+    for (const k of kids) {
+        const box = k.getBoundingClientRect();
+        const mid = box.top + box.height / 2;
+        const dist = Math.abs(y - mid);
+        if (dist < bestDist) { bestDist = dist; best = k; }
     }
-    return closest.element;
+    return best;
 }
 
-// ── Placeholder di riordino: il "gap" che mostra dove cadrà la card ──
-let _ph = null;
-function ensurePlaceholder() {
-    if (!_ph) { _ph = document.createElement('div'); _ph.className = 'reorder-ph'; }
-    return _ph;
-}
-function removePlaceholder() {
-    _ph?.parentElement?.removeChild(_ph);
-    document.querySelectorAll('.pos-card.reorder-target')
-        .forEach(el => el.classList.remove('reorder-target'));
-    // Ripristina la card trascinata eventualmente nascosta durante il riordino
-    document.querySelectorAll('.ass-card.dragging')
-        .forEach(c => { c.style.display = ''; });
-}
-// Durante il dragover: se sto riordinando nella STESSA squadra, apri il gap
-// nel punto di inserimento (e nascondo la card trascinata, così resta un solo
-// spazio chiaro); altrimenti togli il placeholder.
-function gestisciPlaceholderRiordino(target, y) {
-    if (_dragSource === 'posizione' && target && target.classList?.contains('pos-card')) {
-        const dragged = document.getElementById('ass-' + _dragId);
-        if (dragged && parseInt(dragged.dataset.posId) === parseInt(target.dataset.posId)) {
-            const body  = document.getElementById('body-' + target.dataset.posId);
-            dragged.style.display = 'none';       // libera lo slot originale
-            const after = getDragAfterElement(body, y);
-            const ph    = ensurePlaceholder();
-            if (after) {
-                if (ph.nextSibling !== after) body.insertBefore(ph, after);
-            } else {
-                const firstEmpty = body.querySelector('.slot-empty');
-                if (firstEmpty) { if (ph !== firstEmpty.previousSibling) body.insertBefore(ph, firstEmpty); }
-                else if (body.lastElementChild !== ph) body.appendChild(ph);
-            }
-            target.classList.add('reorder-target');
-            return;
-        }
+// Evidenzia la riga esatta su cui si andrebbe ad atterrare (niente più gap
+// che si apre spostando le altre card: le righe sono fisse, si evidenzia
+// solo il bersaglio).
+function evidenziaRigaTarget(target, y) {
+    pulisciRigaTarget();
+    if (target && target.classList?.contains('pos-card')) {
+        const body = document.getElementById('body-' + target.dataset.posId);
+        const riga = body && rigaAtY(body, y);
+        if (riga) riga.classList.add('riga-target');
     }
-    removePlaceholder();
+}
+function pulisciRigaTarget() {
+    document.querySelectorAll('.riga-target').forEach(el => el.classList.remove('riga-target'));
 }
 
 // Rimuove dal DOM da qualsiasi posto (senza toccare la riga salto canonico)
@@ -2802,7 +2863,7 @@ function siglaSede(c) { return c === 'CENTR' ? 'C' : (c || ''); }
 // ════════════════════════════════════════════════════════════
 // COSTRUTTORI HTML
 // ════════════════════════════════════════════════════════════
-function buildAssCard(p, posId, straord) {
+function buildAssCard(p, posId, straord, ordine) {
     // Sigla sede SOLO se il vigile lavora fuori dalla propria sede:
     // sede del vigile (p.sede) ≠ sede della posizione (data-sede della pos-card).
     const posSede   = document.getElementById('pos-' + posId)?.dataset.sede || '';
@@ -2817,6 +2878,7 @@ function buildAssCard(p, posId, straord) {
                  id="ass-${p.id}"
                  data-vigile-id="${p.id}"
                  data-pos-id="${posId}"
+                 data-ordine="${ordine}"
                  draggable="true">
               <span class="qual-dot ${p.qcodice}"></span>
               <span class="ass-nome" style="color:${colore}" title="${p.nome}">
@@ -2924,7 +2986,7 @@ document.addEventListener('dragstart', function(e) {
 document.addEventListener('dragend', function() {
     document.querySelectorAll('.dragging').forEach(el => el.classList.remove('dragging'));
     document.querySelectorAll('.drop-target').forEach(el => el.classList.remove('drop-target'));
-    removePlaceholder();
+    pulisciRigaTarget();
     _stopAutoScroll();
     _dragId     = null;
     _dragSource = null;
@@ -2967,8 +3029,9 @@ document.addEventListener('dragover', function(e) {
             .forEach(el => { if (el !== target) el.classList.remove('drop-target'); });
         target.classList.add('drop-target');
     }
-    // Riordino stessa squadra: apri/sposta il gap di inserimento
-    gestisciPlaceholderRiordino(target, e.clientY);
+    // Evidenzia la riga esatta su cui si atterrerebbe (niente più gap che
+    // si apre spostando le altre righe: sono fisse).
+    evidenziaRigaTarget(target, e.clientY);
 });
 
 document.addEventListener('dragleave', function(e) {
@@ -3004,8 +3067,7 @@ document.addEventListener('drop', async function(e) {
             const oldBody = (ext.source === 'esterno_pos') ? ext.el.parentElement : null;
             ext.el.remove();                                    // toglie card sorgente
             const body = document.getElementById('body-' + posId);
-            body.insertBefore(cardEsternoPos(res.ext_id, ext.nome, ext.str, posId),
-                              body.querySelector('.slot-empty'));
+            body.appendChild(cardEsternoPos(res.ext_id, ext.nome, ext.str, posId, res.ordine));
             sincronizzaSlot(body);
             if (oldBody && oldBody !== body) sincronizzaSlot(oldBody);
             showMsg('➕ ' + ext.nome + ' aggiunto.');
@@ -3067,43 +3129,36 @@ document.addEventListener('drop', async function(e) {
     // ── Drop su posizione ────────────────────────────────────
     // (svuotaRuolo definita più sotto vicino a salvaIntestazioneAjax)
     if (target.classList.contains('pos-card')) {
-        const posId   = parseInt(target.dataset.posId);
+        const posId = parseInt(target.dataset.posId);
+        const body  = document.getElementById('body-' + posId);
+        // Riga esatta sotto il cursore: niente riallineamento automatico,
+        // si atterra lì e basta (stessa squadra o un'altra, non cambia).
+        const riga        = rigaAtY(body, e.clientY);
+        const rigaOrdine  = riga ? parseInt(riga.dataset.ordine) : 0;
+        const draggedCard = document.getElementById('ass-' + vigileId);
 
-        // ── Scambio: card trascinata su una card-PERSONA di un'ALTRA posizione.
-        // I due si scambiano di posto (A↔B). Se è la stessa posizione → riordino.
-        const overCard      = e.target.closest?.('.ass-card');
-        const draggedCardSw = document.getElementById('ass-' + vigileId);
-        if (source === 'posizione' && overCard && draggedCardSw) {
-            const targetVid = parseInt(overCard.dataset.vigileId);
-            const fromPos   = parseInt(draggedCardSw.dataset.posId);
-            const toPos     = parseInt(overCard.dataset.posId);
-            if (targetVid && targetVid !== vigileId && fromPos !== toPos) {
-                await eseguiScambioPosizioni(vigileId, draggedCardSw, targetVid, overCard);
+        // ── Vigile già assegnato da qualche parte: sposta o scambia ──
+        if (source === 'posizione' && draggedCard) {
+            if (riga && riga.classList.contains('ass-card')) {
+                // Riga occupata: scambio A↔B (stessa squadra o un'altra, uguale).
+                const targetVid = parseInt(riga.dataset.vigileId);
+                if (targetVid && targetVid !== vigileId) {
+                    await eseguiScambioPosizioni(vigileId, draggedCard, targetVid, riga);
+                }
                 return;
             }
-        }
-
-        // Riordino DENTRO la stessa squadra (per anzianità): se trascino una
-        // card già in questa posizione, non riassegno — la sposto e salvo l'ordine.
-        const draggedCard = document.getElementById('ass-' + vigileId);
-        if (source === 'posizione' && draggedCard
-                && parseInt(draggedCard.dataset.posId) === posId) {
-            const body = document.getElementById('body-' + posId);
-            // Atterra esattamente dove c'è il gap mostrato; se non c'è, ricalcola.
-            if (_ph && _ph.parentElement === body) {
-                body.insertBefore(draggedCard, _ph);
-            } else {
-                const after = getDragAfterElement(body, e.clientY);
-                if (after) body.insertBefore(draggedCard, after);
-                else       body.appendChild(draggedCard);
-            }
-            removePlaceholder();
+            // Riga vuota: sposta esattamente lì. Il posto di partenza resta
+            // vuoto — nessuno si muove per compensare.
+            const res = await ajax({ azione: 'sposta_riga', vigile_id: vigileId,
+                                      posizione_id: posId, ordine: rigaOrdine });
+            if (!res.ok) { showMsg('⚠️ ' + (res.errore || 'Errore.'), 'err'); return; }
+            const oldBody = draggedCard.parentElement;
+            draggedCard.dataset.posId  = posId;
+            draggedCard.dataset.ordine = rigaOrdine;
+            body.appendChild(draggedCard);
             sincronizzaSlot(body);
-            const ordini = [...body.querySelectorAll('.ass-card')]
-                .map(c => c.dataset.vigileId).join(',');
-            const res = await ajax({ azione: 'riordina', posizione_id: posId, ordine: ordini });
-            if (!res.ok) { showMsg('⚠️ Errore riordino.', 'err'); return; }
-            showMsg('↕️ Ordine aggiornato.');
+            if (oldBody && oldBody !== body) sincronizzaSlot(oldBody);
+            showMsg('↕️ Spostato.');
             return;
         }
 
@@ -3112,7 +3167,11 @@ document.addEventListener('drop', async function(e) {
         // straordinario anche se spostato; chi ha preso un salto (scambioIn) sì (#83).
         const straord = (source === 'salto' || p.saltoEff) ? 1 : 0;
 
-        const esito = await eseguiAssegnaPos(vigileId, posId, straord);
+        // Riga libera sotto il cursore: ci si mette esattamente lì. Se invece
+        // è occupata (o non è stata individuata una riga precisa) il server
+        // sceglie da sé la prima libera.
+        const rigaTarget = (riga && riga.classList.contains('slot-empty')) ? rigaOrdine : 0;
+        const esito = await eseguiAssegnaPos(vigileId, posId, straord, rigaTarget);
         if (esito === 'pieno') {
             showMsg('🚫 Posizione al completo. ' + p.nome + ' resta tra i disponibili.', 'err');
             return;
@@ -3282,16 +3341,19 @@ async function azioneAssenza(vigileId, tipoCodice) {
 // ════════════════════════════════════════════════════════════
 // Assegna un vigile a una posizione precisa: ajax + aggiornamento DOM.
 // Ritorna 'ok' | 'pieno' | 'err'. Il toast lo fa il chiamante (messaggi diversi).
-async function eseguiAssegnaPos(vigileId, posId, straord) {
+async function eseguiAssegnaPos(vigileId, posId, straord, rigaTarget = 0) {
     const p = PERSONALE[vigileId];
     if (!p) return 'err';
-    const res = await ajax({ azione: 'assegna', vigile_id: vigileId,
-                             posizione_id: posId, straordinario: straord });
+    const res = await ajax({ azione: 'assegna', vigile_id: vigileId, posizione_id: posId,
+                             straordinario: straord, ordine: rigaTarget });
     if (!res.ok) return res.pieno ? 'pieno' : 'err';
 
     rimuoviDOM(vigileId);
     const body = document.getElementById('body-' + posId);
-    if (body) { body.insertAdjacentHTML('beforeend', buildAssCard(p, posId, straord)); sincronizzaSlot(body); }
+    if (body) {
+        body.insertAdjacentHTML('beforeend', buildAssCard(p, posId, straord, res.ordine));
+        sincronizzaSlot(body);
+    }
 
     // Vigile a riposo canonico messo in servizio → straordinario: aggiorna la riga salto
     if (p.saltoCanon) {
@@ -3320,14 +3382,16 @@ async function eseguiScambioPosizioni(aVid, aCard, bVid, bCard) {
     if (!res.ok) { showMsg('⚠️ ' + (res.errore || 'Errore.'), 'err'); return; }
 
     const aBody = aCard.parentElement, bBody = bCard.parentElement;
-    const aAfter = aCard.nextSibling;   // riferimenti catturati prima di spostare
-    const bAfter = bCard.nextSibling;
-    aBody.insertBefore(bCard, aAfter);  // B prende lo slot di A
-    bBody.insertBefore(aCard, bAfter);  // A prende lo slot di B
-    aCard.dataset.posId = bBody.id.replace('body-', '');
-    bCard.dataset.posId = aBody.id.replace('body-', '');
+    const aPos = aCard.dataset.posId, aOrdine = aCard.dataset.ordine;
+    const bPos = bCard.dataset.posId, bOrdine = bCard.dataset.ordine;
+    // Scambio pieno: A prende posto+riga di B e viceversa (sincronizzaSlot
+    // ricostruisce da data-ordine, non serve calcolare l'inserimento in DOM).
+    aCard.dataset.posId = bPos; aCard.dataset.ordine = bOrdine;
+    bCard.dataset.posId = aPos; bCard.dataset.ordine = aOrdine;
+    bBody.appendChild(aCard);
+    aBody.appendChild(bCard);
     sincronizzaSlot(aBody);
-    sincronizzaSlot(bBody);
+    if (bBody !== aBody) sincronizzaSlot(bBody);
     showMsg('🔄 Scambiati di posto.');
 }
 
@@ -3558,7 +3622,7 @@ function aggiungiCardEsternoDisp(nome, str) {
 }
 
 // Card esterna DENTRO una posizione (persistita: ext_id reale)
-function cardEsternoPos(extId, nome, str, posId) {
+function cardEsternoPos(extId, nome, str, posId, ordine) {
     const card = document.createElement('div');
     card.className = 'ass-card esterno';
     card.id = 'extass-' + extId;
@@ -3566,6 +3630,7 @@ function cardEsternoPos(extId, nome, str, posId) {
     card.dataset.extNome = nome;
     card.dataset.straord = str ? '1' : '0';
     card.dataset.posId   = posId;
+    card.dataset.ordine  = ordine;
     card.setAttribute('draggable', 'true');
     card.innerHTML =
         '<span class="esterno-dot" title="Personale esterno al turno">★</span>' +

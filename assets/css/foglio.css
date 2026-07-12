@@ -545,24 +545,12 @@ body.cruscotto-bloccato .foglio-layout {
 }
 .ass-card .ass-nome > :not(.ass-nome-txt) { flex-shrink: 0; }
 
-/* ── Riordino dentro la stessa squadra ── */
-/* Gap che mostra DOVE cadrà la card (lo "spazio" per capire l'inserimento) */
-.reorder-ph {
-    height: 26px;
-    border: 2px dashed var(--blu);
-    border-radius: 4px;
+/* ── Riga bersaglio durante il drag ── */
+/* Righe fisse: nessun gap che si apre, si evidenzia solo dove si atterrerebbe */
+.riga-target {
+    box-shadow: 0 0 0 2px var(--blu) inset;
     background: var(--blu-bg);
-    margin: 2px 0;
-    animation: phpulse .9s ease-in-out infinite;
-}
-@keyframes phpulse { 0%,100% { opacity:.5 } 50% { opacity:1 } }
-/* La squadra in cui stai riordinando: si ingrandisce un filo e si evidenzia */
-.pos-card.reorder-target {
-    box-shadow: 0 0 0 2px var(--blu), 0 6px 18px rgba(0,0,0,.12);
-    transform: scale(1.02);
-    transition: transform .12s ease, box-shadow .12s ease;
-    position: relative;
-    z-index: 5;
+    border-radius: 4px;
 }
 .ass-card .remove-btn {
     margin-left: auto;
