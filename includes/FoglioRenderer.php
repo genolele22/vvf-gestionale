@@ -38,6 +38,7 @@ class FoglioRenderer
     private ?array $capo = null, $vice = null;
     private array $scambioOut = [];
     private int $centrSedeId = 1;   // sede "Centrale": non sigla nessuno
+    private int $saltoRiposoId = 0;   // id del salto a riposo di oggi (0 = non trovato)
     public array $overflow = [];   // mezzi con più nomi che slot
     public array $noslot = [];     // mezzi con nomi ma 0 slot
     private static string $formatoNome = 'standard';  // parametro admin (parametri.foglio_formato_nome)
@@ -88,13 +89,16 @@ class FoglioRenderer
 
     private function loadData(int $foglioId): void
     {
-        $this->centrSedeId = (int)($this->pdo->query("SELECT id FROM sedi WHERE codice='CENTR'")->fetchColumn() ?: 1);
+        $this->centrSedeId = (int)($this->pdo->query("SELECT id FROM sedi WHERE codice='C'")->fetchColumn() ?: 1);
+        $this->saltoRiposoId = (int)($this->pdo->query(
+            "SELECT id FROM salti_turno WHERE codice=" . $this->pdo->quote($this->codSaltoRip)
+        )->fetchColumn() ?: 0);
         $pat = "(SELECT MAX(p.tipo) FROM vigili_patenti vp JOIN patenti p ON p.id=vp.patente_id WHERE vp.vigile_id=v.id)";
         // assegnazioni per codice posizione
         $idByCode = [];
         foreach ($this->pdo->query("SELECT id,codice FROM posizioni")->fetchAll() as $p) $idByCode[(int)$p['id']] = $p['codice'];
         $st = $this->pdo->prepare(
-            "SELECT a.posizione_id, a.in_straordinario, a.vigile_id, v.cognome, v.disambiguatore,
+            "SELECT a.posizione_id, a.ordine, a.in_straordinario, a.vigile_id, v.cognome, v.disambiguatore, v.salto_id,
                     q.codice AS qcodice, $pat AS patente_max,
                     v.sede_id AS vig_sede, p.sede_id AS pos_sede, s.codice AS sede_cod
              FROM assegnazioni a JOIN vigili v ON v.id=a.vigile_id JOIN qualifiche q ON q.id=v.qualifica_id
@@ -104,15 +108,25 @@ class FoglioRenderer
         foreach ($st->fetchAll() as $a) {
             $code = $idByCode[(int)$a['posizione_id']] ?? null;
             if (!$code) continue;
-            // sigla = sede di appartenenza, solo se in servizio fuori dal proprio distaccamento
-            $a['sigla'] = ((int)$a['vig_sede'] !== (int)$a['pos_sede']) ? $a['sede_cod'] : null;
+            // fuori sede = sempre sottolineato; sigla testuale = sede di appartenenza,
+            // MA mai per chi è di Centrale (niente "C" scritto, in nessun caso).
+            $a['fuori_sede'] = ((int)$a['vig_sede'] !== (int)$a['pos_sede']);
+            $a['sigla'] = ($a['fuori_sede'] && (int)$a['vig_sede'] !== $this->centrSedeId) ? $a['sede_cod'] : null;
+            // chi è nel salto a riposo di oggi ma è comunque assegnato in squadra
+            // (richiamato) va trattato come straordinario, flag manuale o no.
+            if ($this->saltoRiposoId > 0 && (int)($a['salto_id'] ?? 0) === $this->saltoRiposoId) {
+                $a['in_straordinario'] = 1;
+            }
             $this->assByCode[$code][] = $a;
         }
-        // Nomi esterni al turno (non in `vigili`): si accodano alla posizione.
+        // Nomi esterni al turno (non in `vigili`): si accodano alla posizione, poi
+        // vengono riordinati insieme ai vigili per `ordine` (stessa colonna di
+        // posizione sul gestionale) così l'ODT rispetta la stessa sequenza vista a
+        // schermo — prima erano sempre in fondo, dopo tutti i vigili.
         // Tabella creata da foglio/nuovo.php; potrebbe non esistere su DB vecchi.
         try {
             $stx = $this->pdo->prepare(
-                "SELECT posizione_id, nome, in_straordinario
+                "SELECT posizione_id, ordine, nome, in_straordinario
                    FROM assegnazioni_esterni WHERE foglio_id=? ORDER BY posizione_id, ordine"
             );
             $stx->execute([$foglioId]);
@@ -121,12 +135,17 @@ class FoglioRenderer
                 if (!$code) continue;
                 $this->assByCode[$code][] = [
                     'nome_libero'      => $e['nome'],
+                    'ordine'           => (int)$e['ordine'],
                     'in_straordinario' => (int)$e['in_straordinario'],
                     'patente_max'      => null,
                     'sigla'            => null,
                 ];
             }
         } catch (Throwable $ignored) { /* tabella assente: nessun esterno */ }
+        foreach ($this->assByCode as $code => $list) {
+            usort($list, fn($a, $b) => ((int)($a['ordine'] ?? 0)) <=> ((int)($b['ordine'] ?? 0)));
+            $this->assByCode[$code] = $list;
+        }
         // assenze per tipo
         $st = $this->pdo->prepare(
             "SELECT a.*, v.cognome, v.disambiguatore, q.codice AS qcodice, ta.codice AS tipo_codice, $pat AS patente_max,
@@ -158,9 +177,7 @@ class FoglioRenderer
     /** I riposanti del salto (canonico ± scambi, esclusi assegnati/assenti) → sezione RC */
     private function aggiungiSaltoInRC(string $pat): void
     {
-        $saltoRiposoId = (int)($this->pdo->query(
-            "SELECT id FROM salti_turno WHERE codice=" . $this->pdo->quote($this->codSaltoRip)
-        )->fetchColumn() ?: 0);
+        $saltoRiposoId = $this->saltoRiposoId;
         if (!$saltoRiposoId) return;
 
         // base: vigili attivi col salto di riposo di oggi
@@ -254,10 +271,16 @@ class FoglioRenderer
         return ((int)($a['vig_sede'] ?? 0) !== $this->centrSedeId) ? ($a['sede_cod'] ?? null) : null;
     }
 
+    /** true se il vigile (capo/vice) ha oggi il salto a riposo: richiamato in straordinario. */
+    private function inSaltoRiposo(?array $v): bool
+    {
+        return $v !== null && $this->saltoRiposoId > 0 && (int)($v['salto_id'] ?? 0) === $this->saltoRiposoId;
+    }
+
     private function vigById($id): ?array
     {
         if (!$id) return null;
-        $st = $this->pdo->prepare("SELECT v.cognome,v.disambiguatore,q.codice AS qcodice FROM vigili v JOIN qualifiche q ON q.id=v.qualifica_id WHERE v.id=?");
+        $st = $this->pdo->prepare("SELECT v.cognome,v.disambiguatore,v.salto_id,q.codice AS qcodice FROM vigili v JOIN qualifiche q ON q.id=v.qualifica_id WHERE v.id=?");
         $st->execute([(int)$id]);
         return $st->fetch() ?: null;
     }
@@ -275,9 +298,22 @@ class FoglioRenderer
         }
     }
 
+    /** Maiuscola la prima lettera di ogni parola (spazi/apostrofi/trattini fanno da separatore): "d'amato" -> "D'Amato". */
+    private static function capitalizzaParole(string $s): string
+    {
+        return (string)preg_replace_callback('/\p{L}+/u', function ($m) {
+            return mb_strtoupper(mb_substr($m[0], 0, 1, 'UTF-8'), 'UTF-8') . mb_substr($m[0], 1, null, 'UTF-8');
+        }, $s);
+    }
+
     private static function etichetta(array $v): string
     {
-        if (isset($v['nome_libero'])) return $v['nome_libero'];   // esterno al turno
+        if (isset($v['nome_libero'])) {   // esterno al turno: stesso stile testo dei vigili
+            $n = trim((string)$v['nome_libero']);
+            return self::$formatoNome === 'tutto_maiusc'
+                ? mb_strtoupper($n, 'UTF-8')
+                : self::capitalizzaParole(mb_strtolower($n, 'UTF-8'));
+        }
         $q = $v['qcodice'] ?? '';
         $c = $v['cognome'] ?? '';
         switch (self::$formatoNome) {
@@ -285,8 +321,8 @@ class FoglioRenderer
                 $q = ucfirst(strtolower($q)); $c = mb_strtoupper($c, 'UTF-8'); break;
             case 'tutto_maiusc':     // es. "CS ROSSI"
                 $q = mb_strtoupper($q, 'UTF-8'); $c = mb_strtoupper($c, 'UTF-8'); break;
-            default:                 // 'standard' — es. "Cs Rossi"
-                $q = ucfirst(strtolower($q)); $c = ucfirst(strtolower($c)); break;
+            default:                 // 'standard' — es. "Cs D'Amato"
+                $q = ucfirst(strtolower($q)); $c = self::capitalizzaParole(mb_strtolower($c, 'UTF-8')); break;
         }
         return trim("$q $c")
              . (!empty($v['disambiguatore']) ? ' ' . (int)$v['disambiguatore'] : '');
@@ -451,9 +487,10 @@ class FoglioRenderer
                     $code = $colCode[$col];
                     if (!empty($queue[$code])) {
                         $a = array_shift($queue[$code]);
-                        // fuori sede: sigla in suffisso (come in FERIE) + nome sottolineato
+                        // fuori sede: sigla in suffisso (come in FERIE, mai per chi è di
+                        // Centrale) + nome SEMPRE sottolineato se fuori sede, sigla o no
                         $sfx = !empty($a['sigla']) ? ' ' . $a['sigla'] : '';
-                        $this->writeName($doc, $cell, $a, $sfx, '', !empty($a['sigla']));
+                        $this->writeName($doc, $cell, $a, $sfx, '', !empty($a['fuori_sede']));
                         $lastCell[$code] = $cell;
                     }
                 }
@@ -463,7 +500,7 @@ class FoglioRenderer
         foreach ($queue as $code => $rest) {
             if (empty($rest)) continue;
             if (isset($lastCell[$code])) {
-                foreach ($rest as $a) $this->appendName($doc, $lastCell[$code], $a, !empty($a['sigla']));
+                foreach ($rest as $a) $this->appendName($doc, $lastCell[$code], $a, !empty($a['fuori_sede']));
                 $this->overflow[] = $code . ' (+' . count($rest) . ')';
             } else {
                 $this->noslot[] = $code . ' (' . count($rest) . ')';
@@ -526,12 +563,16 @@ class FoglioRenderer
                 if (preg_match('/^B\s*\d+$/', $t)) { $this->setText($doc, $cell, $this->codSaltoRip); continue; } // badge salto
                 if (stripos($t, 'ore') !== false) { $dateCells[] = [$i, $cell]; continue; }                     // riga data
                 $tl = mb_strtolower($t);
+                // stile esplicito anche qui (mai ereditato dalla cella, #67): capo/vice
+                // in straordinario se richiamati dal salto a riposo di oggi (#92).
                 if (strpos($tl, 'vice') !== false && strpos($tl, 'capo') !== false && isset($cells[$j+1]))
-                    $this->setText($doc, $cells[$j+1][1], $this->vice ? self::etichetta($this->vice) : '');
+                    $this->setText($doc, $cells[$j+1][1], $this->vice ? self::etichetta($this->vice) : '',
+                        self::nameStyle(null, $this->inSaltoRiposo($this->vice)));
                 elseif (strpos($tl, 'capo servizio') !== false && isset($cells[$j+1]))
-                    $this->setText($doc, $cells[$j+1][1], $this->capo ? self::etichetta($this->capo) : '');
+                    $this->setText($doc, $cells[$j+1][1], $this->capo ? self::etichetta($this->capo) : '',
+                        self::nameStyle(null, $this->inSaltoRiposo($this->capo)));
                 elseif (strpos($tl, 'funzionario') !== false && isset($cells[$j+1]))
-                    $this->setText($doc, $cells[$j+1][1], $this->foglio['funzionario'] ?? '');
+                    $this->setText($doc, $cells[$j+1][1], $this->foglio['funzionario'] ?? '', self::nameStyle(null, false));
             }
         }
         // due righe data: la più in alto = inizio servizio, la sotto = fine
@@ -788,6 +829,7 @@ class FoglioRenderer
             $st->setAttributeNS(self::STY, 'style:family', 'text');
             $tp = $doc->createElementNS(self::STY, 'style:text-properties');
             $tp->setAttributeNS(self::FO, 'fo:font-weight', 'normal');
+            $tp->setAttributeNS(self::FO, 'fo:font-size', '10pt');   // le due righe data devono avere la stessa dimensione (una ereditava 10.5pt dal modello)
             $st->appendChild($tp);
             $auto->appendChild($st);
         }
