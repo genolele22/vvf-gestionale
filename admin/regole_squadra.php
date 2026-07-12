@@ -2,8 +2,9 @@
 session_start();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/auth.php';
-richiediComando();   // policy di sistema (Centrale), non per-turno — come parametri.php
+richiediAdmin();   // per-turno, come assegnazioni_fisse.php — non solo Comando
 $pdo    = getDB();
+$TURNO  = turnoAmministrazione();   // fisso sul turno di casa (admin/user niente switch qui)
 $errore = '';
 $sucesso = '';
 
@@ -11,6 +12,7 @@ $sucesso = '';
 $pdo->exec("CREATE TABLE IF NOT EXISTS regole_squadra (
     id              INT UNSIGNED NOT NULL,
     ordine          INT UNSIGNED NOT NULL DEFAULT 100,
+    turno           CHAR(1)      NOT NULL DEFAULT 'B',
     etichetta       VARCHAR(80)  NOT NULL,
     sede_id         INT UNSIGNED NOT NULL,
     qualifiche_ids  VARCHAR(60)  DEFAULT NULL,
@@ -22,6 +24,7 @@ $pdo->exec("CREATE TABLE IF NOT EXISTS regole_squadra (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    vietaSeSolaLetturaTurno($TURNO);   // niente modifiche se il turno è in sola lettura
     $azione = $_POST['azione'] ?? '';
 
     if ($azione === 'salva') {
@@ -50,16 +53,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $pdo->prepare(
                         "UPDATE regole_squadra SET ordine=?, etichetta=?, sede_id=?, qualifiche_ids=?,
                                                     patenti_ids=?, abilitazione_id=?, posizioni_ids=?, attiva=?
-                         WHERE id=?"
-                    )->execute([$ordine, $etichetta, $sedeId, $qualiIds, $patIds, $abilId, $posIds, $attiva, $id]);
+                         WHERE id=? AND turno=?"
+                    )->execute([$ordine, $etichetta, $sedeId, $qualiIds, $patIds, $abilId, $posIds, $attiva, $id, $TURNO]);
                     $sucesso = 'Regola aggiornata.';
                 } else {
                     $newId = nextId($pdo, 'regole_squadra');
                     $pdo->prepare(
-                        "INSERT INTO regole_squadra (id, ordine, etichetta, sede_id, qualifiche_ids,
+                        "INSERT INTO regole_squadra (id, ordine, turno, etichetta, sede_id, qualifiche_ids,
                                                       patenti_ids, abilitazione_id, posizioni_ids, attiva)
-                         VALUES (?,?,?,?,?,?,?,?,?)"
-                    )->execute([$newId, $ordine, $etichetta, $sedeId, $qualiIds, $patIds, $abilId, $posIds, $attiva]);
+                         VALUES (?,?,?,?,?,?,?,?,?,?)"
+                    )->execute([$newId, $ordine, $TURNO, $etichetta, $sedeId, $qualiIds, $patIds, $abilId, $posIds, $attiva]);
                     $sucesso = 'Regola aggiunta.';
                 }
             } catch (Throwable $e) {
@@ -69,7 +72,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif ($azione === 'elimina') {
         $id = (int)($_POST['id'] ?? 0);
         if ($id > 0) {
-            $pdo->prepare("DELETE FROM regole_squadra WHERE id=?")->execute([$id]);
+            $pdo->prepare("DELETE FROM regole_squadra WHERE id=? AND turno=?")->execute([$id, $TURNO]);
             $sucesso = 'Regola eliminata.';
         }
     }
@@ -96,8 +99,8 @@ function csvToInts(?string $csv): array {
 
 $rigaEdit = null;
 if (isset($_GET['modifica'])) {
-    $st = $pdo->prepare("SELECT * FROM regole_squadra WHERE id=?");
-    $st->execute([(int)$_GET['modifica']]);
+    $st = $pdo->prepare("SELECT * FROM regole_squadra WHERE id=? AND turno=?");
+    $st->execute([(int)$_GET['modifica'], $TURNO]);
     $rigaEdit = $st->fetch() ?: null;
 }
 $editQuali = $rigaEdit ? csvToInts($rigaEdit['qualifiche_ids']) : [];
@@ -106,8 +109,10 @@ $editPos   = $rigaEdit ? csvToInts($rigaEdit['posizioni_ids']) : [];
 $sedeCentraleId = 0;
 foreach ($sedi as $s) if ($s['codice'] === 'C') $sedeCentraleId = (int)$s['id'];
 
-// Regole esistenti con etichette leggibili
-$righe = $pdo->query("SELECT * FROM regole_squadra ORDER BY ordine, id")->fetchAll();
+// Regole esistenti (di questo turno) con etichette leggibili
+$stRighe = $pdo->prepare("SELECT * FROM regole_squadra WHERE turno=? ORDER BY ordine, id");
+$stRighe->execute([$TURNO]);
+$righe = $stRighe->fetchAll();
 $qualCod = []; foreach ($qualifiche as $q) $qualCod[(int)$q['id']] = $q['codice'];
 $patTipo = []; foreach ($patenti as $p) $patTipo[(int)$p['id']] = $p['tipo'];
 $abilCod = []; foreach ($abilitazioni as $a) $abilCod[(int)$a['id']] = $a['codice'];
@@ -148,9 +153,9 @@ $etichettaCsv = function (array $ids, array $map): string {
     <div class="header-logo">🚒</div>
     <div class="header-testi">
       <h1>Comando Provinciale VVF di Genova</h1>
-      <p>Gestionale Foglio di Servizio</p>
+      <p>Gestionale Foglio di Servizio &mdash; Turno <?= htmlspecialchars($TURNO) ?></p>
     </div>
-    <div class="header-badge">SISTEMA</div>
+    <div class="header-badge">TURNO&nbsp;<?= htmlspecialchars($TURNO) ?></div>
   </div>
 </header>
 <nav class="navbar">
@@ -160,6 +165,7 @@ $etichettaCsv = function (array $ids, array $map): string {
     <a href="../vigili/lista.php" class="nav-btn">👥 Personale</a>
     <a href="../ferie/index.php"  class="nav-btn">🗓️ Agenda</a>
     <a href="index.php"           class="nav-btn active">⚙️ Amministrazione</a>
+    <span style="margin-left:auto"><?= turnoComandoHtml() ?></span>
   </div>
 </nav>
 <main class="main">
@@ -169,12 +175,13 @@ $etichettaCsv = function (array $ids, array $map): string {
   </div>
 
   <p style="color:var(--grigio-md);margin:0 0 12px;font-size:.85rem">
-    Regole automatiche applicate alla creazione di un nuovo foglio (o dopo reset) per
-    riempire le posizioni della Centrale: chi (per grado/patente/abilitazione) va in
-    quale posizione. Si applicano <b>nell'ordine</b> indicato, dopo le
-    <a href="assegnazioni_fisse.php">assegnazioni fisse</a> e dopo l'automatismo 1A/2A
-    legato al riposo (quello resta fisso, non è qui). Chi è già stato assegnato da una
-    regola precedente non viene ripreso dalle successive.
+    Regole automatiche del <b>Turno <?= htmlspecialchars($TURNO) ?></b>, applicate alla
+    creazione di un nuovo foglio (o dopo reset) per riempire le posizioni della
+    Centrale: chi (per grado/patente/abilitazione) va in quale posizione. Si applicano
+    <b>nell'ordine</b> indicato, dopo le <a href="assegnazioni_fisse.php">assegnazioni
+    fisse</a> e dopo l'automatismo 1A/2A legato al riposo (quello resta fisso, non è
+    qui). Chi è già stato assegnato da una regola precedente non viene ripreso dalle
+    successive. Ogni turno ha le proprie regole, indipendenti dagli altri.
   </p>
 
   <div class="card">

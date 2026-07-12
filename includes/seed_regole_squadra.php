@@ -1,8 +1,11 @@
 <?php
 /**
  * seed_regole_squadra.php — popola regole_squadra con le 6 regole Centrale
- * equivalenti a quelle finora hardcoded in prepopolaAssegnazioni (#92).
- * Una tantum: non fa nulla se la tabella contiene già righe.
+ * equivalenti a quelle finora hardcoded in prepopolaAssegnazioni (#92), per
+ * ogni turno che non ne ha ancora. Idempotente: si può rilanciare, salta i
+ * turni già popolati. Se la tabella esiste già senza colonna `turno` (prima
+ * versione, un solo set di regole condiviso) la aggiunge — le righe esistenti
+ * diventano turno 'B' (default colonna), poi vengono duplicate per A/C/D.
  * Uso: php /var/www/html/includes/seed_regole_squadra.php
  */
 require_once __DIR__ . '/../config/db.php';
@@ -11,6 +14,7 @@ $pdo = getDB();
 $pdo->exec("CREATE TABLE IF NOT EXISTS regole_squadra (
     id              INT UNSIGNED NOT NULL,
     ordine          INT UNSIGNED NOT NULL DEFAULT 100,
+    turno           CHAR(1)      NOT NULL DEFAULT 'B',
     etichetta       VARCHAR(80)  NOT NULL,
     sede_id         INT UNSIGNED NOT NULL,
     qualifiche_ids  VARCHAR(60)  DEFAULT NULL,
@@ -21,10 +25,13 @@ $pdo->exec("CREATE TABLE IF NOT EXISTS regole_squadra (
     PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
-$giaPresenti = (int)$pdo->query("SELECT COUNT(*) FROM regole_squadra")->fetchColumn();
-if ($giaPresenti > 0) {
-    echo "regole_squadra ha già $giaPresenti righe: nessuna azione (script una tantum).\n";
-    exit;
+$hasCol = (int)$pdo->query(
+    "SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='regole_squadra' AND COLUMN_NAME='turno'"
+)->fetchColumn();
+if ($hasCol === 0) {
+    $pdo->exec("ALTER TABLE regole_squadra ADD COLUMN turno CHAR(1) NOT NULL DEFAULT 'B' AFTER ordine");
+    echo "Colonna turno aggiunta (righe esistenti -> turno B).\n";
 }
 
 function idByCodice(PDO $pdo, string $tab, string $col, string $val): int {
@@ -38,8 +45,8 @@ function csvIds(PDO $pdo, string $tab, string $col, array $vals): string {
     return implode(',', array_map(fn($v) => idByCodice($pdo, $tab, $col, $v), $vals));
 }
 
-$sedeC   = idByCodice($pdo, 'sedi', 'codice', 'C');
-$abilSO  = idByCodice($pdo, 'abilitazioni', 'codice', 'SO');
+$sedeC  = idByCodice($pdo, 'sedi', 'codice', 'C');
+$abilSO = idByCodice($pdo, 'abilitazioni', 'codice', 'SO');
 
 $regole = [
     ['ordine' => 10, 'etichetta' => 'Operatore Centrale (SO)',
@@ -63,15 +70,23 @@ $regole = [
 ];
 
 $ins = $pdo->prepare(
-    "INSERT INTO regole_squadra (id, ordine, etichetta, sede_id, qualifiche_ids, patenti_ids, abilitazione_id, posizioni_ids, attiva)
-     VALUES (?,?,?,?,?,?,?,?,1)"
+    "INSERT INTO regole_squadra (id, ordine, turno, etichetta, sede_id, qualifiche_ids, patenti_ids, abilitazione_id, posizioni_ids, attiva)
+     VALUES (?,?,?,?,?,?,?,?,?,1)"
 );
-foreach ($regole as $r) {
-    $id      = nextId($pdo, 'regole_squadra');
-    $quali   = $r['quali'] ? csvIds($pdo, 'qualifiche', 'codice', $r['quali']) : '';
-    $pat     = $r['pat']   ? csvIds($pdo, 'patenti', 'tipo', $r['pat'])       : '';
-    $pos     = csvIds($pdo, 'posizioni', 'codice', $r['pos']);
-    $ins->execute([$id, $r['ordine'], $r['etichetta'], $sedeC, $quali, $pat, $r['abil'], $pos]);
-    echo "Inserita #$id — {$r['etichetta']} (ordine {$r['ordine']})\n";
+foreach (['A', 'B', 'C', 'D'] as $turno) {
+    $stChk = $pdo->prepare("SELECT COUNT(*) FROM regole_squadra WHERE turno=?");
+    $stChk->execute([$turno]);
+    if ((int)$stChk->fetchColumn() > 0) {
+        echo "Turno $turno ha già regole: salto.\n";
+        continue;
+    }
+    foreach ($regole as $r) {
+        $id    = nextId($pdo, 'regole_squadra');
+        $quali = $r['quali'] ? csvIds($pdo, 'qualifiche', 'codice', $r['quali']) : '';
+        $pat   = $r['pat']   ? csvIds($pdo, 'patenti', 'tipo', $r['pat'])       : '';
+        $pos   = csvIds($pdo, 'posizioni', 'codice', $r['pos']);
+        $ins->execute([$id, $r['ordine'], $turno, $r['etichetta'], $sedeC, $quali, $pat, $r['abil'], $pos]);
+        echo "Turno $turno: inserita #$id — {$r['etichetta']} (ordine {$r['ordine']})\n";
+    }
 }
-echo "Fatto: " . count($regole) . " regole inserite.\n";
+echo "Fatto.\n";

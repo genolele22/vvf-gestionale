@@ -97,8 +97,9 @@ function resterEffettivi(PDO $pdo, string $dataStr, string $tipoParam, int $salt
 //     - 2A  = priorità a chi ha fatto 1A nel BLOCCO precedente (D+N), se presente
 //             oggi — fisso, ancorato al blocco (vale identico su D e N, #92)
 //     - tutto il resto (CENTR-OP, fasce Vp per patente, Cr/Cs) è gestito dalle
-//       regole in tabella `regole_squadra` (Amministrazione → Criteri squadra),
-//       editabili senza toccare il codice — vedi motore più sotto
+//       regole in tabella `regole_squadra` (Amministrazione → Criteri squadra,
+//       per-turno: ogni admin gestisce le proprie), editabili senza toccare il
+//       codice — vedi motore più sotto
 //     - 1B/2B-NBCR restano vuote (manuali / fisse)
 //
 // Override unico = assegnazioni_fisse (Amministrazione), priorità massima.
@@ -303,7 +304,9 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, arra
             array_filter(array_map('trim', explode(',', $csv)), fn($v) => $v !== '')
         )));
 
-        $regole = $pdo->query("SELECT * FROM regole_squadra WHERE attiva=1 ORDER BY ordine, id")->fetchAll();
+        $stRg = $pdo->prepare("SELECT * FROM regole_squadra WHERE attiva=1 AND turno=? ORDER BY ordine, id");
+        $stRg->execute([turnoAttivo()]);
+        $regole = $stRg->fetchAll();
         foreach ($regole as $rg) {
             $sedeRg = $sedeCodById[(int)$rg['sede_id']] ?? 'C';
             $qualiRg = $csvToSet((string)($rg['qualifiche_ids'] ?? ''), $qualCodById);
