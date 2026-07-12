@@ -2660,7 +2660,7 @@ function avvisaSeDisponibiliResidui(messaggioAzione, onProcedi) {
     if (n === 0) { onProcedi(); return; }
     chiediConferma({
         titolo:  '⚠️ Personale ancora disponibile',
-        testo:   `Ci sono ancora <b>${n}</b> vigile${n === 1 ? '' : 'i'} in <b>Disponibili</b>, `
+        testo:   `Ci sono ancora <b>${n}</b> ${n === 1 ? 'vigile' : 'vigili'} in <b>Disponibili</b>, `
                + `non assegnati a nessuna posizione.<br>`
                + `A servizio concluso la casella dovrebbe essere vuota.<br><br>`
                + `Vuoi procedere comunque con ${messaggioAzione}?`,
