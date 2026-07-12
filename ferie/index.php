@@ -845,7 +845,7 @@ async function setStato(ids, stato) {
         : '';
     showMsg(`✅ ${res.aggiornati} turno/i → ${STATO_LABEL[stato]}${extra}`, 'ok');
     sessionStorage.setItem('agendaScrollY', window.scrollY);
-    setTimeout(() => location.reload(), 700);
+    setTimeout(() => location.reload(), 1300);
 }
 
 // Badge comunicazione di un turno, calcolato dallo stato + dai flag sent per esito
@@ -975,7 +975,7 @@ async function eseguiScambio(sid, stato) {
     }
     // Ricarico: l'approvato deve comparire nell'elenco per data e sparire dai pending
     showMsg(stato === 'approved' ? '✅ Scambio approvato.' : '✅ Scambio rifiutato.', 'ok');
-    setTimeout(() => location.reload(), 700);
+    setTimeout(() => location.reload(), 1300);
 }
 
 sincronizzaDOM();
