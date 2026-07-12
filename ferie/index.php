@@ -504,6 +504,11 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
 .alert-ok  { background: var(--verde-bg); color: var(--verde); border: 1px solid #a9dfbf; }
 .alert-err { background: #fdf2f2; color: var(--rosso); border: 1px solid #f5b7b1; }
 
+/* Scroll da "clic sulla data" del foglio (?goto=...): senza questo lo
+   scrollIntoView allinea la sezione al bordo del viewport, che finisce
+   sotto header+navbar sticky (114px) — le prime righe restano coperte. */
+.data-section { scroll-margin-top: 116px; }
+
 /* ── Turni extra (sola lettura) ── */
 .extra-form { background: var(--bianco); border-radius: var(--radius); box-shadow: var(--shadow);
               padding: 10px 20px; margin-bottom: 16px; display: flex; align-items: center;
@@ -530,7 +535,7 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
 
 <nav class="navbar">
   <div class="navbar-inner">
-    <a href="../index.php"          class="nav-btn">🏠 Cruscotto</a>
+    <a href="../index.php"          class="nav-btn">🚒 Home</a>
     <a href="../foglio/nuovo.php"   class="nav-btn">📋 Foglio</a>
     <a href="../vigili/lista.php"   class="nav-btn">👥 Personale</a>
     <a href="index.php"             class="nav-btn active">🗓️ Agenda</a>
