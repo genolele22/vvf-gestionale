@@ -94,7 +94,7 @@ class FoglioRenderer
         $idByCode = [];
         foreach ($this->pdo->query("SELECT id,codice FROM posizioni")->fetchAll() as $p) $idByCode[(int)$p['id']] = $p['codice'];
         $st = $this->pdo->prepare(
-            "SELECT a.posizione_id, a.ordine, a.in_straordinario, a.vigile_id, v.cognome, v.disambiguatore,
+            "SELECT a.posizione_id, a.in_straordinario, a.vigile_id, v.cognome, v.disambiguatore,
                     q.codice AS qcodice, $pat AS patente_max,
                     v.sede_id AS vig_sede, p.sede_id AS pos_sede, s.codice AS sede_cod
              FROM assegnazioni a JOIN vigili v ON v.id=a.vigile_id JOIN qualifiche q ON q.id=v.qualifica_id
@@ -112,7 +112,7 @@ class FoglioRenderer
         // Tabella creata da foglio/nuovo.php; potrebbe non esistere su DB vecchi.
         try {
             $stx = $this->pdo->prepare(
-                "SELECT posizione_id, nome, in_straordinario, ordine
+                "SELECT posizione_id, nome, in_straordinario
                    FROM assegnazioni_esterni WHERE foglio_id=? ORDER BY posizione_id, ordine"
             );
             $stx->execute([$foglioId]);
@@ -124,7 +124,6 @@ class FoglioRenderer
                     'in_straordinario' => (int)$e['in_straordinario'],
                     'patente_max'      => null,
                     'sigla'            => null,
-                    'ordine'           => (int)$e['ordine'],
                 ];
             }
         } catch (Throwable $ignored) { /* tabella assente: nessun esterno */ }
@@ -431,67 +430,27 @@ class FoglioRenderer
         $pa = $pa ?? count($rows); $miss = $miss ?? $pa; $mal = $mal ?? $miss;
 
         // ── AREA SERVIZIO: riempi i mezzi ───────────────────────────────────────
-        // Riga esatta (a.ordine), non compattamento in sequenza: la stessa riga
-        // vista a schermo deve uscire nella stessa riga sull'ODT. Ordine mancante/
-        // duplicato (dati storici) → coda di ripiego, mai perso (#67, incongruenze
-        // schermo/ODT).
-        $colCode     = [];   // start-col → codice mezzo corrente
-        $queueOrdine = [];   // codice → [riga => dato]
-        $queueExtra  = [];   // codice → coda di ripiego (ordine incoerente)
-        $rigaAttuale = [];   // codice → contatore riga fisica corrente nel template
-        $lastCell    = [];   // codice → ultima cella riempita (per overflow)
-
-        // Capienza reale del template (n. celle vuote per mezzo): serve QUI, prima
-        // di classificare gli ordine, altrimenti un ordine storico oltre la
-        // capienza fisica (es. 7 su un mezzo da 6 righe) viene considerato valido,
-        // non trova mai una riga nel walk sotto e finisce ammucchiato in overflow
-        // invece che nella coda di ripiego — incongruenza rispetto allo schermo,
-        // che invece lo scarta subito (capPos).
-        $capReale = []; $colCodeCap = [];
-        for ($i = 0; $i < $pa; $i++) {
-            foreach ($this->rowCells($rows[$i]) as [$col, $cell]) {
-                $txt = trim($cell->textContent);
-                if ($txt !== '' && isset(self::HDR2CODE[$txt])) {
-                    $colCodeCap[$col] = self::HDR2CODE[$txt];
-                } elseif ($txt === '' && isset($colCodeCap[$col])) {
-                    $capReale[$colCodeCap[$col]] = ($capReale[$colCodeCap[$col]] ?? 0) + 1;
-                }
-            }
-        }
-
-        foreach ($this->assByCode as $code => $list) {
-            $byOrdine = []; $extra = [];
-            $cap = $capReale[$code] ?? PHP_INT_MAX;
-            foreach ($list as $a) {
-                $o = (int)($a['ordine'] ?? 0);
-                if ($o >= 1 && $o <= $cap && !isset($byOrdine[$o])) $byOrdine[$o] = $a;
-                else $extra[] = $a;
-            }
-            $queueOrdine[$code] = $byOrdine;
-            $queueExtra[$code]  = $extra;
-        }
+        // Riempimento sequenziale dall'alto: non segue la riga esatta vista a
+        // schermo (che può avere buchi voluti), l'ODT compatta sempre in cima.
+        // Scelta esplicita: la stampa deve restare pulita, i buchi sono solo
+        // uno strumento di lavoro sullo schermo.
+        $colCode  = [];         // start-col → codice mezzo corrente
+        $queue    = [];         // codice → lista nomi DB da piazzare (in ordine)
+        $lastCell = [];         // codice → ultima cella riempita (per overflow)
+        foreach ($this->assByCode as $code => $list) { $queue[$code] = $list; }
 
         for ($i = 0; $i < $pa; $i++) {
             foreach ($this->rowCells($rows[$i]) as [$col, $cell]) {
                 $txt = trim($cell->textContent);
                 if ($txt !== '' && isset(self::HDR2CODE[$txt])) {      // header mezzo
                     $colCode[$col] = self::HDR2CODE[$txt];
-                    $rigaAttuale[$colCode[$col]] = 0;
                     continue;
                 }
-                // cella vuota sotto un mezzo → riga fisica successiva di quel mezzo
+                // cella vuota sotto un mezzo → piazza prossimo nome
                 if ($txt === '' && isset($colCode[$col])) {
                     $code = $colCode[$col];
-                    $riga = ++$rigaAttuale[$code];
-                    if (isset($queueOrdine[$code][$riga])) {
-                        $a = $queueOrdine[$code][$riga];
-                        unset($queueOrdine[$code][$riga]);
-                    } elseif (!empty($queueExtra[$code])) {
-                        $a = array_shift($queueExtra[$code]);
-                    } else {
-                        $a = null;
-                    }
-                    if ($a !== null) {
+                    if (!empty($queue[$code])) {
+                        $a = array_shift($queue[$code]);
                         // fuori sede: sigla in suffisso (come in FERIE) + nome sottolineato
                         $sfx = !empty($a['sigla']) ? ' ' . $a['sigla'] : '';
                         $this->writeName($doc, $cell, $a, $sfx, '', !empty($a['sigla']));
@@ -500,13 +459,7 @@ class FoglioRenderer
                 }
             }
         }
-        // nomi in eccedenza (righe oltre la capienza del template, o ripiego mai
-        // piazzato): accodali all'ultima cella del mezzo (niente perdita dati)
-        $queue = [];
-        foreach ($queueOrdine as $code => $byOrdine) {
-            ksort($byOrdine);
-            $queue[$code] = array_merge(array_values($byOrdine), $queueExtra[$code] ?? []);
-        }
+        // nomi in eccedenza: accodali all'ultima cella del mezzo (niente perdita dati)
         foreach ($queue as $code => $rest) {
             if (empty($rest)) continue;
             if (isset($lastCell[$code])) {
