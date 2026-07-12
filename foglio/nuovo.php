@@ -149,24 +149,37 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, arra
     // Notturno(gg X+1), date di calendario diverse (calcolaNotte = calcolaDiurno
     // del giorno prima, includes/turni.php) — la query "servizio precedente" presa
     // alla lettera darebbe risultati diversi tra D e N dello stesso blocco.
+    //
+    // servizioAdiacenteB() NON filtra per D/N: il parametro tipo serve solo a
+    // capire da dove partire la scansione, il risultato è il servizio (D o N) del
+    // turno più vicino nel passato. Per come è fatto il ciclo (blocco = D poi N il
+    // giorno dopo, poi un vuoto di giorni fino al blocco successivo) quel servizio
+    // più vicino è SEMPRE il Notturno del blocco precedente — mai la sua Diurna,
+    // che è un giorno più lontana. Va quindi usato così com'è, senza ricostruire
+    // altre date: un tentativo precedente lo trattava per errore come una Diurna e
+    // calcolava date sbagliate, che non trovavano mai un foglio esistente (#92).
     $fece1APrima = [];
-    if ($dataStr !== '' && $tipoParam !== '') {
+    if ($dataStr !== '' && $tipoParam !== '' && isset($posIdByCode['1A'])) {
         $meD = ($tipoParam === 'N')
             ? (new DateTime($dataStr))->modify('-1 day')->format('Y-m-d')
             : $dataStr;
-        $prevD = servizioAdiacenteB($meD, 'D', -1, turnoAttivo());   // diurno blocco precedente
-        if ($prevD) {
-            $prevN = (new DateTime($prevD['data']))->modify('+1 day')->format('Y-m-d');
-            // Notturno del blocco precedente se esiste (stato più recente di quel
-            // blocco), altrimenti il suo Diurno.
-            $stPF = $pdo->prepare(
-                "SELECT id FROM fogli_servizio WHERE turno=?
-                   AND ((data_servizio=? AND tipo_turno='N') OR (data_servizio=? AND tipo_turno='D'))
-                 ORDER BY tipo_turno DESC LIMIT 1"
-            );
-            $stPF->execute([turnoAttivo(), $prevN, $prevD['data']]);
-            $prevBloccoFoglioId = (int)($stPF->fetchColumn() ?: 0);
-            if ($prevBloccoFoglioId > 0 && isset($posIdByCode['1A'])) {
+        $prevServ = servizioAdiacenteB($meD, 'D', -1, turnoAttivo());
+        if ($prevServ) {
+            // Fallback sulla Diurna dello stesso blocco precedente se per qualche
+            // motivo il suo Notturno non è mai stato creato come foglio.
+            $candidati = [[$prevServ['data'], $prevServ['tipo']]];
+            if ($prevServ['tipo'] === 'N') {
+                $diurnoStesso = (new DateTime($prevServ['data']))->modify('-1 day')->format('Y-m-d');
+                $candidati[] = [$diurnoStesso, 'D'];
+            }
+            $prevBloccoFoglioId = 0;
+            $stPF = $pdo->prepare("SELECT id FROM fogli_servizio WHERE turno=? AND data_servizio=? AND tipo_turno=?");
+            foreach ($candidati as [$d, $t]) {
+                $stPF->execute([turnoAttivo(), $d, $t]);
+                $fid = (int)($stPF->fetchColumn() ?: 0);
+                if ($fid > 0) { $prevBloccoFoglioId = $fid; break; }
+            }
+            if ($prevBloccoFoglioId > 0) {
                 $st1A = $pdo->prepare("SELECT vigile_id FROM assegnazioni WHERE foglio_id=? AND posizione_id=?");
                 $st1A->execute([$prevBloccoFoglioId, $posIdByCode['1A']]);
                 foreach ($st1A->fetchAll(PDO::FETCH_COLUMN) as $vid) $fece1APrima[(int)$vid] = true;
