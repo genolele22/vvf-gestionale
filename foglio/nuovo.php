@@ -92,12 +92,13 @@ function resterEffettivi(PDO $pdo, string $dataStr, string $tipoParam, int $salt
 //     ruolo (Cr→Cs→Vp) e cognome, traboccando alla posizione successiva quando
 //     la corrente è piena (capienza ODT). Mappa $sedePos.
 //
-//  B) CENTRALE (sede 'C'): regole specifiche per posizione:
-//     - 1A      = era in salto il turno precedente (precedenza su tutto)
-//     - CENTR-OP = abilitazione SO + patente 1/2
-//     - fasce Vp per patente (pool unica spezzata per indice):
-//         pat2 → 3A(1-6)·4B(7-10) · pat3/4 → 4A(1-6)·1FUN(7-8) · pat1 → 5A(1-6)·1SOP(7-10)
-//     - Cr/Cs: pat{1,2}/nessuna → 2A · pat{3,4} → 3B
+//  B) CENTRALE (sede 'C'):
+//     - 1A  = era in salto il turno precedente (precedenza su tutto) — fisso
+//     - 2A  = priorità a chi ha fatto 1A nel BLOCCO precedente (D+N), se presente
+//             oggi — fisso, ancorato al blocco (vale identico su D e N, #92)
+//     - tutto il resto (CENTR-OP, fasce Vp per patente, Cr/Cs) è gestito dalle
+//       regole in tabella `regole_squadra` (Amministrazione → Criteri squadra),
+//       editabili senza toccare il codice — vedi motore più sotto
 //     - 1B/2B-NBCR restano vuote (manuali / fisse)
 //
 // Override unico = assegnazioni_fisse (Amministrazione), priorità massima.
@@ -141,25 +142,66 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, arra
         }
     }
 
+    // Chi ha fatto 1A nel BLOCCO precedente (stesso turno) → priorità su 2A oggi.
+    // Ancorato al Diurno del blocco (non al foglio) così il risultato è identico
+    // sia generando il Diurno che il Notturno di oggi: un blocco = Diurno(gg X) +
+    // Notturno(gg X+1), date di calendario diverse (calcolaNotte = calcolaDiurno
+    // del giorno prima, includes/turni.php) — la query "servizio precedente" presa
+    // alla lettera darebbe risultati diversi tra D e N dello stesso blocco.
+    $fece1APrima = [];
+    if ($dataStr !== '' && $tipoParam !== '') {
+        $meD = ($tipoParam === 'N')
+            ? (new DateTime($dataStr))->modify('-1 day')->format('Y-m-d')
+            : $dataStr;
+        $prevD = servizioAdiacenteB($meD, 'D', -1, turnoAttivo());   // diurno blocco precedente
+        if ($prevD) {
+            $prevN = (new DateTime($prevD['data']))->modify('+1 day')->format('Y-m-d');
+            // Notturno del blocco precedente se esiste (stato più recente di quel
+            // blocco), altrimenti il suo Diurno.
+            $stPF = $pdo->prepare(
+                "SELECT id FROM fogli_servizio WHERE turno=?
+                   AND ((data_servizio=? AND tipo_turno='N') OR (data_servizio=? AND tipo_turno='D'))
+                 ORDER BY tipo_turno DESC LIMIT 1"
+            );
+            $stPF->execute([turnoAttivo(), $prevN, $prevD['data']]);
+            $prevBloccoFoglioId = (int)($stPF->fetchColumn() ?: 0);
+            if ($prevBloccoFoglioId > 0 && isset($posIdByCode['1A'])) {
+                $st1A = $pdo->prepare("SELECT vigile_id FROM assegnazioni WHERE foglio_id=? AND posizione_id=?");
+                $st1A->execute([$prevBloccoFoglioId, $posIdByCode['1A']]);
+                foreach ($st1A->fetchAll(PDO::FETCH_COLUMN) as $vid) $fece1APrima[(int)$vid] = true;
+            }
+        }
+    }
+
     // Assenti registrati su questo foglio → fuori servizio
     $assentiIds = [];
     $stAb = $pdo->prepare("SELECT vigile_id FROM assenze WHERE foglio_id=?");
     $stAb->execute([$foglioId]);
     foreach ($stAb->fetchAll(PDO::FETCH_COLUMN) as $aid) $assentiIds[(int)$aid] = true;
 
-    // Pool: attivi, con i dati per le regole (SO + patente più alta posseduta).
+    // Pool: attivi, con i dati per le regole (patente più alta posseduta).
     $patMax = "(SELECT MAX(p.tipo) FROM vigili_patenti vp JOIN patenti p ON p.id=vp.patente_id WHERE vp.vigile_id=v.id)";
-    $hasSO  = "EXISTS (SELECT 1 FROM vigili_abilitazioni va JOIN abilitazioni ab ON ab.id=va.abilitazione_id WHERE va.vigile_id=v.id AND ab.codice='SO')";
     $rows = $pdo->query(
-        "SELECT v.id, v.cognome, v.sede_id, v.qualifica_id, $patMax AS patente_max, ($hasSO) AS ha_so
+        "SELECT v.id, v.cognome, v.sede_id, v.qualifica_id, $patMax AS patente_max
          FROM vigili v WHERE v.attivo=1 AND v.turno='" . turnoAttivo() . "'"
     )->fetchAll();
+
+    // Abilitazioni possedute per vigile (usate dalle regole di regole_squadra,
+    // es. 'SO' per l'operatore Centrale) — mappa vid → [codici...].
+    $abilByVid = [];
+    foreach ($pdo->query(
+        "SELECT va.vigile_id, ab.codice FROM vigili_abilitazioni va
+         JOIN abilitazioni ab ON ab.id = va.abilitazione_id"
+    ) as $ar) {
+        $abilByVid[(int)$ar['vigile_id']][] = $ar['codice'];
+    }
 
     // Candidati = non a riposo, non assenti
     $cand = [];
     foreach ($rows as $r) {
         $vid = (int)$r['id'];
         if (isset($resters[$vid]) || isset($assentiIds[$vid])) continue;
+        $r['abilitazioni'] = $abilByVid[$vid] ?? [];
         $cand[$vid] = $r;
     }
 
@@ -239,28 +281,47 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, arra
     // 1A — era a riposo il servizio precedente (precedenza su tutto)
     $riempi(['1A'], $disp(fn($r) => $isC($r) && isset($eraInSaltoPrima[(int)$r['id']])));
 
-    // CENTR-OP — abilitazione SO, patente 1 o 2
-    $riempi(['CENTR-OP'], $disp(fn($r) => $isC($r) && (int)$r['ha_so'] === 1 && in_array((int)$r['patente_max'], [1, 2], true)));
+    // 2A — priorità a chi ha fatto 1A nel blocco precedente (#92), prima di
+    // qualunque regola generica su 2A qui sotto.
+    $riempi(['2A'], $disp(fn($r) => $isC($r) && isset($fece1APrima[(int)$r['id']])));
 
-    // Fasce Vp per patente: pool unica per patente, traboccata sulle due posizioni
-    // a capienza (es. pat2 riempie 3A poi 4B). Limiti = capienze del modello.
-    $vp = $disp(fn($r) => $isC($r) && (int)$r['qualifica_id'] === 1);
-    $byPat = ['p2' => [], 'p34' => [], 'p1' => []];
-    foreach ($vp as $r) {
-        $p = (int)$r['patente_max'];
-        if ($p === 2)                 $byPat['p2'][]  = $r;
-        elseif ($p === 3 || $p === 4) $byPat['p34'][] = $r;
-        elseif ($p === 1)             $byPat['p1'][]  = $r;
-        // Vp senza patente: nessuna fascia → resta disponibile
-    }
-    $riempi(['3A', '4B'],                  $byPat['p2']);
-    $riempi(['4A', '1FUN-AUTORADIO'],      $byPat['p34']);
-    $riempi(['5A', '1SOP-AUTORIM'],        $byPat['p1']);
+    // Motore regole configurabili (Amministrazione → Criteri squadra, tabella
+    // regole_squadra): copre CENTR-OP, fasce Vp per patente, Cr/Cs. Tabella
+    // assente/vuota = nessuna regola extra, degradazione morbida (come
+    // assegnazioni_fisse più sopra).
+    try {
+        $qualCodById = [];
+        foreach ($pdo->query("SELECT id, codice FROM qualifiche") as $q) $qualCodById[(int)$q['id']] = $q['codice'];
+        $patTipoById = [];
+        foreach ($pdo->query("SELECT id, tipo FROM patenti") as $p) $patTipoById[(int)$p['id']] = (string)$p['tipo'];
+        $abilCodById = [];
+        foreach ($pdo->query("SELECT id, codice FROM abilitazioni") as $a) $abilCodById[(int)$a['id']] = $a['codice'];
+        $posCodeById = array_flip($posIdByCode);
 
-    // Cr/Cs: pat{3,4} → 3B, altrimenti (1/2/senza) → 2A
-    $crcs = $disp(fn($r) => $isC($r) && in_array((int)$r['qualifica_id'], [2, 3], true));
-    $riempi(['2A'], array_filter($crcs, fn($r) => !in_array((int)$r['patente_max'], [3, 4], true)));
-    $riempi(['3B'], array_filter($crcs, fn($r) => in_array((int)$r['patente_max'], [3, 4], true)));
+        $csvToSet = fn(string $csv, array $map): array => array_values(array_filter(array_map(
+            fn($id) => $map[(int)$id] ?? null,
+            array_filter(array_map('trim', explode(',', $csv)), fn($v) => $v !== '')
+        )));
+
+        $regole = $pdo->query("SELECT * FROM regole_squadra WHERE attiva=1 ORDER BY ordine, id")->fetchAll();
+        foreach ($regole as $rg) {
+            $sedeRg = $sedeCodById[(int)$rg['sede_id']] ?? 'C';
+            $qualiRg = $csvToSet((string)($rg['qualifiche_ids'] ?? ''), $qualCodById);
+            $patRg   = $csvToSet((string)($rg['patenti_ids'] ?? ''), $patTipoById);
+            $abilRg  = $rg['abilitazione_id'] ? ($abilCodById[(int)$rg['abilitazione_id']] ?? null) : null;
+            $posRg   = $csvToSet((string)($rg['posizioni_ids'] ?? ''), $posCodeById);
+            if (!$posRg) continue;
+
+            $cond = function (array $r) use ($sedeCod, $sedeRg, $qualiRg, $patRg, $abilRg, $qualCodById): bool {
+                if ($sedeCod($r) !== $sedeRg) return false;
+                if ($qualiRg && !in_array($qualCodById[(int)$r['qualifica_id']] ?? '', $qualiRg, true)) return false;
+                if ($patRg && !in_array((string)$r['patente_max'], $patRg, true)) return false;
+                if ($abilRg !== null && !in_array($abilRg, $r['abilitazioni'] ?? [], true)) return false;
+                return true;
+            };
+            $riempi($posRg, $disp($cond));
+        }
+    } catch (Throwable $e) { /* tabella assente: nessuna regola extra */ }
 }
 
 function prepopolaFoglio(PDO $pdo, int $foglioId, int $saltoRiposoId, array $resters,

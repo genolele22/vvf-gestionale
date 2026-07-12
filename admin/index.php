@@ -57,6 +57,7 @@ $nAssFix  = contaTab($pdo, "SELECT COUNT(*) FROM assegnazioni_fisse af JOIN vigi
 $nParam   = contaTab($pdo, "SELECT COUNT(*) FROM parametri");
 $nCapi    = contaTab($pdo, "SELECT COUNT(*) FROM capi_pool cp JOIN vigili v ON v.id=cp.vigile_id WHERE v.turno='$TURNO'");
 $nFur     = contaTab($pdo, "SELECT COUNT(*) FROM furieri_fissi ff JOIN vigili v ON v.id=ff.vigile_id WHERE v.turno='$TURNO'");
+$nRegole  = contaTab($pdo, "SELECT COUNT(*) FROM regole_squadra WHERE attiva=1");
 ?>
 <!DOCTYPE html>
 <html lang="it">
@@ -171,6 +172,13 @@ $nFur     = contaTab($pdo, "SELECT COUNT(*) FROM furieri_fissi ff JOIN vigili v 
       <h3>Parametri di sistema</h3>
       <p>Posta del bot (indirizzi, SMTP/IMAP), formato nomi sul foglio e parametri liberi.</p>
       <div class="ac-meta"><?= $nParam ?> parametri</div>
+    </a>
+
+    <a href="regole_squadra.php" class="admin-card">
+      <div class="ac-ico">🧩</div>
+      <h3>Criteri squadra</h3>
+      <p>Chi (per grado/patente/abilitazione) va in quale posizione in Centrale al nuovo foglio o dopo reset.</p>
+      <div class="ac-meta"><?= $nRegole ?> regole attive</div>
     </a>
     <?php endif; ?>
 
