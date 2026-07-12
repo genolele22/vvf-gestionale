@@ -440,11 +440,31 @@ class FoglioRenderer
         $queueExtra  = [];   // codice → coda di ripiego (ordine incoerente)
         $rigaAttuale = [];   // codice → contatore riga fisica corrente nel template
         $lastCell    = [];   // codice → ultima cella riempita (per overflow)
+
+        // Capienza reale del template (n. celle vuote per mezzo): serve QUI, prima
+        // di classificare gli ordine, altrimenti un ordine storico oltre la
+        // capienza fisica (es. 7 su un mezzo da 6 righe) viene considerato valido,
+        // non trova mai una riga nel walk sotto e finisce ammucchiato in overflow
+        // invece che nella coda di ripiego — incongruenza rispetto allo schermo,
+        // che invece lo scarta subito (capPos).
+        $capReale = []; $colCodeCap = [];
+        for ($i = 0; $i < $pa; $i++) {
+            foreach ($this->rowCells($rows[$i]) as [$col, $cell]) {
+                $txt = trim($cell->textContent);
+                if ($txt !== '' && isset(self::HDR2CODE[$txt])) {
+                    $colCodeCap[$col] = self::HDR2CODE[$txt];
+                } elseif ($txt === '' && isset($colCodeCap[$col])) {
+                    $capReale[$colCodeCap[$col]] = ($capReale[$colCodeCap[$col]] ?? 0) + 1;
+                }
+            }
+        }
+
         foreach ($this->assByCode as $code => $list) {
             $byOrdine = []; $extra = [];
+            $cap = $capReale[$code] ?? PHP_INT_MAX;
             foreach ($list as $a) {
                 $o = (int)($a['ordine'] ?? 0);
-                if ($o >= 1 && !isset($byOrdine[$o])) $byOrdine[$o] = $a;
+                if ($o >= 1 && $o <= $cap && !isset($byOrdine[$o])) $byOrdine[$o] = $a;
                 else $extra[] = $a;
             }
             $queueOrdine[$code] = $byOrdine;
