@@ -91,7 +91,7 @@ $nFur     = contaTab($pdo, "SELECT COUNT(*) FROM furieri_fissi ff JOIN vigili v 
 </header>
 <nav class="navbar">
   <div class="navbar-inner">
-    <a href="../index.php"        class="nav-btn">🏠 Cruscotto</a>
+    <a href="../index.php"        class="nav-btn">🚒 Home</a>
     <a href="../foglio/nuovo.php" class="nav-btn">📋 Nuovo Foglio</a>
     <a href="../vigili/lista.php" class="nav-btn">👥 Personale</a>
     <a href="../ferie/index.php"  class="nav-btn">🗓️ Agenda</a>

@@ -121,7 +121,7 @@ $saltoOggi = $turnoOggi['diurno']['turno'] . $turnoOggi['diurno']['salto']
 <!-- ══ NAVBAR ═════════════════════════════════════════════════ -->
 <nav class="navbar">
   <div class="navbar-inner">
-    <a href="index.php"        class="nav-btn active">🏠 Cruscotto</a>
+    <a href="index.php"        class="nav-btn active">🚒 Home</a>
     <a href="foglio/nuovo.php" class="nav-btn">📋 Nuovo Foglio</a>
     <a href="vigili/lista.php" class="nav-btn">👥 Personale</a>
     <a href="ferie/index.php"  class="nav-btn">🗓️ Agenda</a>

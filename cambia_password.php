@@ -52,7 +52,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 </header>
 <nav class="navbar">
   <div class="navbar-inner">
-    <a href="index.php" class="nav-btn">🏠 Cruscotto</a>
+    <a href="index.php" class="nav-btn">🚒 Home</a>
     <?php if (!isAdmin()): ?>
     <a href="admin/utenti.php" class="nav-btn">👤 Password profili user</a>
     <?php endif; ?>
