@@ -22,6 +22,9 @@ function isComando(): bool        { return ruoloCorrente() === 'comando'; }
 function isAdmin(): bool          { return in_array(ruoloCorrente(), ['comando','admin'], true); }
 function isSoloLettura(): bool    { return ruoloCorrente() === 'user'; }
 
+/** TEMP: chi vede il Logbook di sviluppo — Comando + beta-tester (rimuovere insieme alla pagina). */
+function isLogbookUser(): bool    { return in_array(utenteCorrente()['username'] ?? '', ['lelemele', 'adminb'], true); }
+
 /**
  * Permessi per turno dell'utente corrente: [turno => 'lettura'|'scrittura'].
  * Sorgente = tabella `utenti_turni` (matrice gestita da Comando, #90). `comando`
@@ -148,6 +151,13 @@ function richiediComando(): void {
     if (!AUTH_ENFORCE) return;
     richiediLogin();
     if (!isComando()) { http_response_code(403); exit('Accesso negato: solo Comando.'); }
+}
+
+/** TEMP: Comando + beta-tester Logbook (no-op in soft). */
+function richiediLogbook(): void {
+    if (!AUTH_ENFORCE) return;
+    richiediLogin();
+    if (!isLogbookUser()) { http_response_code(403); exit('Accesso negato: solo Comando e beta-tester.'); }
 }
 
 /** Blocca le azioni di modifica per gli user in sola lettura (no-op in soft). */
