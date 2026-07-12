@@ -162,6 +162,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
+    // ── Ferie estiva: visto fureria, solo GIU-SET, nessun riferimento sull'ODT ──
+    if ($azione === 'toggle_estiva') {
+        $id = (int)($_POST['id'] ?? 0);
+        if ($id <= 0) { echo json_encode(['ok' => false, 'errore' => 'ID non valido']); exit; }
+
+        $st = $pdo->prepare(
+            "SELECT r.data_richiesta, r.ferie_estiva, v.turno
+             FROM bot_requests r JOIN vigili v ON v.id = r.vigile_id WHERE r.id=?"
+        );
+        $st->execute([$id]);
+        $r = $st->fetch();
+        if (!$r) { echo json_encode(['ok' => false, 'errore' => 'Richiesta inesistente']); exit; }
+        if (!puoModificareTurno($r['turno'])) {
+            echo json_encode(['ok' => false, 'errore' => 'Turno in sola lettura per il tuo profilo.']); exit;
+        }
+        $mese = (int)date('n', strtotime($r['data_richiesta']));
+        if (!in_array($mese, [6, 7, 8, 9], true)) {
+            echo json_encode(['ok' => false, 'errore' => 'Fuori stagione estiva.']); exit;
+        }
+
+        $nuovo = $r['ferie_estiva'] ? 0 : 1;
+        $pdo->prepare("UPDATE bot_requests SET ferie_estiva=? WHERE id=?")->execute([$nuovo, $id]);
+        echo json_encode(['ok' => true, 'ferie_estiva' => $nuovo]);
+        exit;
+    }
+
     // ── Scambi salto nati dal bot: approva / rifiuta dall'Agenda ──
     // Molte approvazioni avvengono al computer invece che dal bot. Replica la
     // stessa logica del bot (override + patch fogli) e avvisa i due vigili via
@@ -221,7 +247,7 @@ require_once __DIR__ . '/../includes/ferie_blocchi.php';
 
 // ── Carica richieste del mese ────────────────────────────────
 $stmt = $pdo->prepare("
-    SELECT r.id, r.vigile_id, r.data_richiesta, r.tipo_turno, r.stato,
+    SELECT r.id, r.vigile_id, r.data_richiesta, r.tipo_turno, r.stato, r.ferie_estiva,
            v.nome, v.cognome, v.disambiguatore, v.email, v.turno,
            q.codice AS qcodice,
            s.nome   AS sede_nome,
@@ -478,6 +504,14 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
 .turno-tipo.N  { color: #1a4d72; }
 .turno-tipo.DN { color: #6c3483; }
 .turno-spacer { flex: 1; }
+
+/* Visto "ferie estiva" (solo GIU-SET), niente riferimento sull'ODT */
+.ferie-estiva-chk {
+    display: inline-flex; align-items: center; gap: 3px;
+    font-size: .85rem; cursor: pointer; flex-shrink: 0; opacity: .55;
+}
+.ferie-estiva-chk:has(input:checked) { opacity: 1; }
+.ferie-estiva-chk input { cursor: pointer; }
 
 /* ── Doppia spunta accetto / respingo ── */
 .scelta {
@@ -759,6 +793,16 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
               default => $r['tipo_turno'],
           } ?>
         </span>
+        <?php if (in_array((int)$d->format('n'), [6, 7, 8, 9], true)): ?>
+          <?php if ($editabile): ?>
+            <label class="ferie-estiva-chk" title="Ferie estiva">
+              <input type="checkbox" <?= $r['ferie_estiva'] ? 'checked' : '' ?>
+                     onchange="toggleEstiva(<?= $r['id'] ?>, this)">🏖️
+            </label>
+          <?php elseif ($r['ferie_estiva']): ?>
+            <span class="ferie-estiva-chk" title="Ferie estiva">🏖️</span>
+          <?php endif; ?>
+        <?php endif; ?>
         <span class="turno-spacer"></span>
         <span class="com-badge com-<?= $comCls ?>" id="com-<?= $r['id'] ?>"><?= $comLbl ?></span>
         <?php if ($editabile): ?>
@@ -936,6 +980,18 @@ async function eseguiEliminaTurno(id, btn) {
     }
     sincronizzaDOM();
     showMsg('🗑️ Richiesta eliminata.', 'ok');
+}
+
+// Visto "ferie estiva" (solo GIU-SET): annotazione fureria, niente ODT (#97).
+async function toggleEstiva(id, chk) {
+    const fd = new FormData();
+    fd.append('azione', 'toggle_estiva');
+    fd.append('id', id);
+    let res;
+    try {
+        res = await fetch('', { method: 'POST', body: fd }).then(r => r.json());
+    } catch (e) { chk.checked = !chk.checked; return; }
+    if (!res.ok) chk.checked = !chk.checked;   // rollback visivo, silenzioso
 }
 
 // ── Scambi salto: approva / rifiuta (richieste nate dal bot) ──
