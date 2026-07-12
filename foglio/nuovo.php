@@ -373,13 +373,13 @@ function contaFerieDaNotificare(PDO $pdo, int $foglioId, string $dataStr, string
           WHERE vigile_id=? AND data_richiesta=? AND tipo_turno IN ($ph) AND stato<>'rejected'
           ORDER BY id DESC LIMIT 1"
     );
-    $approva = 0;
+    $approvaIds = [];
     foreach ($stFer->fetchAll(PDO::FETCH_COLUMN) as $vid) {
         $findReq->execute(array_merge([(int)$vid, $dataStr], $tipi));
         $rid = $findReq->fetchColumn();
         if (!$rid) continue;                       // nessuna richiesta → è d'ufficio (sotto)
         $hasCtx->execute(['ferie:' . (int)$rid]);
-        if (!$hasCtx->fetchColumn()) $approva++;   // decisa ma non ancora comunicata
+        if (!$hasCtx->fetchColumn()) $approvaIds[] = (int)$vid;   // decisa ma non ancora comunicata
     }
 
     // d'ufficio: FER sul foglio senza richiesta pending/approved (una richiesta
@@ -392,28 +392,43 @@ function contaFerieDaNotificare(PDO $pdo, int $foglioId, string $dataStr, string
                               AND r.tipo_turno IN ($ph) AND r.stato<>'rejected')"
     );
     $stU->execute(array_merge([$foglioId, $dataStr], $tipi));
-    $ufficio = 0;
+    $ufficioIds = [];
     foreach ($stU->fetchAll(PDO::FETCH_COLUMN) as $vid) {
         $hasCtx->execute(['ferie_uff:' . $foglioId . ':' . (int)$vid]);
-        if (!$hasCtx->fetchColumn()) $ufficio++;
+        if (!$hasCtx->fetchColumn()) $ufficioIds[] = (int)$vid;
     }
 
     // negate: richieste rejected per quella data/turno, per chi NON è in FER sul foglio
     $stN = $pdo->prepare(
-        "SELECT r.id FROM bot_requests r
+        "SELECT r.id, r.vigile_id FROM bot_requests r
           WHERE r.data_richiesta=? AND r.stato='rejected' AND r.tipo_turno IN ($ph)
             AND NOT EXISTS (SELECT 1 FROM assenze a
                             WHERE a.foglio_id=? AND a.vigile_id=r.vigile_id AND a.tipo_assenza_id=1)"
     );
     $stN->execute(array_merge([$dataStr], $tipi, [$foglioId]));
-    $negate = 0;
-    foreach ($stN->fetchAll(PDO::FETCH_COLUMN) as $rid) {
-        $hasCtx->execute(['ferie_neg:' . (int)$rid]);
-        if (!$hasCtx->fetchColumn()) $negate++;
+    $negateIds = [];
+    foreach ($stN->fetchAll() as $r) {
+        $hasCtx->execute(['ferie_neg:' . (int)$r['id']]);
+        if (!$hasCtx->fetchColumn()) $negateIds[] = (int)$r['vigile_id'];
     }
 
-    return ['approva' => $approva, 'ufficio' => $ufficio, 'negate' => $negate,
-            'tot' => $approva + $ufficio + $negate];
+    // Nomi per il popup di conferma (#109): un'unica query su tutti gli id coinvolti.
+    $tuttiIds = array_unique(array_merge($approvaIds, $ufficioIds, $negateIds));
+    $nomiById = [];
+    if ($tuttiIds) {
+        $phv = implode(',', array_fill(0, count($tuttiIds), '?'));
+        $stNomi = $pdo->prepare("SELECT id, cognome, disambiguatore FROM vigili WHERE id IN ($phv)");
+        $stNomi->execute($tuttiIds);
+        foreach ($stNomi->fetchAll() as $v) {
+            $nomiById[(int)$v['id']] = ucfirst(strtolower($v['cognome']))
+                . ($v['disambiguatore'] ? ' ' . $v['disambiguatore'] : '');
+        }
+    }
+    $nomi = fn(array $ids) => array_values(array_map(fn($id) => $nomiById[$id] ?? '?', $ids));
+
+    return ['approva' => count($approvaIds), 'ufficio' => count($ufficioIds), 'negate' => count($negateIds),
+            'tot' => count($approvaIds) + count($ufficioIds) + count($negateIds),
+            'nomi' => ['approva' => $nomi($approvaIds), 'ufficio' => $nomi($ufficioIds), 'negate' => $nomi($negateIds)]];
 }
 
 // ── Recupera o crea il foglio (identità: turno + data + tipo) ─
@@ -510,13 +525,13 @@ function countOccupanti(PDO $pdo, int $foglioId, int $posId, int $exclVigile = 0
 
 // Righe (campo `ordine`) già occupate in una posizione, vigili+esterni (per
 // piazzare senza scavalcare nessuno: niente compattazione automatica, #logbook).
-function ordiniOccupati(PDO $pdo, int $foglioId, int $posId, int $exclVigile = 0): array {
+function ordiniOccupati(PDO $pdo, int $foglioId, int $posId, int $exclVigile = 0, int $exclExt = 0): array {
     $st = $pdo->prepare(
         "SELECT ordine FROM assegnazioni WHERE foglio_id=? AND posizione_id=? AND vigile_id<>?
          UNION ALL
-         SELECT ordine FROM assegnazioni_esterni WHERE foglio_id=? AND posizione_id=?"
+         SELECT ordine FROM assegnazioni_esterni WHERE foglio_id=? AND posizione_id=? AND id<>?"
     );
-    $st->execute([$foglioId, $posId, $exclVigile, $foglioId, $posId]);
+    $st->execute([$foglioId, $posId, $exclVigile, $foglioId, $posId, $exclExt]);
     return array_map('intval', $st->fetchAll(PDO::FETCH_COLUMN));
 }
 
@@ -757,6 +772,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $nome        = trim($_POST['nome'] ?? '');
         $straord     = (int)($_POST['straordinario'] ?? 1) ? 1 : 0;
         $extId       = (int)($_POST['ext_id'] ?? 0);   // >0 = sposta esistente
+        $rigaReq     = (int)($_POST['ordine'] ?? 0);    // riga scelta col drop, 0 = nessuna preferenza
         $nome        = mb_substr($nome, 0, 80);
         if ($posizioneId <= 0 || $nome === '') {
             echo json_encode(['ok' => false, 'errore' => 'Nome o posizione mancanti.']); exit;
@@ -773,9 +789,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             echo json_encode(['ok' => false, 'pieno' => true, 'errore' => "Posizione al completo (max $cap)."]); exit;
         }
 
-        // Riga libera 1..cap (non solo tra gli altri esterni: anche i vigili
-        // della stessa squadra occupano una riga, #logbook niente più righe in comune).
-        $ordine = primaRigaLibera($cap, ordiniOccupati($pdo, $foglioId, $posizioneId));
+        // Riga esatta dove è stato lasciato cadere (non solo tra gli altri
+        // esterni: anche i vigili della stessa squadra occupano una riga).
+        // Se occupata o non indicata, prima libera come ripiego (#123).
+        $occupateExt = ordiniOccupati($pdo, $foglioId, $posizioneId, 0, $extId);
+        $ordine = ($rigaReq >= 1 && $rigaReq <= $cap && !in_array($rigaReq, $occupateExt, true))
+            ? $rigaReq
+            : primaRigaLibera($cap, $occupateExt);
 
         if ($extId > 0) {   // sposta
             $pdo->prepare(
@@ -1615,7 +1635,7 @@ function colorePatentePHP(?string $patente): string {
 <!-- NAVBAR -->
 <nav class="navbar">
   <div class="navbar-inner">
-    <a href="../index.php"        class="nav-btn">🏠 Cruscotto</a>
+    <a href="../index.php"        class="nav-btn">🚒 Home</a>
     <a href="nuovo.php"           class="nav-btn active">📋 Foglio</a>
     <a href="../vigili/lista.php" class="nav-btn">👥 Personale</a>
     <a href="../ferie/index.php"  class="nav-btn">🗓️ Agenda</a>
@@ -2482,10 +2502,15 @@ function colorePatentePHP(?string $patente): string {
               $assenzePerTipo['MISS'] ?? [],
               $assenzePerTipo['PERM'] ?? []
           ) as $a): ?>
-            <div class="assente-row">
+            <div class="assente-row" data-vigile-id="<?= $a['vigile_id'] ?>">
               <span class="qual-dot <?= htmlspecialchars($a['qcodice']) ?>"></span>
               <span class="assente-nome">
                 <?= htmlspecialchars(etichettaVigile($a)) ?>
+                <?php if (!empty($a['sede_nome']) && $a['sede_nome'] !== 'CENTRALE'): ?>
+                    <span class="persona-salto">
+                        <?= htmlspecialchars(siglaSede($a['sede_codice'])) ?>
+                    </span>
+                <?php endif; ?>
               </span>
               <span class="assente-info">
                 <?= htmlspecialchars($a['tipo_codice']) ?>
@@ -2506,10 +2531,15 @@ function colorePatentePHP(?string $patente): string {
               $assenzePerTipo['MAL'] ?? [],
               $assenzePerTipo['INF'] ?? []
           ) as $a): ?>
-            <div class="assente-row">
+            <div class="assente-row" data-vigile-id="<?= $a['vigile_id'] ?>">
               <span class="qual-dot <?= htmlspecialchars($a['qcodice']) ?>"></span>
               <span class="assente-nome">
                 <?= htmlspecialchars(etichettaVigile($a)) ?>
+                <?php if (!empty($a['sede_nome']) && $a['sede_nome'] !== 'CENTRALE'): ?>
+                    <span class="persona-salto">
+                        <?= htmlspecialchars(siglaSede($a['sede_codice'])) ?>
+                    </span>
+                <?php endif; ?>
               </span>
               <span class="assente-info">
                 <?= htmlspecialchars($a['tipo_codice']) ?>
@@ -2533,7 +2563,7 @@ const FOGLIO_ID  = <?= $foglioId ?>;
 const FOGLIO_URL = 'nuovo.php?data=<?= $dataStr ?>&tipo=<?= $tipoParam ?>';
 
 const PERSONALE = {
-<?php foreach ($tuttoPersonale as $v): ?>
+<?php foreach ($tuttoPersonale as $_i => $v): ?>
   <?= $v['id'] ?>: {
     id:          <?= $v['id'] ?>,
     nome:        <?= json_encode(etichettaVigile($v)) ?>,
@@ -2546,7 +2576,11 @@ const PERSONALE = {
     scambioIn:   <?= isset($scambioIn[(int)$v['id']]) ? 'true':'false' ?>,
     sede:        <?= json_encode($v['sede_codice']) ?>,
     sedeCentrale:<?= ($v['sede_nome'] === 'CENTRALE') ? 'true':'false' ?>,
-    patente:     <?= json_encode($v['patente_max'] ?? '') ?>
+    patente:     <?= json_encode($v['patente_max'] ?? '') ?>,
+    // Posizione nell'ordinamento standard (qualifica, poi cognome) di
+    // $tuttoPersonale: serve per reinserire una card nel punto giusto
+    // quando si ricrea da JS invece che dal render server (#122).
+    rango:       <?= (int)$_i ?>
   },
 <?php endforeach; ?>
 };
@@ -2815,10 +2849,12 @@ function rimuoviDOM(id) {
     const ac = document.getElementById('ass-' + id);
     if (ac) { const body = ac.parentElement; ac.remove(); sincronizzaSlot(body); }
 
-    // Da riga salto canonico: solo badge, non la riga
+    // Da riga salto: solo badge, non la riga (anche per chi riposa via
+    // scambio salto, non solo canonico — altrimenti la riga sparisce e
+    // riappare solo con F5, #121).
     const sr = document.getElementById('salto-' + id);
     if (sr) {
-        if (p && p.saltoCanon) {
+        if (p && p.saltoEff) {
             sr.querySelector('.str-badge')?.remove();
             sr.querySelector('.abil-badge')?.remove();
             if (!sr.querySelector('.drag-icon-salto')) {
@@ -3056,17 +3092,23 @@ document.addEventListener('drop', async function(e) {
         // Su una posizione → persiste (crea o sposta)
         if (target.classList.contains('pos-card')) {
             const posId = parseInt(target.dataset.posId);
+            const body  = document.getElementById('body-' + posId);
+            // Riga esatta sotto il cursore: stesso trattamento dei vigili,
+            // niente più "sempre in fondo alla squadra" (#123).
+            const riga  = rigaAtY(body, e.clientY);
+            const rigaTarget = (riga && riga.classList.contains('slot-empty'))
+                ? parseInt(riga.dataset.ordine) : 0;
             const res = await ajax({
                 azione:        'assegna_esterno',
                 posizione_id:  posId,
                 nome:          ext.nome,
                 straordinario: ext.str,
                 ext_id:        ext.extId || 0,
+                ordine:        rigaTarget,
             });
             if (!res.ok) { showMsg(res.errore || '⚠️ Errore.', 'err'); return; }
             const oldBody = (ext.source === 'esterno_pos') ? ext.el.parentElement : null;
             ext.el.remove();                                    // toglie card sorgente
-            const body = document.getElementById('body-' + posId);
             body.appendChild(cardEsternoPos(res.ext_id, ext.nome, ext.str, posId, res.ordine));
             sincronizzaSlot(body);
             if (oldBody && oldBody !== body) sincronizzaSlot(oldBody);
@@ -3270,9 +3312,20 @@ function reinserisciInSalto(vigileId) {
            <span class="drag-icon-salto" style="font-size:.75rem;color:var(--grigio-md);margin-left:auto"
                  title="Trascina su posizione o assenza">⇄</span>
          </div>`;
-    const dropZone = document.getElementById('dropSalto');
-    if (dropZone) dropZone.insertAdjacentHTML('beforebegin', html);
-    else          col.insertAdjacentHTML('beforeend', html);
+    // Inserisce nel punto giusto dell'ordinamento standard (qualifica poi
+    // cognome), non sempre in fondo (#122): trova la prima riga con rango
+    // maggiore e si mette prima di quella.
+    const righe = [...col.querySelectorAll('.assente-row[data-vigile-id]')];
+    const dopo = righe.find(r => {
+        const rp = PERSONALE[r.dataset.vigileId];
+        return rp && rp.rango > p.rango;
+    });
+    if (dopo) dopo.insertAdjacentHTML('beforebegin', html);
+    else {
+        const dropZone = document.getElementById('dropSalto');
+        if (dropZone) dropZone.insertAdjacentHTML('beforebegin', html);
+        else           col.insertAdjacentHTML('beforeend', html);
+    }
     setOccupato(vigileId, true, 'in salto');
 }
 
@@ -3355,8 +3408,9 @@ async function eseguiAssegnaPos(vigileId, posId, straord, rigaTarget = 0) {
         sincronizzaSlot(body);
     }
 
-    // Vigile a riposo canonico messo in servizio → straordinario: aggiorna la riga salto
-    if (p.saltoCanon) {
+    // Vigile a riposo (canonico o via scambio) messo in servizio → straordinario:
+    // aggiorna la riga salto (#83, #121).
+    if (p.saltoEff) {
         const sr = document.getElementById('salto-' + vigileId);
         if (sr) {
             sr.removeAttribute('draggable');
@@ -3994,23 +4048,29 @@ async function _salvaIntestazioneEsegui(proponiFerie) {
 
     // Se ci sono comunicazioni ferie da inviare (approvande / d'ufficio / negate),
     // proponi l'invio con conferma esplicita. Se il tasto è ✉️ Invia (proponiFerie)
-    // ma non c'è nulla, avvisa esplicitamente invece di restare muto (#82).
+    // ma non c'è nulla, avvisa esplicitamente invece di restare muto (#82, #125).
     const nf  = res.ferie_notifiche || {};
     const tot = parseInt(nf.tot || 0);
     if (proponiFerie && tot === 0) {
-        showMsg('ℹ️ Salvato. Nessuna comunicazione ferie da inviare.', 'ok');
+        chiediConferma({
+            titolo:  'Comunicazioni ferie',
+            testo:   'Nessuna comunicazione ferie da inviare per questo turno.',
+            okLabel: 'OK',
+            okStyle: 'background:var(--grigio-sc);color:#fff',
+        });
         return;
     }
     showMsg('✅ Salvato.', 'ok');
     if (proponiFerie && tot > 0) {
+        const nomi = nf.nomi || {};
         const voci = [];
-        if (nf.approva > 0) voci.push(`<b>${nf.approva}</b> da comunicare`);
-        if (nf.ufficio > 0) voci.push(`<b>${nf.ufficio}</b> d'ufficio`);
-        if (nf.negate  > 0) voci.push(`<b>${nf.negate}</b> negate`);
+        if (nf.approva > 0) voci.push(`<b>${nf.approva}</b> da comunicare (${(nomi.approva || []).join(', ')})`);
+        if (nf.ufficio > 0) voci.push(`<b>${nf.ufficio}</b> d'ufficio (${(nomi.ufficio || []).join(', ')})`);
+        if (nf.negate  > 0) voci.push(`<b>${nf.negate}</b> negate (${(nomi.negate || []).join(', ')})`);
         chiediConferma({
             titolo:  'Comunicazioni ferie',
             testo:   `Su questo turno ci sono comunicazioni ferie da inviare: ${voci.join(', ')}. ` +
-                     `Confermando <b>invii le notifiche</b> ai vigili (Telegram + mail) e <b>approvi</b> le ferie pending.`,
+                     `Confermando <b>invii le notifiche</b> ai vigili (Telegram + mail).`,
             okLabel: '✉️ Invia comunicazioni',
             okStyle: 'background:var(--rosso);color:#fff',
             onOk:    async () => {
