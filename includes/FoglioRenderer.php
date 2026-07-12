@@ -94,7 +94,7 @@ class FoglioRenderer
         $idByCode = [];
         foreach ($this->pdo->query("SELECT id,codice FROM posizioni")->fetchAll() as $p) $idByCode[(int)$p['id']] = $p['codice'];
         $st = $this->pdo->prepare(
-            "SELECT a.posizione_id, a.in_straordinario, a.vigile_id, v.cognome, v.disambiguatore,
+            "SELECT a.posizione_id, a.ordine, a.in_straordinario, a.vigile_id, v.cognome, v.disambiguatore,
                     q.codice AS qcodice, $pat AS patente_max,
                     v.sede_id AS vig_sede, p.sede_id AS pos_sede, s.codice AS sede_cod
              FROM assegnazioni a JOIN vigili v ON v.id=a.vigile_id JOIN qualifiche q ON q.id=v.qualifica_id
@@ -112,7 +112,7 @@ class FoglioRenderer
         // Tabella creata da foglio/nuovo.php; potrebbe non esistere su DB vecchi.
         try {
             $stx = $this->pdo->prepare(
-                "SELECT posizione_id, nome, in_straordinario
+                "SELECT posizione_id, nome, in_straordinario, ordine
                    FROM assegnazioni_esterni WHERE foglio_id=? ORDER BY posizione_id, ordine"
             );
             $stx->execute([$foglioId]);
@@ -124,6 +124,7 @@ class FoglioRenderer
                     'in_straordinario' => (int)$e['in_straordinario'],
                     'patente_max'      => null,
                     'sigla'            => null,
+                    'ordine'           => (int)$e['ordine'],
                 ];
             }
         } catch (Throwable $ignored) { /* tabella assente: nessun esterno */ }
@@ -298,12 +299,17 @@ class FoglioRenderer
         return null;
     }
 
-    /** stile testo: colore patente + straordinario (giallo) + sottolineato (in servizio fuori sede) */
-    private static function nameStyle(?string $t, bool $straord, bool $und = false): ?string
+    /**
+     * Stile testo: colore patente + straordinario (giallo) + sottolineato (in servizio
+     * fuori sede). Ritorna SEMPRE uno stile esplicito, anche per il caso "nessun colore
+     * speciale": senza, il nome eredita la formattazione della cella del modello.odt,
+     * che non è uniforme cella per cella — un nome nero spostato in un'altra casella
+     * poteva uscire blu o rosso (#67).
+     */
+    private static function nameStyle(?string $t, bool $straord, bool $und = false): string
     {
         $col = ($t === '3' || $t === '4') ? 'Rosso' : ($t === '2' ? 'Blu' : '');
-        if (!$straord && !$und && $col === '') return null;
-        return 'Nm' . ($straord ? 'S' : '') . ($und ? 'U' : '') . $col;  // es: NmRosso, NmS, NmU, NmSURosso…
+        return 'Nm' . ($straord ? 'S' : '') . ($und ? 'U' : '') . $col;  // es: Nm, NmRosso, NmS, NmSURosso…
     }
 
     private function modelPath(): string { return __DIR__ . '/../templates/modello.odt'; }
@@ -425,23 +431,47 @@ class FoglioRenderer
         $pa = $pa ?? count($rows); $miss = $miss ?? $pa; $mal = $mal ?? $miss;
 
         // ── AREA SERVIZIO: riempi i mezzi ───────────────────────────────────────
-        $colCode  = [];         // start-col → codice mezzo corrente
-        $queue    = [];         // codice → lista nomi DB da piazzare (in ordine)
-        $lastCell = [];         // codice → ultima cella riempita (per overflow)
-        foreach ($this->assByCode as $code => $list) { $queue[$code] = $list; }
+        // Riga esatta (a.ordine), non compattamento in sequenza: la stessa riga
+        // vista a schermo deve uscire nella stessa riga sull'ODT. Ordine mancante/
+        // duplicato (dati storici) → coda di ripiego, mai perso (#67, incongruenze
+        // schermo/ODT).
+        $colCode     = [];   // start-col → codice mezzo corrente
+        $queueOrdine = [];   // codice → [riga => dato]
+        $queueExtra  = [];   // codice → coda di ripiego (ordine incoerente)
+        $rigaAttuale = [];   // codice → contatore riga fisica corrente nel template
+        $lastCell    = [];   // codice → ultima cella riempita (per overflow)
+        foreach ($this->assByCode as $code => $list) {
+            $byOrdine = []; $extra = [];
+            foreach ($list as $a) {
+                $o = (int)($a['ordine'] ?? 0);
+                if ($o >= 1 && !isset($byOrdine[$o])) $byOrdine[$o] = $a;
+                else $extra[] = $a;
+            }
+            $queueOrdine[$code] = $byOrdine;
+            $queueExtra[$code]  = $extra;
+        }
 
         for ($i = 0; $i < $pa; $i++) {
             foreach ($this->rowCells($rows[$i]) as [$col, $cell]) {
                 $txt = trim($cell->textContent);
                 if ($txt !== '' && isset(self::HDR2CODE[$txt])) {      // header mezzo
                     $colCode[$col] = self::HDR2CODE[$txt];
+                    $rigaAttuale[$colCode[$col]] = 0;
                     continue;
                 }
-                // cella vuota sotto un mezzo → piazza prossimo nome
+                // cella vuota sotto un mezzo → riga fisica successiva di quel mezzo
                 if ($txt === '' && isset($colCode[$col])) {
                     $code = $colCode[$col];
-                    if (!empty($queue[$code])) {
-                        $a = array_shift($queue[$code]);
+                    $riga = ++$rigaAttuale[$code];
+                    if (isset($queueOrdine[$code][$riga])) {
+                        $a = $queueOrdine[$code][$riga];
+                        unset($queueOrdine[$code][$riga]);
+                    } elseif (!empty($queueExtra[$code])) {
+                        $a = array_shift($queueExtra[$code]);
+                    } else {
+                        $a = null;
+                    }
+                    if ($a !== null) {
                         // fuori sede: sigla in suffisso (come in FERIE) + nome sottolineato
                         $sfx = !empty($a['sigla']) ? ' ' . $a['sigla'] : '';
                         $this->writeName($doc, $cell, $a, $sfx, '', !empty($a['sigla']));
@@ -450,7 +480,13 @@ class FoglioRenderer
                 }
             }
         }
-        // nomi in eccedenza: accodali all'ultima cella del mezzo (niente perdita dati)
+        // nomi in eccedenza (righe oltre la capienza del template, o ripiego mai
+        // piazzato): accodali all'ultima cella del mezzo (niente perdita dati)
+        $queue = [];
+        foreach ($queueOrdine as $code => $byOrdine) {
+            ksort($byOrdine);
+            $queue[$code] = array_merge(array_values($byOrdine), $queueExtra[$code] ?? []);
+        }
         foreach ($queue as $code => $rest) {
             if (empty($rest)) continue;
             if (isset($lastCell[$code])) {
@@ -783,12 +819,13 @@ class FoglioRenderer
             $auto->appendChild($st);
         }
         $YEL = '#FFFF66';
-        // matrice: colore patente × straordinario (giallo) × sottolineato (fuori sede)
-        $colors = ['' => null, 'Rosso' => '#C00000', 'Blu' => '#0000C0'];
+        // matrice: colore patente × straordinario (giallo) × sottolineato (fuori sede).
+        // '' → nero esplicito (#000000), MAI lasciato senza stile: altrimenti il nome
+        // eredita la formattazione della cella del modello.odt, che non è uniforme (#67).
+        $colors = ['' => '#000000', 'Rosso' => '#C00000', 'Blu' => '#0000C0'];
         foreach ([false, true] as $straord) {
             foreach ([false, true] as $und) {
                 foreach ($colors as $cName => $col) {
-                    if (!$straord && !$und && $cName === '') continue;          // nessuno stile
                     $name = 'Nm' . ($straord ? 'S' : '') . ($und ? 'U' : '') . $cName;
                     if (isset($have[$name])) continue;
                     $st = $doc->createElementNS(self::STY, 'style:style');
