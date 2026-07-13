@@ -56,9 +56,7 @@ class FoglioRenderer
         $this->tipoParam = $f['tipo_turno'] === 'N' ? 'N' : 'D';
         $dt = new DateTime($this->dataStr);
         $this->dataLabel = $dt->format('d/m/Y');
-        $gg = ['Sunday'=>'Domenica','Monday'=>'Lunedì','Tuesday'=>'Martedì','Wednesday'=>'Mercoledì',
-               'Thursday'=>'Giovedì','Friday'=>'Venerdì','Saturday'=>'Sabato'];
-        $this->giornoLbl = $gg[$dt->format('l')] ?? '';
+        $this->giornoLbl = self::giornoSettimana($dt);
         require_once __DIR__ . '/turni.php';
         $tg = getTurnoGiorno($this->dataStr);
         $rip = $this->tipoParam === 'D' ? $tg['notte'] : $tg['diurno'];
@@ -77,13 +75,18 @@ class FoglioRenderer
         $this->loadData($foglioId);
     }
 
-    private static function dataEstesa(DateTime $d): string
+    private static function giornoSettimana(DateTime $d): string
     {
         $gg = ['Sunday'=>'Domenica','Monday'=>'Lunedì','Tuesday'=>'Martedì','Wednesday'=>'Mercoledì',
                'Thursday'=>'Giovedì','Friday'=>'Venerdì','Saturday'=>'Sabato'];
+        return $gg[$d->format('l')] ?? '';
+    }
+
+    private static function dataEstesa(DateTime $d): string
+    {
         $mm = [1=>'Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno','Luglio','Agosto',
                'Settembre','Ottobre','Novembre','Dicembre'];
-        return ($gg[$d->format('l')] ?? '') . ' ' . (int)$d->format('d') . ' '
+        return self::giornoSettimana($d) . ' ' . (int)$d->format('d') . ' '
              . ($mm[(int)$d->format('n')] ?? '') . ' ' . $d->format('Y');
     }
 
@@ -327,13 +330,6 @@ class FoglioRenderer
         return trim("$q $c")
              . (!empty($v['disambiguatore']) ? ' ' . (int)$v['disambiguatore'] : '');
     }
-    private static function colorStyle(?string $t): ?string
-    {
-        if ($t === '3' || $t === '4') return 'ColRosso';
-        if ($t === '2') return 'ColBlu';
-        return null;
-    }
-
     /**
      * Stile testo: colore patente + straordinario (giallo) + sottolineato (in servizio
      * fuori sede). Ritorna SEMPRE uno stile esplicito, anche per il caso "nessun colore
