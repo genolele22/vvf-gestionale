@@ -180,7 +180,10 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, arra
                 if ($fid > 0) { $prevBloccoFoglioId = $fid; break; }
             }
             if ($prevBloccoFoglioId > 0) {
-                $st1A = $pdo->prepare("SELECT vigile_id FROM assegnazioni WHERE foglio_id=? AND posizione_id=?");
+                // ORDER BY ordine: la squadra passa pari pari, l'ordine di ieri in 1A
+                // va preservato (array associativo → l'ordine di inserimento resta
+                // quello di lettura, usato sotto per riempire 2A senza risort alfabetico).
+                $st1A = $pdo->prepare("SELECT vigile_id FROM assegnazioni WHERE foglio_id=? AND posizione_id=? ORDER BY ordine");
                 $st1A->execute([$prevBloccoFoglioId, $posIdByCode['1A']]);
                 foreach ($st1A->fetchAll(PDO::FETCH_COLUMN) as $vid) $fece1APrima[(int)$vid] = true;
             }
@@ -296,8 +299,15 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, arra
     $riempi(['1A'], $disp(fn($r) => $isC($r) && isset($eraInSaltoPrima[(int)$r['id']])));
 
     // 2A — priorità a chi ha fatto 1A nel blocco precedente (#92), prima di
-    // qualunque regola generica su 2A qui sotto.
-    $riempi(['2A'], $disp(fn($r) => $isC($r) && isset($fece1APrima[(int)$r['id']])));
+    // qualunque regola generica su 2A qui sotto. Ripresi PARI PARI nell'ordine
+    // che avevano in 1A (non alfabetico): è un passaggio di squadra, non un
+    // riempimento libero — unico punto che NON passa da $disp()/$ordina().
+    $lista2A = [];
+    foreach ($fece1APrima as $vid => $_) {
+        if (isset($assegnati[$vid]) || !isset($cand[$vid]) || !$isC($cand[$vid])) continue;
+        $lista2A[] = $cand[$vid];
+    }
+    $riempi(['2A'], $lista2A);
 
     // Motore regole configurabili (Amministrazione → Criteri squadra, tabella
     // regole_squadra): copre CENTR-OP, fasce Vp per patente, Cr/Cs. Tabella
