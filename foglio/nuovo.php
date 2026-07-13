@@ -2874,6 +2874,27 @@ function _ruoloOccupatoAltrove(id, isCapo) {
 // (stessa riga dove è stato lasciato cadere il vigile). Le card con ordine
 // mancante/duplicato/fuori capienza (dati incoerenti) finiscono nella prima
 // riga libera — non si perde comunque nessuno dal foglio.
+// Aggiorna (crea/rimuove) la sigla sede su una .ass-card già in DOM dopo uno
+// spostamento che sposta il nodo invece di ricostruirlo (sposta_riga,
+// scambio_posizioni) — altrimenti resta la sigla della posizione di partenza,
+// o manca quella nuova, finché non si ricarica la pagina.
+function aggiornaSiglaSede(card, posId) {
+    const p = PERSONALE[card.dataset.vigileId];
+    const nomeEl = card.querySelector('.ass-nome');
+    if (!p || !nomeEl) return;
+    const posSede = document.getElementById('pos-' + posId)?.dataset.sede || '';
+    const sig = nomeEl.querySelector('.persona-salto');
+    const serve = p.sede && p.sede !== posSede;
+    if (serve && !sig) {
+        nomeEl.querySelector('.ass-nome-txt')
+            ?.insertAdjacentHTML('afterend', `<span class="persona-salto">${siglaSede(p.sede)}</span>`);
+    } else if (serve && sig) {
+        sig.textContent = siglaSede(p.sede);
+    } else if (!serve && sig) {
+        sig.remove();
+    }
+}
+
 function sincronizzaSlot(body) {
     if (!body) return;
     const cap = parseInt(body.dataset.cap || '7');
@@ -3293,6 +3314,7 @@ document.addEventListener('drop', async function(e) {
             draggedCard.dataset.posId  = posId;
             draggedCard.dataset.ordine = rigaOrdine;
             body.appendChild(draggedCard);
+            aggiornaSiglaSede(draggedCard, posId);
             sincronizzaSlot(body);
             if (oldBody && oldBody !== body) sincronizzaSlot(oldBody);
             showMsg('↕️ Spostato.');
@@ -3539,6 +3561,8 @@ async function eseguiScambioPosizioni(aVid, aCard, bVid, bCard) {
     bCard.dataset.posId = aPos; bCard.dataset.ordine = aOrdine;
     bBody.appendChild(aCard);
     aBody.appendChild(bCard);
+    aggiornaSiglaSede(aCard, bPos);
+    aggiornaSiglaSede(bCard, aPos);
     sincronizzaSlot(aBody);
     if (bBody !== aBody) sincronizzaSlot(bBody);
     showMsg('🔄 Scambiati di posto.');
