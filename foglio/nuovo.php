@@ -5,6 +5,7 @@ require_once __DIR__ . '/../includes/turni.php';
 require_once __DIR__ . '/../includes/scambio_salto.php';
 require_once __DIR__ . '/../includes/FoglioRenderer.php';
 require_once __DIR__ . '/../includes/auth.php';
+require_once __DIR__ . '/../includes/format.php';
 richiediLogin();
 
 $TURNO = turnoAttivo();   // turno su cui si lavora (A/B/C/D); default B. Multi-turno.
@@ -1660,24 +1661,6 @@ $funzionariOpt = $pdo->query("SELECT nome FROM funzionari ORDER BY nome")->fetch
 $funzCorrente  = trim($foglio['funzionario'] ?? '');
 
 // Helper: etichetta vigile "CS Rossi 4"
-function etichettaVigile(array $v): string {
-    return ucfirst(strtolower($v['qcodice'] ?? ''))
-         . ' ' . ucfirst(strtolower($v['cognome'] ?? ''))
-         . ($v['disambiguatore'] ? ' ' . (int)$v['disambiguatore'] : '');
-}
-// Sigla sede per il badge (solo visualizzazione): Centrale → "C".
-function siglaSede(?string $c): string {
-    return $c === 'CENTR' ? 'C' : (string)$c;
-}
-function colorePatentePHP(?string $patente): string {
-    switch ($patente) {
-        case '4':
-        case '3': return '#c0392b';
-        case '2': return '#2471a3';
-        default:  return '#2c3e50';
-    }
-}
-
 ?>
 
 <!DOCTYPE html>
@@ -2568,7 +2551,6 @@ function colorePatentePHP(?string $patente): string {
         </div>
       </div>
 
-          <!-- Missione / Permesso -->
       <!-- Missione / Permesso -->
 <div class="assenti-col" data-drop-zone="colMissione">
   <span class="assenti-col-head ac-missione">✈️ Missione / Permesso</span>

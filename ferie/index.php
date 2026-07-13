@@ -236,13 +236,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // ── Helpers ──────────────────────────────────────────────────
-function etichettaVigile(array $v): string {
-    $q = ucfirst(strtolower($v['qcodice'] ?? ''));
-    $c = ucfirst(strtolower($v['cognome'] ?? ''));
-    $d = !empty($v['disambiguatore']) ? ' ' . (int)$v['disambiguatore'] : '';
-    return "$q $c$d";
-}
-
+require_once __DIR__ . '/../includes/format.php';
 require_once __DIR__ . '/../includes/ferie_blocchi.php';
 
 // ── Carica richieste del mese ────────────────────────────────
