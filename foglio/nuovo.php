@@ -2135,7 +2135,7 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
       }
       // Card-renderer condiviso (Centrale + Distaccamenti + Aeroporto).
       // $gridStyle = posizionamento esplicito su griglia (es. "grid-column:6;grid-row:2").
-      $renderPosCard = function (array $pos, string $gridStyle = '') use (&$assPerPosizione, &$esterniPerPosizione, $scambioOut) {
+      $renderPosCard = function (array $pos, string $gridStyle = '') use (&$assPerPosizione, &$esterniPerPosizione, $scambioOut, $visiteFoglio, $visitaIds) {
           $assQui = $assPerPosizione[$pos['id']] ?? [];
           $extQui = $esterniPerPosizione[$pos['id']] ?? [];
           $codPos = strtolower($pos['codice']);
