@@ -66,28 +66,6 @@ function giorniDallAncora(string $data): int
 }
 
 /**
- * Restituisce il label del salto a riposo per il turno B in una data+tipo.
- * Per il gestionale del turno B ci interessa solo chi del turno B è a riposo.
- *
- * "A riposo" = il salto che NON lavora né di giorno né di notte.
- * Ogni giorno lavorano 2 salti del turno B (uno diurno, uno notturno),
- * quindi i salti B in riposo quel giorno sono gli altri 6... ma per il
- * foglio di servizio ci interessa il salto UFFICIALE di riposo (salto turno),
- * che corrisponde al salto del turno B che ha il suo giorno di riposo canonico.
- *
- * Per semplicità: il "salto in riposo" visualizzato nel calendario
- * è il salto che il turno B ha come DIURNO (è il suo turno di riferimento).
- */
-function getSaltoRiposo(string $data, string $tipo): int
-{
-    $giorni = giorniDallAncora($data);
-    $info   = ($tipo === 'D') ? calcolaDiurno($giorni) : calcolaNotte($giorni);
-    // Restituisce il salto del turno B in quel slot
-    // Se il turno attivo non è B, calcoliamo quale salto B è a riposo
-    return $info['salto'];
-}
-
-/**
  * Primo slot (data,tipo) in cui il turno B è EFFETTIVAMENTE in servizio,
  * a partire da $fromData inclusa, scandendo in avanti.
  *
@@ -168,7 +146,6 @@ function getTurnoGiorno(string $data): array
 /**
  * Slot (1..8) a riposo per un foglio (data,tipo). Stessa convenzione di
  * nuovo.php: foglio D → salto del NOTTURNO; foglio N → salto del DIURNO.
- * (NON usa getSaltoRiposo, che diverge sui giorni di confine.)
  */
 function saltoRiposoNum(string $data, string $tipo): int
 {
@@ -205,17 +182,6 @@ function slotDatesInBlocco(int $slot, string $data): ?array
 }
 
 /**
- * Restituisce label completa per un giorno: "B1 / A1"
- */
-function getLabelGiorno(string $data): string
-{
-    $t = getTurnoGiorno($data);
-    return $t['diurno']['turno'] . $t['diurno']['salto']
-         . ' / '
-         . $t['notte']['turno']  . $t['notte']['salto'];
-}
-
-/**
  * Restituisce tutti i turni del mese indicizzati per data.
  */
 function getTurniMese(int $anno, int $mese): array
@@ -233,35 +199,4 @@ function getTurniMese(int $anno, int $mese): array
         ];
     }
     return $result;
-}
-
-/**
- * Dice se un dato salto del turno B è a riposo in una certa data.
- * Utile per evidenziare nel calendario il salto selezionato.
- * @param string $data   'Y-m-d'
- * @param int    $salto  1-8
- */
-function isSaltoRiposo(string $data, int $salto, string $turno = 'B'): bool
-{
-    $t = getTurnoGiorno($data);
-    $saltoD = ($t['diurno']['turno'] === $turno) ? $t['diurno']['salto'] : null;
-    $saltoN = ($t['notte']['turno']  === $turno) ? $t['notte']['salto']  : null;
-    // È a riposo se non è né diurno né notturno quel giorno
-    return ($salto !== $saltoD && $salto !== $saltoN);
-}
-
-/**
- * Restituisce l'etichetta 'B1'...'B8' del salto B a riposo oggi.
- * Se entrambi i turni B lavorano (non dovrebbe mai accadere), restituisce '—'.
- */
-function getSaltoLabel(string $data, string $tipo, string $turno = 'B'): string
-{
-    $t = getTurnoGiorno($data);
-    if ($tipo === 'D' && $t['diurno']['turno'] === $turno) {
-        return $turno . $t['diurno']['salto'];
-    }
-    if ($tipo === 'N' && $t['notte']['turno'] === $turno) {
-        return $turno . $t['notte']['salto'];
-    }
-    return '—';
 }

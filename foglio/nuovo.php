@@ -11,22 +11,15 @@ $TURNO = turnoAttivo();   // turno su cui si lavora (A/B/C/D); default B. Multi-
 
 $pdo = getDB();
 
-// Capienza per posizione = slot del modello.odt (stessi spazi dell'ODT di riferimento).
-// Cache statica: il modello si parsa una volta sola.
+// Capienza per posizione = slot del modello.odt + override editor. La mappa
+// codice→slot vive in scambioCapPos() (includes/scambio_salto.php): qui solo
+// la traduzione posizione_id→codice, con cache statica.
 function capPos(int $posId): int {
     static $map = null;
     if ($map === null) {
         $map = [];
-        $cap = FoglioRenderer::slotCapacities();   // codice → n. slot
-        // Override editor (non tocca l'ODT, che mantiene le sue celle):
-        //  - 5A e 1SMZ a 6 slot (più visione a schermo);
-        //  - BL-1A e RP-1A a 7 slot, uniformi agli altri distaccamenti.
-        $override = ['5A' => 6, '1SMZ' => 6, 'BL-1A' => 7, 'RP-1A' => 7,
-                     'EL-1SMZ' => 4, 'AP-2VI' => 4];
         foreach (getDB()->query("SELECT id, codice FROM posizioni") as $p) {
-            $map[(int)$p['id']] = $override[$p['codice']]
-                ?? $cap[$p['codice']]
-                ?? 7;   // 7 = fallback se codice non nel modello
+            $map[(int)$p['id']] = scambioCapPos($p['codice']);
         }
     }
     return $map[$posId] ?? 7;
@@ -90,7 +83,7 @@ function resterEffettivi(PDO $pdo, string $dataStr, string $tipoParam, int $salt
 //  A) SEDI NON CENTRALI (distaccamenti, aeroporto, sommozzatori, nautici):
 //     il personale della sede riempie le posizioni di quella sede, in ordine di
 //     ruolo (Cr→Cs→Vp) e cognome, traboccando alla posizione successiva quando
-//     la corrente è piena (capienza ODT). Mappa $sedePos.
+//     la corrente è piena (capienza ODT). Mappa sedePosizioni() (scambio_salto.php).
 //
 //  B) CENTRALE (sede 'C'):
 //     - 1A  = era in salto il turno precedente (precedenza su tutto) — fisso
@@ -273,22 +266,9 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, arra
 
     // ── A. Sedi NON centrali: personale della sede → posizioni della sede ─────
     // Riempimento sequenziale con trabocco a capienza piena. Una posizione = una
-    // sede (la centrale 'C' è gestita a parte). MN (Multedo Nautica) non ha
-    // posizioni proprie → confluisce in ML-1NAU.
-    $sedePos = [
-        'ML' => ['ML-1A'],
-        'MN' => ['ML-1NAU'],
-        'GA' => ['GA-1NAU'],
-        'SM' => ['1SMZ'],
-        'GE' => ['GE-1A'],
-        'BL' => ['BL-1A'],
-        'BS' => ['BS-1A'],
-        'RP' => ['RP-1A'],
-        'CH' => ['CH-1A', 'CH-1B'],
-        'AP' => ['AP-TEL', 'AP-1ROS', 'AP-1ASA', 'AP-1VI', 'AP-2VI'],
-        'EL' => ['EL-1SMZ'],
-    ];
-    foreach ($sedePos as $sc => $codes)
+    // sede (la centrale 'C' è gestita a parte). Mappa condivisa sedePosizioni()
+    // in includes/scambio_salto.php.
+    foreach (sedePosizioni() as $sc => $codes)
         $riempi($codes, $disp(fn($r) => $sedeCod($r) === $sc));
 
     // ── B. CENTRALE (sede 'C') ───────────────────────────────────────────────

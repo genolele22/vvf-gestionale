@@ -17,17 +17,36 @@ class ScambioConflitto extends RuntimeException {}
 
 /**
  * Capienza di una posizione (slot del modello.odt + override editor).
- * DEVE restare allineata a capPos() in foglio/nuovo.php.
+ * Unica fonte della mappa capienze: capPos() in foglio/nuovo.php delega qui.
  */
 function scambioCapPos(string $codice): int
 {
     static $map = null;
     if ($map === null) {
+        // Override editor (non tocca l'ODT, che mantiene le sue celle):
+        //  - 5A e 1SMZ a 6 slot (più visione a schermo);
+        //  - BL-1A e RP-1A a 7 slot, uniformi agli altri distaccamenti.
         $override = ['5A' => 6, '1SMZ' => 6, 'BL-1A' => 7, 'RP-1A' => 7,
                      'EL-1SMZ' => 4, 'AP-2VI' => 4];
         $map = $override + FoglioRenderer::slotCapacities();   // override vince
     }
-    return $map[$codice] ?? 7;
+    return $map[$codice] ?? 7;   // 7 = fallback se codice non nel modello
+}
+
+/**
+ * Posizioni-candidate (in ordine di riempimento) per ogni sede NON centrale.
+ * Condivisa da prepopolaAssegnazioni (nuovo.php) e scambioPiazzaInServizio.
+ * MN (Multedo Nautica) non ha posizioni proprie → confluisce in ML-1NAU.
+ */
+function sedePosizioni(): array
+{
+    return [
+        'ML' => ['ML-1A'], 'MN' => ['ML-1NAU'], 'GA' => ['GA-1NAU'], 'SM' => ['1SMZ'],
+        'GE' => ['GE-1A'], 'BL' => ['BL-1A'], 'BS' => ['BS-1A'], 'RP' => ['RP-1A'],
+        'CH' => ['CH-1A', 'CH-1B'],
+        'AP' => ['AP-TEL', 'AP-1ROS', 'AP-1ASA', 'AP-1VI', 'AP-2VI'],
+        'EL' => ['EL-1SMZ'],
+    ];
 }
 
 /**
@@ -58,17 +77,9 @@ function scambioPiazzaInServizio(PDO $pdo, int $foglioId, int $vigileId): void
     $qual = (int)$v['qualifica_id'];
     $so   = (int)$v['ha_so'] === 1;
 
-    // Stesse posizioni-candidate (in ordine) di prepopolaAssegnazioni.
-    $sedePos = [
-        'ML' => ['ML-1A'], 'MN' => ['ML-1NAU'], 'GA' => ['GA-1NAU'], 'SM' => ['1SMZ'],
-        'GE' => ['GE-1A'], 'BL' => ['BL-1A'], 'BS' => ['BS-1A'], 'RP' => ['RP-1A'],
-        'CH' => ['CH-1A', 'CH-1B'],
-        'AP' => ['AP-TEL', 'AP-1ROS', 'AP-1ASA', 'AP-1VI', 'AP-2VI'],
-        'EL' => ['EL-1SMZ'],
-    ];
     $codes = [];
     if ($sede !== 'C') {
-        $codes = $sedePos[$sede] ?? [];
+        $codes = sedePosizioni()[$sede] ?? [];
     } else {
         if ($so && in_array($pat, [1, 2], true)) $codes[] = 'CENTR-OP';
         if ($qual === 1) {                                  // Vp
