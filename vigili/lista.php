@@ -922,6 +922,11 @@ if (tog && lbl) {
   .comp-menu label:hover { background:#eef1f4; }
   .comp-reset { margin-top:6px; width:100%; padding:4px; font-size:.72rem; cursor:pointer;
                border:1px solid #cfd3d8; border-radius:5px; background:#f7f8f9; }
+  /* Colonna Scadenze (#120): recupero spazio per tenere i 3 tasti Azioni su una riga —
+     abilitazioni contenute in larghezza e tasti più compatti, senza wrap. */
+  #tabellaVigili th:nth-child(6), #tabellaVigili td:nth-child(6) { width: 150px; max-width: 150px; }
+  #tabellaVigili .azioni { flex-wrap: nowrap; }
+  #tabellaVigili .azioni .btn-sm { padding: 4px 7px; font-size: .72rem; white-space: nowrap; }
 </style>
 
 </body>
