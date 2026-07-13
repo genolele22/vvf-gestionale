@@ -37,6 +37,7 @@ class FoglioRenderer
     private array $assByCode = [], $perTipo = [], $furieri = [];
     private ?array $capo = null, $vice = null;
     private array $scambioOut = [];
+    private array $visite = [];   // visite mediche del giorno (#95): 5A → "Visita Medica"
     private int $centrSedeId = 1;   // sede "Centrale": non sigla nessuno
     private int $saltoRiposoId = 0;   // id del salto a riposo di oggi (0 = non trovato)
     public array $overflow = [];   // mezzi con più nomi che slot
@@ -172,6 +173,21 @@ class FoglioRenderer
         $st = $this->pdo->prepare("SELECT vigile_out_id FROM salto_override WHERE data=? AND tipo=? AND attivo=1");
         $st->execute([$this->dataStr, $this->tipoParam]);
         foreach ($st->fetchAll() as $r) $this->scambioOut[(int)$r['vigile_out_id']] = true;
+
+        // Visite mediche (#95), solo Diurni: la casella 5A diventa "Visita Medica"
+        // e ospita i nomi in visita (duplicati: restano anche nella loro squadra).
+        if ($this->tipoParam === 'D') {
+            try {
+                $st = $this->pdo->prepare(
+                    "SELECT vm.vigile_id, v.cognome, v.disambiguatore, q.codice AS qcodice, $pat AS patente_max
+                     FROM visite_mediche vm
+                     JOIN vigili v     ON v.id = vm.vigile_id
+                     JOIN qualifiche q ON q.id = v.qualifica_id
+                     WHERE vm.data=? AND v.turno=? AND v.attivo=1 ORDER BY v.cognome");
+                $st->execute([$this->dataStr, $this->foglio['turno'] ?: 'B']);
+                $this->visite = $st->fetchAll();
+            } catch (Throwable $ignored) { /* tabella assente: nessuna visita */ }
+        }
 
         // SALTO TURNO = Riposo Compensativo: i riposanti effettivi vanno nella sezione RC.
         $this->aggiungiSaltoInRC($pat);
@@ -470,12 +486,17 @@ class FoglioRenderer
         $queue    = [];         // codice → lista nomi DB da piazzare (in ordine)
         $lastCell = [];         // codice → ultima cella riempita (per overflow)
         foreach ($this->assByCode as $code => $list) { $queue[$code] = $list; }
+        // #95: i nomi in visita medica vanno nella casella 5A (dopo eventuali
+        // assegnati a mano; di norma la 5A non si forma nei giorni con visite)
+        if ($this->visite) $queue['5A'] = array_merge($queue['5A'] ?? [], $this->visite);
 
         for ($i = 0; $i < $pa; $i++) {
             foreach ($this->rowCells($rows[$i]) as [$col, $cell]) {
                 $txt = trim($cell->textContent);
                 if ($txt !== '' && isset(self::HDR2CODE[$txt])) {      // header mezzo
                     $colCode[$col] = self::HDR2CODE[$txt];
+                    // #95: con visite in corso l'intestazione 5A cambia nome
+                    if ($txt === '5A' && $this->visite) $this->setText($doc, $cell, 'Visita Medica');
                     continue;
                 }
                 // cella vuota sotto un mezzo → piazza prossimo nome

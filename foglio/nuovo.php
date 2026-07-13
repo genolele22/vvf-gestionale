@@ -184,6 +184,19 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, arra
         }
     }
 
+    // #95: nei giorni con visita medica la 5A non si forma (la casella diventa
+    // il contenitore "Visita Medica") → il compositore la salta nelle regole.
+    $salta5A = false;
+    if ($tipoParam === 'D' && $dataStr !== '') {
+        try {
+            $stVis = $pdo->prepare(
+                "SELECT 1 FROM visite_mediche vm JOIN vigili v ON v.id=vm.vigile_id
+                 WHERE vm.data=? AND v.turno=? LIMIT 1");
+            $stVis->execute([$dataStr, turnoAttivo()]);
+            $salta5A = (bool)$stVis->fetchColumn();
+        } catch (Throwable $e) { /* tabella assente: nessuna visita */ }
+    }
+
     // Assenti registrati su questo foglio → fuori servizio
     $assentiIds = [];
     $stAb = $pdo->prepare("SELECT vigile_id FROM assenze WHERE foglio_id=?");
@@ -317,6 +330,7 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, arra
             $patRg   = $csvToSet((string)($rg['patenti_ids'] ?? ''), $patTipoById);
             $abilRg  = $rg['abilitazione_id'] ? ($abilCodById[(int)$rg['abilitazione_id']] ?? null) : null;
             $posRg   = $csvToSet((string)($rg['posizioni_ids'] ?? ''), $posCodeById);
+            if ($salta5A) $posRg = array_values(array_diff($posRg, ['5A']));   // #95
             if (!$posRg) continue;
 
             $cond = function (array $r) use ($sedeCod, $sedeRg, $qualiRg, $patRg, $abilRg, $qualCodById): bool {
@@ -1558,6 +1572,29 @@ $stResp = $pdo->prepare(
 $stResp->execute(array_merge([$dataStr], $tipiRespinte));
 $idFerieRespinte = array_map('intval', array_column($stResp->fetchAll(), 'vigile_id'));
 
+// ── Visite mediche del giorno (#95): solo sui fogli DIURNI ──
+// $visitaIds = badge 🚑 sulla card del vigile (che resta in squadra);
+// $visiteFoglio = nomi duplicati nella casella 5A→"Visita Medica".
+$visitaIds = []; $visiteFoglio = [];
+if ($tipoParam === 'D') {
+    try {
+        $stVm = $pdo->prepare(
+            "SELECT vm.vigile_id, v.cognome, v.disambiguatore, q.codice AS qcodice,
+                    (SELECT MAX(p.tipo) FROM vigili_patenti vp
+                     JOIN patenti p ON p.id = vp.patente_id
+                     WHERE vp.vigile_id = v.id) AS patente_max
+             FROM visite_mediche vm
+             JOIN vigili v     ON v.id = vm.vigile_id
+             JOIN qualifiche q ON q.id = v.qualifica_id
+             WHERE vm.data = ? AND v.turno = ? AND v.attivo = 1
+             ORDER BY v.cognome"
+        );
+        $stVm->execute([$dataStr, $TURNO]);
+        $visiteFoglio = $stVm->fetchAll();
+        foreach ($visiteFoglio as $vm) $visitaIds[(int)$vm['vigile_id']] = true;
+    } catch (Throwable $e) { /* tabella assente: nessuna visita */ }
+}
+
 // Vigili con ferie DA RICHIESTA bot (pending O approved) per questo turno.
 // Solo le ferie SENZA richiesta attiva sono "d'ufficio" (a mano) → coerente con
 // $isUfficio. Una ferie da richiesta sta SOLO in colonna Ferie, mai nel box ufficio
@@ -2121,9 +2158,22 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
                ondragleave="this.classList.remove('drag-over')"
                ondrop="onDropPosizione(event,<?= $pos['id'] ?>)">
 
+            <?php // #95: nei giorni con visite mediche la casella 5A cambia veste ?>
+            <?php $is5AVisita = ($pos['codice'] === '5A' && $visiteFoglio); ?>
             <div class="pos-head <?= $tipoHead ?>">
-              <?= htmlspecialchars($pos['codice']) ?>
+              <?= $is5AVisita ? '🚑 VISITA MEDICA' : htmlspecialchars($pos['codice']) ?>
             </div>
+            <?php if ($is5AVisita): ?>
+              <?php foreach ($visiteFoglio as $vm): ?>
+                <div class="ass-card" style="cursor:default;background:#fdecea"
+                     title="In visita medica (resta anche nella sua squadra)">
+                  <span class="qual-dot <?= htmlspecialchars($vm['qcodice']) ?>"></span>
+                  <span class="ass-nome" style="color:<?= colorePatentePHP($vm['patente_max'] ?? null) ?>">
+                    <span class="ass-nome-txt"><?= htmlspecialchars(etichettaVigile($vm)) ?> *</span>
+                  </span>
+                </div>
+              <?php endforeach; ?>
+            <?php endif; ?>
 
             <?php
               // Righe indicizzate per `ordine`: niente compattazione, un vigile
@@ -2187,6 +2237,9 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
                     <?php endif; ?>
                     <?php if ($ass['in_straordinario']): ?>
                         <span style="font-size:.6rem;color:var(--giallo);font-weight:700">STR</span>
+                    <?php endif; ?>
+                    <?php if (isset($visitaIds[(int)$ass['vigile_id']])): ?>
+                        <span title="Visita medica" style="font-size:.7rem">🚑</span>
                     <?php endif; ?>
                   </span>
                 </div>
@@ -2634,6 +2687,7 @@ const PERSONALE = {
     sede:        <?= json_encode($v['sede_codice']) ?>,
     sedeCentrale:<?= ($v['sede_nome'] === 'CENTRALE') ? 'true':'false' ?>,
     patente:     <?= json_encode($v['patente_max'] ?? '') ?>,
+    visita:      <?= isset($visitaIds[(int)$v['id']]) ? 'true':'false' ?>,
     // Posizione nell'ordinamento standard (qualifica, poi cognome) di
     // $tuttoPersonale: serve per reinserire una card nel punto giusto
     // quando si ricrea da JS invece che dal render server (#122).
@@ -2986,6 +3040,8 @@ function buildAssCard(p, posId, straord, ordine) {
     const strBadge = straord
         ? `<span style="font-size:.6rem;color:var(--giallo);
                         font-weight:700;margin-left:3px">STR</span>` : '';
+    const visitaBadge = p.visita
+        ? `<span title="Visita medica" style="font-size:.7rem">🚑</span>` : '';
     const colore = colorePatente(p.patente);
 
     return `<div class="ass-card"
@@ -2996,7 +3052,7 @@ function buildAssCard(p, posId, straord, ordine) {
                  draggable="true">
               <span class="qual-dot ${p.qcodice}"></span>
               <span class="ass-nome" style="color:${colore}" title="${p.nome}">
-                <span class="ass-nome-txt">${p.nome}</span>${sedeBadge}${strBadge}
+                <span class="ass-nome-txt">${p.nome}</span>${sedeBadge}${strBadge}${visitaBadge}
               </span>
             </div>`;
 }

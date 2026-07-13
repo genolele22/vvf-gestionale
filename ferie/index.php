@@ -231,6 +231,59 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         echo json_encode(['ok' => true, 'stato' => $stato]); exit;
     }
 
+    // ── Visite mediche (#95): annotazione fureria — Agenda + foglio, niente bot ──
+    if ($azione === 'visita_aggiungi') {
+        $vid  = (int)($_POST['vigile_id'] ?? 0);
+        $data = $_POST['data'] ?? '';
+        if ($vid <= 0 || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $data)) {
+            echo json_encode(['ok' => false, 'errore' => 'Parametri non validi']); exit;
+        }
+        $st = $pdo->prepare("SELECT turno FROM vigili WHERE id=? AND attivo=1");
+        $st->execute([$vid]);
+        $turnoV = $st->fetchColumn();
+        if ($turnoV === false) { echo json_encode(['ok' => false, 'errore' => 'Vigile inesistente']); exit; }
+        if (!puoModificareTurno($turnoV)) {
+            echo json_encode(['ok' => false, 'errore' => 'Turno in sola lettura per il tuo profilo.']); exit;
+        }
+        // la visita si fa di mattina: vale solo per i servizi DIURNI del turno
+        if (getTurnoGiorno($data)['diurno']['turno'] !== $turnoV) {
+            echo json_encode(['ok' => false, 'errore' => 'In quella data il turno non è in servizio diurno.']); exit;
+        }
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS visite_mediche (
+                id        INT UNSIGNED NOT NULL,
+                vigile_id INT UNSIGNED NOT NULL,
+                data      DATE NOT NULL,
+                creato_il DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (id),
+                UNIQUE KEY uq_vig_data (vigile_id, data)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        ");
+        try {
+            $pdo->prepare("INSERT INTO visite_mediche (id, vigile_id, data) VALUES (?,?,?)")
+                ->execute([nextId($pdo, 'visite_mediche'), $vid, $data]);
+        } catch (Throwable $e) {
+            echo json_encode(['ok' => false, 'errore' => 'Visita già inserita per quel giorno.']); exit;
+        }
+        echo json_encode(['ok' => true]); exit;
+    }
+
+    if ($azione === 'visita_elimina') {
+        $id = (int)($_POST['id'] ?? 0);
+        if ($id <= 0) { echo json_encode(['ok' => false, 'errore' => 'ID non valido']); exit; }
+        $st = $pdo->prepare(
+            "SELECT v.turno FROM visite_mediche vm JOIN vigili v ON v.id = vm.vigile_id WHERE vm.id=?"
+        );
+        $st->execute([$id]);
+        $turnoV = $st->fetchColumn();
+        if ($turnoV === false) { echo json_encode(['ok' => false, 'errore' => 'Visita inesistente']); exit; }
+        if (!puoModificareTurno($turnoV)) {
+            echo json_encode(['ok' => false, 'errore' => 'Turno in sola lettura per il tuo profilo.']); exit;
+        }
+        $pdo->prepare("DELETE FROM visite_mediche WHERE id=?")->execute([$id]);
+        echo json_encode(['ok' => true]); exit;
+    }
+
     echo json_encode(['ok' => false, 'errore' => 'Azione non riconosciuta']);
     exit;
 }
@@ -376,8 +429,47 @@ foreach ($stScP->fetchAll() as $s) {
     $scambiPending[] = $s;
 }
 
-// Date da renderizzare = unione ferie + scambi, in ordine cronologico
-$tutteLeDate = array_unique(array_merge(array_keys($perData), array_keys($scambiPerData)));
+// ── Visite mediche del mese (#95) ──
+$visitePerData = [];
+try {
+    $stVm = $pdo->prepare("
+        SELECT vm.id, vm.data, vm.vigile_id, v.cognome, v.disambiguatore, v.turno,
+               q.codice AS qcodice, st.codice AS salto_codice
+        FROM visite_mediche vm
+        JOIN vigili v      ON v.id  = vm.vigile_id
+        JOIN qualifiche q  ON q.id  = v.qualifica_id
+        JOIN salti_turno st ON st.id = v.salto_id
+        WHERE DATE_FORMAT(vm.data, '%Y-%m') = ? AND v.turno IN ($phTurni)
+        ORDER BY vm.data, v.cognome");
+    $stVm->execute(array_merge([$meseStr], $turniQuery));
+    foreach ($stVm->fetchAll() as $vm) $visitePerData[$vm['data']][] = $vm;
+} catch (Throwable $e) { /* tabella assente: nessuna visita */ }
+
+// Dati per il box inserimento visita (solo se il turno primario è scrivibile):
+// vigili del turno col loro salto + servizi DIURNI del mese col salto a riposo.
+$visitaVigili = $visitaDiurni = [];
+if (puoModificareTurno($TURNO)) {
+    $stVv = $pdo->prepare("
+        SELECT v.id, v.cognome, v.disambiguatore, q.codice AS qcodice, st.codice AS salto_codice
+        FROM vigili v
+        JOIN qualifiche q  ON q.id  = v.qualifica_id
+        JOIN salti_turno st ON st.id = v.salto_id
+        WHERE v.attivo = 1 AND v.turno = ?
+        ORDER BY v.cognome, v.disambiguatore");
+    $stVv->execute([$TURNO]);
+    $visitaVigili = $stVv->fetchAll();
+    $nGiorniMese = cal_days_in_month(CAL_GREGORIAN, $meseP, $annoP);
+    for ($g = 1; $g <= $nGiorniMese; $g++) {
+        $d = sprintf('%04d-%02d-%02d', $annoP, $meseP, $g);
+        if (getTurnoGiorno($d)['diurno']['turno'] === $TURNO) {
+            $visitaDiurni[] = ['data' => $d, 'riposo' => saltoRiposoNum($d, 'D')];
+        }
+    }
+}
+
+// Date da renderizzare = unione ferie + scambi + visite, in ordine cronologico
+$tutteLeDate = array_unique(array_merge(
+    array_keys($perData), array_keys($scambiPerData), array_keys($visitePerData)));
 sort($tutteLeDate);
 
 // Statistiche solo sul turno PRIMARIO: quelle degli extra sono lì per consultazione,
@@ -422,6 +514,20 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
     padding: 12px 20px; margin-bottom: 16px;
     display: flex; align-items: center; justify-content: space-between; gap: 12px;
 }
+/* ── Box visita medica (#95): sotto il riquadro mese, a destra ── */
+.visita-box {
+    background: var(--bianco); border-radius: var(--radius); box-shadow: var(--shadow);
+    padding: 10px 16px; margin: -6px 0 16px auto; width: fit-content;
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.visita-box .visita-lbl { font-size: .8rem; font-weight: 800; text-transform: uppercase; color: var(--rosso); }
+.visita-box select {
+    padding: 6px 8px; border: 1px solid #d5d8dc; border-radius: 5px;
+    font: inherit; font-size: .82rem; background: #fff;
+}
+.visita-box select.visita-warn { background: #fdecea; border-color: var(--rosso); color: var(--rosso); font-weight: 700; }
+.visita-row .btn-mini.rimuovi { background: #f4f6f7; border: 1px solid #d5d8dc; }
+
 .mese-nav h2 { font-size: 1rem; font-weight: 700; text-transform: uppercase;
                letter-spacing: .5px; color: var(--grigio-sc); }
 .mese-nav a  { text-decoration: none; }
@@ -585,6 +691,33 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
     <a href="?anno=<?= $annoNext ?>&mese=<?= $meseNext ?>" class="btn btn-grigio btn-sm">▶</a>
   </div>
 
+  <?php if ($visitaVigili && $visitaDiurni): ?>
+  <!-- Inserimento visita medica (#95): vigile + servizio diurno del mese.
+       La data si accende di rosso se la visita cade nel giorno di riposo del vigile. -->
+  <div class="visita-box">
+    <span class="visita-lbl">🚑 Visita medica</span>
+    <select id="visitaVigile" onchange="visitaCheckRiposo()">
+      <option value="">— vigile —</option>
+      <?php foreach ($visitaVigili as $v): ?>
+        <option value="<?= (int)$v['id'] ?>"
+                data-salto="<?= (int)substr($v['salto_codice'], 1) ?>">
+          <?= htmlspecialchars(etichettaVigile($v)) ?> (<?= htmlspecialchars($v['salto_codice']) ?>)
+        </option>
+      <?php endforeach; ?>
+    </select>
+    <select id="visitaData" onchange="visitaCheckRiposo()">
+      <option value="">— giorno —</option>
+      <?php foreach ($visitaDiurni as $vd):
+        $dtV = new DateTime($vd['data']); ?>
+        <option value="<?= $vd['data'] ?>" data-riposo="<?= (int)$vd['riposo'] ?>">
+          <?= $giorniNomi[(int)$dtV->format('N')] ?> <?= $dtV->format('d/m') ?> ☀️ — riposo <?= htmlspecialchars($TURNO) ?><?= (int)$vd['riposo'] ?>
+        </option>
+      <?php endforeach; ?>
+    </select>
+    <button class="btn btn-rosso btn-sm" onclick="visitaAggiungi()">➕ Inserisci</button>
+  </div>
+  <?php endif; ?>
+
   <!-- Turni extra in sola lettura: affianca le richieste di altri turni visibili -->
   <?php $turniAltri = array_diff(turniVisibili(), [$TURNO]);
   if ($turniAltri): ?>
@@ -674,11 +807,13 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
   <?php foreach ($tutteLeDate as $dataInizio):
     $gruppo     = $perData[$dataInizio] ?? [];
     $scambi     = $scambiPerData[$dataInizio] ?? [];
+    $visite     = $visitePerData[$dataInizio] ?? [];
     $dtInizio   = new DateTime($dataInizio);
     $dataHeader = $giorniNomi[(int)$dtInizio->format('N')] . ' '
                 . $dtInizio->format('d') . ' '
                 . $mesiNomi[(int)$dtInizio->format('n')];
     $conteggio  = [];
+    if ($visite) $conteggio[] = count($visite) . ' visit' . (count($visite) === 1 ? 'a' : 'e') . ' medic' . (count($visite) === 1 ? 'a' : 'he');
     if ($gruppo) $conteggio[] = count($gruppo) . ' vigil' . (count($gruppo) === 1 ? 'e' : 'i') . ' in ferie';
     if ($scambi) $conteggio[] = count($scambi) . (count($scambi) === 1 ? ' scambio' : ' scambi') . ' salto';
     // Quel giorno il turno PRIMARIO è in servizio diurno (☀️) o notturno (🌙):
@@ -707,6 +842,34 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
       <a href="<?= $urlFoglio ?>" title="Apri il foglio di servizio di questo giorno"
          style="margin-left:auto;font-size:.8rem;font-weight:700;color:var(--grigio-sc);text-decoration:none;white-space:nowrap;"><?= $saltoIco ?> <?= htmlspecialchars($TURNO) ?><?= $saltoNum ?></a>
     </div>
+
+    <?php if ($visite): ?>
+    <!-- Visite mediche di questa data (#95): in cima, come gli scambi -->
+    <div class="vigile-card" style="margin-bottom:8px;">
+      <?php foreach ($visite as $vm):
+        $vmSalto  = (int)substr($vm['salto_codice'], 1);
+        $vmRiposo = ($vmSalto === saltoRiposoNum($vm['data'], 'D'));
+      ?>
+      <div class="blocco-row visita-row" style="cursor:default;">
+        <span class="toggle-icon">🚑</span>
+        <?php if ($turniExtra): ?><span class="turno-tag">Turno <?= htmlspecialchars($vm['turno']) ?></span><?php endif; ?>
+        <span class="blocco-nome" style="color:var(--rosso);"><?= htmlspecialchars(etichettaVigile($vm)) ?>
+          <span style="color:var(--grigio-md);font-weight:600;">(<?= htmlspecialchars($vm['salto_codice']) ?>)</span>
+          — Visita medica</span>
+        <?php if ($vmRiposo): ?>
+          <span style="font-size:.72rem;font-weight:800;color:#fff;background:var(--rosso);border-radius:4px;padding:2px 7px;">GIORNO DI RIPOSO</span>
+        <?php endif; ?>
+        <span class="blocco-spacer"></span>
+        <?php if (puoModificareTurno($vm['turno'])): ?>
+        <div class="blocco-azioni" onclick="event.stopPropagation()">
+          <button class="btn-mini rimuovi" onclick='visitaElimina(<?= (int)$vm['id'] ?>)'
+                  title="Elimina la visita medica">🗑️</button>
+        </div>
+        <?php endif; ?>
+      </div>
+      <?php endforeach; ?>
+    </div>
+    <?php endif; ?>
 
     <?php if ($scambi): ?>
     <!-- Scambi salto di questa data -->
@@ -986,6 +1149,53 @@ async function toggleEstiva(id, chk) {
         res = await fetch('', { method: 'POST', body: fd }).then(r => r.json());
     } catch (e) { chk.checked = !chk.checked; return; }
     if (!res.ok) chk.checked = !chk.checked;   // rollback visivo, silenzioso
+}
+
+// ── Visite mediche (#95) ─────────────────────────────────────
+// Rosso sul giorno se la visita cade nel giorno di riposo del vigile
+// (salto del vigile == salto a riposo del servizio scelto).
+function visitaCheckRiposo() {
+    const v = document.getElementById('visitaVigile');
+    const d = document.getElementById('visitaData');
+    const salto  = parseInt(v.selectedOptions[0]?.dataset.salto || '0');
+    const riposo = parseInt(d.selectedOptions[0]?.dataset.riposo || '0');
+    d.classList.toggle('visita-warn', salto > 0 && riposo > 0 && salto === riposo);
+}
+
+async function visitaAggiungi() {
+    const vid  = document.getElementById('visitaVigile').value;
+    const data = document.getElementById('visitaData').value;
+    if (!vid || !data) return;
+    const fd = new FormData();
+    fd.append('azione', 'visita_aggiungi');
+    fd.append('vigile_id', vid);
+    fd.append('data', data);
+    let res;
+    try { res = await fetch('', { method: 'POST', body: fd }).then(r => r.json()); }
+    catch (e) { return; }
+    if (!res.ok) { alert(res.errore || 'Errore.'); return; }
+    sessionStorage.setItem('agendaScrollY', window.scrollY);
+    location.reload();
+}
+
+function visitaElimina(id) {
+    chiediConferma({
+        titolo:  'Elimina visita medica',
+        testo:   'Togliere la visita medica da questo giorno?',
+        okLabel: '🗑️ Elimina',
+        okStyle: 'background:#c0392b;color:#fff',
+        onOk: async () => {
+            const fd = new FormData();
+            fd.append('azione', 'visita_elimina');
+            fd.append('id', id);
+            let res;
+            try { res = await fetch('', { method: 'POST', body: fd }).then(r => r.json()); }
+            catch (e) { return; }
+            if (!res.ok) { alert(res.errore || 'Errore.'); return; }
+            sessionStorage.setItem('agendaScrollY', window.scrollY);
+            location.reload();
+        },
+    });
 }
 
 // ── Scambi salto: approva / rifiuta (richieste nate dal bot) ──
