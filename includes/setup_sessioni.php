@@ -3,6 +3,7 @@
  * setup_sessioni.php — crea la tabella `sessioni` (una tantum).
  * Lanciare sul container:  php /var/www/html/includes/setup_sessioni.php
  */
+if (PHP_SAPI !== 'cli') { http_response_code(404); exit; }   // solo da fly ssh console, mai dal web
 require_once __DIR__ . '/../config/db.php';
 
 getDB()->exec("

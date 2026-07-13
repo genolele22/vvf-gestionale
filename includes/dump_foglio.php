@@ -5,6 +5,7 @@
  * Mostra, posizione per posizione, chi è assegnato (grado, patente, sede,
  * abilitazione SO, flag specialista). Non modifica nulla.
  */
+if (PHP_SAPI !== 'cli') { http_response_code(404); exit; }   // solo da fly ssh console, mai dal web
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/turni.php';
 $pdo = getDB();
