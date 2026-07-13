@@ -29,6 +29,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $attivo         = isset($_POST['attivo'])           ? 1 : 0;
     $specialista    = isset($_POST['specialista'])      ? 1 : 0;
     $note           = trim($_POST['note']               ?? '');
+    // Date scadenza patente / ultima visita medica (#120): vuote → NULL
+    $valData        = fn($k) => preg_match('/^\d{4}-\d{2}-\d{2}$/', $_POST[$k] ?? '') ? $_POST[$k] : null;
+    $patScadenza    = $valData('patente_scadenza');
+    $visitaUltima   = $valData('visita_ultima');
     // Cambio turno al vigile: solo Comando può farlo (capita spesso nei trasferimenti
     // tra turni). Per admin/user il vigile resta/nasce sempre nel proprio turno di casa.
     $turnoVigile    = isComando() ? strtoupper(substr((string)($_POST['turno'] ?? ''), 0, 1)) : $TURNO;
@@ -105,10 +109,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $vid = nextId($pdo, 'vigili');
             $pdo->prepare(
                 "INSERT INTO vigili
-                 (id,cognome,nome,disambiguatore,email,qualifica_id,sede_id,salto_id,attivo,specialista,note,turno)
-                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+                 (id,cognome,nome,disambiguatore,email,qualifica_id,sede_id,salto_id,attivo,specialista,note,turno,patente_scadenza,visita_ultima)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
             )->execute([$vid,$cognome,$nome,$disambiguatore,$email,
-                        $qualifica_id,$sede_id,$salto_id,$attivo,$specialista,$note,$turnoVigile]);
+                        $qualifica_id,$sede_id,$salto_id,$attivo,$specialista,$note,$turnoVigile,
+                        $patScadenza,$visitaUltima]);
 
             foreach ($patenti as $pid) {
                 $pdo->prepare(
@@ -136,10 +141,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdo->prepare(
                     "UPDATE vigili
                      SET cognome=?,nome=?,disambiguatore=?,email=?,qualifica_id=?,
-                         sede_id=?,salto_id=?,attivo=?,specialista=?,note=?,turno=?
+                         sede_id=?,salto_id=?,attivo=?,specialista=?,note=?,turno=?,
+                         patente_scadenza=?,visita_ultima=?
                      WHERE id=?"
                 )->execute([$cognome,$nome,$disambiguatore,$email,
-                            $qualifica_id,$sede_id,$salto_id,$attivo,$specialista,$note,$turnoVigile,$id]);
+                            $qualifica_id,$sede_id,$salto_id,$attivo,$specialista,$note,$turnoVigile,
+                            $patScadenza,$visitaUltima,$id]);
 
                 $pdo->prepare("DELETE FROM vigili_patenti WHERE vigile_id=?")->execute([$id]);
                 foreach ($patenti as $pid) {
@@ -412,6 +419,16 @@ if (!empty($vigili)) {
             })();
             </script>
           </div>
+          <div class="form-group">
+            <label>Scadenza patente</label>
+            <input type="date" name="patente_scadenza"
+                   value="<?= htmlspecialchars($vigileEdit['patente_scadenza'] ?? '') ?>">
+          </div>
+          <div class="form-group">
+            <label>Ultima visita medica</label>
+            <input type="date" name="visita_ultima"
+                   value="<?= htmlspecialchars($vigileEdit['visita_ultima'] ?? '') ?>">
+          </div>
 		  <div class="form-group full">
             <label>Abilitazioni speciali</label>
             <div class="abil-group">
@@ -566,7 +583,8 @@ if (!empty($vigili)) {
     <th class="sortable" data-col="3">Salto</th>
     <th class="sortable" data-col="4">Patenti</th>
     <th class="sortable" data-col="5">Abilitazioni</th>
-    <th class="sortable" data-col="6">Stato</th>
+    <th class="sortable" data-col="6">Scadenze</th>
+    <th class="sortable" data-col="7">Stato</th>
     <th style="text-align:center">Azioni</th>
   </tr>
 </thead>
@@ -574,7 +592,7 @@ if (!empty($vigili)) {
 
         <?php if (empty($vigili)): ?>
           <tr>
-            <td colspan="7"
+            <td colspan="9"
                 style="text-align:center;padding:32px;color:var(--grigio-md)">
               Nessun vigile trovato con i filtri selezionati.
             </td>
@@ -659,6 +677,31 @@ if (!empty($vigili)) {
               <?php foreach ($abilV as $ab): ?>
                 <span class="badge-abil"><?= htmlspecialchars($ab) ?></span>
               <?php endforeach; ?>
+            <?php endif; ?>
+          </td>
+
+          <!-- Scadenze (#120): patente con alert 90gg, ultima visita solo informativa -->
+          <td data-sort="<?= !empty($v['patente_scadenza']) ? date('Ymd', strtotime($v['patente_scadenza'])) : '99999999' ?>">
+            <?php if (!empty($v['patente_scadenza'])):
+                $ggMancanti = (int)((strtotime($v['patente_scadenza']) - strtotime(date('Y-m-d'))) / 86400);
+                if     ($ggMancanti < 0)   { $scadCol = '#c0392b'; $scadBg = '#fdecea'; $scadTitle = 'Patente SCADUTA'; }
+                elseif ($ggMancanti <= 90) { $scadCol = '#b9770e'; $scadBg = '#fef5e7'; $scadTitle = "Patente in scadenza tra $ggMancanti giorni"; }
+                else                       { $scadCol = 'var(--grigio-sc)'; $scadBg = 'transparent'; $scadTitle = 'Scadenza patente'; }
+            ?>
+              <span title="<?= htmlspecialchars($scadTitle) ?>"
+                    style="font-size:.75rem;font-weight:700;color:<?= $scadCol ?>;background:<?= $scadBg ?>;
+                           border-radius:4px;padding:1px 6px;white-space:nowrap">
+                🪪 <?= date('d/m/Y', strtotime($v['patente_scadenza'])) ?><?= $ggMancanti < 0 ? ' ⚠️' : ($ggMancanti <= 90 ? ' ⏳' : '') ?>
+              </span><br>
+            <?php endif; ?>
+            <?php if (!empty($v['visita_ultima'])): ?>
+              <span title="Ultima visita medica"
+                    style="font-size:.73rem;color:var(--grigio-md);white-space:nowrap">
+                🩺 <?= date('d/m/Y', strtotime($v['visita_ultima'])) ?>
+              </span>
+            <?php endif; ?>
+            <?php if (empty($v['patente_scadenza']) && empty($v['visita_ultima'])): ?>
+              <span style="color:#bbb;font-size:.75rem">—</span>
             <?php endif; ?>
           </td>
 
