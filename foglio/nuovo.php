@@ -1470,7 +1470,12 @@ $stmtAss = $pdo->prepare(
                 SELECT MAX(p.tipo) FROM vigili_patenti vp
                 JOIN patenti p ON p.id = vp.patente_id
                 WHERE vp.vigile_id = v.id
-            ) AS patente_max
+            ) AS patente_max,
+            (
+                SELECT MAX(r.ferie_estiva) FROM bot_requests r
+                WHERE r.vigile_id = a.vigile_id AND r.data_richiesta = ?
+                  AND r.tipo_turno IN (?, 'DN') AND r.stato IN ('pending','approved')
+            ) AS ferie_estiva
      FROM assenze a
      JOIN vigili v        ON v.id  = a.vigile_id
      JOIN qualifiche q    ON q.id  = v.qualifica_id
@@ -1480,7 +1485,7 @@ $stmtAss = $pdo->prepare(
      ORDER BY ta.id, v.cognome"
 );
 
-$stmtAss->execute([$foglioId]);
+$stmtAss->execute([$dataStr, $tipoParam, $foglioId]);
 $assenze = $stmtAss->fetchAll();
 
 
@@ -2560,6 +2565,9 @@ function colorePatentePHP(?string $patente): string {
         <span class="qual-dot <?= htmlspecialchars($a['qcodice']) ?>"></span>
         <span class="assente-nome" style="color:<?= $colore ?>">
             <?= htmlspecialchars(etichettaVigile($a)) ?>
+            <?php if (!empty($a['ferie_estiva'])): ?>
+                <span title="Ferie estiva">🏖️</span>
+            <?php endif; ?>
             <?php if (!empty($a['sede_nome']) && $a['sede_nome'] !== 'CENTRALE'): ?>
                 <span class="persona-salto">
                     <?= htmlspecialchars(siglaSede($a['sede_codice'])) ?>
