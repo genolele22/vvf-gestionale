@@ -19,3 +19,7 @@ content%3A*
 /*.jpeg
 /*.webp
 /*.gif
+/*.xlsx
+/*.xls
+/*.ods
+/*.csv
