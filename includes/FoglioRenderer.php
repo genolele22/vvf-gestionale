@@ -922,6 +922,8 @@ class FoglioRenderer
         // nella cella del modello ovunque, orizzontale-destra no sempre (le colonne
         // adiacenti nell'area servizio non ce l'hanno) — lo forziamo qui, uguale per
         // ferie/riposo/assenti/area servizio invece di dipendere dal modello.
+        // font-size esplicito a 10pt: senza, eredita da Table_20_Contents ->
+        // Standard, che nel modello è 10.5pt — disallineato dal resto del foglio.
         if (!isset($have['PSiglaDx'])) {
             $st = $doc->createElementNS(self::STY, 'style:style');
             $st->setAttributeNS(self::STY, 'style:name', 'PSiglaDx');
@@ -929,7 +931,10 @@ class FoglioRenderer
             $st->setAttributeNS(self::STY, 'style:parent-style-name', 'Table_20_Contents');
             $pp = $doc->createElementNS(self::STY, 'style:paragraph-properties');
             $pp->setAttributeNS(self::FO, 'fo:text-align', 'end');
+            $tp = $doc->createElementNS(self::STY, 'style:text-properties');
+            $tp->setAttributeNS(self::FO, 'fo:font-size', '10pt');
             $st->appendChild($pp);
+            $st->appendChild($tp);
             $auto->appendChild($st);
         }
         $YEL = '#FFFF66';
