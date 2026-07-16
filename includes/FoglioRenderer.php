@@ -99,6 +99,12 @@ class FoglioRenderer
         $this->saltoRiposoId = (int)($this->pdo->query(
             "SELECT id FROM salti_turno WHERE codice=" . $this->pdo->quote($this->codSaltoRip)
         )->fetchColumn() ?: 0);
+        // scambi salto attivi di oggi: chi ha ceduto il proprio riposo (vigile_out)
+        // lavora regolarmente oggi per accordo — non è un richiamo straordinario
+        // dell'ultimo momento, va calcolato PRIMA di leggere le assegnazioni.
+        $st = $this->pdo->prepare("SELECT vigile_out_id FROM salto_override WHERE data=? AND tipo=? AND attivo=1");
+        $st->execute([$this->dataStr, $this->tipoParam]);
+        foreach ($st->fetchAll() as $r) $this->scambioOut[(int)$r['vigile_out_id']] = true;
         $pat = "(SELECT MAX(p.tipo) FROM vigili_patenti vp JOIN patenti p ON p.id=vp.patente_id WHERE vp.vigile_id=v.id)";
         // assegnazioni per codice posizione
         $idByCode = [];
@@ -119,8 +125,11 @@ class FoglioRenderer
             $a['fuori_sede'] = ((int)$a['vig_sede'] !== (int)$a['pos_sede']);
             $a['sigla'] = ($a['fuori_sede'] && (int)$a['vig_sede'] !== $this->centrSedeId) ? $a['sede_cod'] : null;
             // chi è nel salto a riposo di oggi ma è comunque assegnato in squadra
-            // (richiamato) va trattato come straordinario, flag manuale o no.
-            if ($this->saltoRiposoId > 0 && (int)($a['salto_id'] ?? 0) === $this->saltoRiposoId) {
+            // (richiamato) va trattato come straordinario, flag manuale o no —
+            // MA non se il suo riposo di oggi è stato ceduto per cambio salto
+            // (in tal caso lavora regolarmente, non è un richiamo).
+            if ($this->saltoRiposoId > 0 && (int)($a['salto_id'] ?? 0) === $this->saltoRiposoId
+                && !isset($this->scambioOut[(int)$a['vigile_id']])) {
                 $a['in_straordinario'] = 1;
             }
             $this->assByCode[$code][] = $a;
@@ -171,10 +180,6 @@ class FoglioRenderer
         $st = $this->pdo->prepare("SELECT v.cognome,v.disambiguatore,q.codice AS qcodice FROM foglio_furieri ff JOIN vigili v ON v.id=ff.vigile_id JOIN qualifiche q ON q.id=v.qualifica_id WHERE ff.foglio_id=? ORDER BY v.cognome");
         $st->execute([$foglioId]);
         $this->furieri = $st->fetchAll();
-        // scambi salto (badge "ha ceduto")
-        $st = $this->pdo->prepare("SELECT vigile_out_id FROM salto_override WHERE data=? AND tipo=? AND attivo=1");
-        $st->execute([$this->dataStr, $this->tipoParam]);
-        foreach ($st->fetchAll() as $r) $this->scambioOut[(int)$r['vigile_out_id']] = true;
 
         // Visite mediche (#95), solo Diurni: la casella 5A diventa "Visita Medica"
         // e ospita i nomi in visita (duplicati: restano anche nella loro squadra).
@@ -238,6 +243,14 @@ class FoglioRenderer
             $occupati[(int)$a['vigile_id']] = true;
         }
         foreach ($this->perTipo as $list) foreach ($list as $a) { if (!empty($a['vigile_id'])) $occupati[(int)$a['vigile_id']] = true; }
+        // capo/vice servizio: trattati come le squadre — se richiamati dal riposo
+        // di oggi (stesso controllo cambio-salto di inSaltoRiposo()) vanno anche
+        // evidenziati nell'elenco RC, non solo nella loro casella in intestazione.
+        foreach ([$this->capo, $this->vice] as $cv) {
+            if ($cv !== null && !empty($cv['id']) && $this->inSaltoRiposo($cv)) {
+                $straordSet[(int)$cv['id']] = true;
+            }
+        }
 
         foreach ($resters as $vid => $r) {
             if (isset($occupati[$vid])) continue;
@@ -310,16 +323,18 @@ class FoglioRenderer
         return ((int)($a['vig_sede'] ?? 0) !== $this->centrSedeId) ? ($a['sede_cod'] ?? null) : null;
     }
 
-    /** true se il vigile (capo/vice) ha oggi il salto a riposo: richiamato in straordinario. */
+    /** true se il vigile (capo/vice) ha oggi il salto a riposo ed è stato richiamato in
+     *  straordinario — non conta se il riposo di oggi è stato ceduto per cambio salto. */
     private function inSaltoRiposo(?array $v): bool
     {
-        return $v !== null && $this->saltoRiposoId > 0 && (int)($v['salto_id'] ?? 0) === $this->saltoRiposoId;
+        return $v !== null && $this->saltoRiposoId > 0 && (int)($v['salto_id'] ?? 0) === $this->saltoRiposoId
+            && !isset($this->scambioOut[(int)($v['id'] ?? 0)]);
     }
 
     private function vigById($id): ?array
     {
         if (!$id) return null;
-        $st = $this->pdo->prepare("SELECT v.cognome,v.disambiguatore,v.salto_id,q.codice AS qcodice FROM vigili v JOIN qualifiche q ON q.id=v.qualifica_id WHERE v.id=?");
+        $st = $this->pdo->prepare("SELECT v.id,v.cognome,v.disambiguatore,v.salto_id,q.codice AS qcodice FROM vigili v JOIN qualifiche q ON q.id=v.qualifica_id WHERE v.id=?");
         $st->execute([(int)$id]);
         return $st->fetch() ?: null;
     }
