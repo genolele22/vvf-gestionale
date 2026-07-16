@@ -628,7 +628,10 @@ class FoglioRenderer
                 [$col, $cell] = $cells[$j];
                 $t = trim($cell->textContent);
                 if ($t === '') continue;
-                if (preg_match('/^B\s*\d+$/', $t)) { $this->setText($doc, $cell, $this->codSaltoRip); continue; } // badge salto
+                // badge salto: segnaposto "ST" (Salto Turno) nel modello pulito, o un
+                // esempio tipo "B4"/"A4" lasciato in una copia già compilata — in
+                // entrambi i casi va sostituito col salto vero del giorno (es. A7).
+                if (preg_match('/^(ST|[A-D]\s*\d+)$/i', $t)) { $this->setText($doc, $cell, $this->codSaltoRip); continue; }
                 if (stripos($t, 'ore') !== false) { $dateCells[] = [$i, $cell]; continue; }                     // riga data
                 $tl = mb_strtolower($t);
                 // stile esplicito anche qui (mai ereditato dalla cella, #67): capo/vice
