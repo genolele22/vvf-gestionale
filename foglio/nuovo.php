@@ -1143,24 +1143,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             echo json_encode(['ok' => false, 'errore' => 'I due vigili sono dello stesso salto.']); exit;
         }
 
-        $aOcc = slotDatesInBlocco($slotA, $dataStr);
-        $bOcc = slotDatesInBlocco($slotB, $dataStr);
+        $aOcc = slotDatesInBlocco($slotA, $dataStr, $TURNO);
+        $bOcc = slotDatesInBlocco($slotB, $dataStr, $TURNO);
         if (!$aOcc || !$bOcc) {
             echo json_encode(['ok' => false, 'errore' => 'Controparte fuori dal blocco.']); exit;
         }
         // Scambio a ritroso (riposo controparte già passato): solo admin.
-        if ($bOcc[0] <= date('Y-m-d') && !isAdmin()) {
+        if ($bOcc[0][0] <= date('Y-m-d') && !isAdmin()) {
             echo json_encode(['ok' => false, 'errore' => 'Il riposo della controparte è già passato.']); exit;
         }
 
-        [$bloccoIni, $bloccoFin] = bloccoConfini($dataStr);
+        [$bloccoIni, $bloccoFin] = bloccoConfini($dataStr, $TURNO);
 
-        // 4 righe override: (data, tipo, vigile_out, vigile_in)
+        // 4 righe override: (data, tipo, vigile_out, vigile_in) — i tipi D/N
+        // vengono dall'occorrenza reale (per i turni A e D il riposo è N + D
+        // del giro dopo, non la coppia D+N consecutiva del turno B).
         $rows = [
-            [$aOcc[0], 'D', $aId, $bId],
-            [$aOcc[1], 'N', $aId, $bId],
-            [$bOcc[0], 'D', $bId, $aId],
-            [$bOcc[1], 'N', $bId, $aId],
+            [$aOcc[0][0], $aOcc[0][1], $aId, $bId],
+            [$aOcc[1][0], $aOcc[1][1], $aId, $bId],
+            [$bOcc[0][0], $bOcc[0][1], $bId, $aId],
+            [$bOcc[1][0], $bOcc[1][1], $bId, $aId],
         ];
 
         // Guardia: nessuno scambio attivo già presente su queste righe coi due vigili
@@ -1631,14 +1633,14 @@ $oggiStr         = date('Y-m-d');
 // Admin (comando/admin) possono scambiare anche con uno slot il cui riposo è
 // GIÀ PASSATO (scambio a ritroso); gli altri solo con riposi futuri.
 $scambioRitroso  = isAdmin();
-$contropartiSlot = [];   // slot => ['dataD','dataN','passato']
+$contropartiSlot = [];   // slot => ['occ' (tipizzata), 'passato']
 for ($k = 1; $k <= 8; $k++) {
     if ($k === $slotRiposoOggi) continue;
-    $sd = slotDatesInBlocco($k, $dataStr);
+    $sd = slotDatesInBlocco($k, $dataStr, $TURNO);
     if (!$sd) continue;
-    $passato = ($sd[0] <= $oggiStr);
+    $passato = ($sd[0][0] <= $oggiStr);
     if ($passato && !$scambioRitroso) continue;
-    $contropartiSlot[$k] = ['dataD' => $sd[0], 'dataN' => $sd[1], 'passato' => $passato];
+    $contropartiSlot[$k] = ['occ' => $sd, 'passato' => $passato];
 }
 // Vigili attivi raggruppati per slot (per i due menu del form)
 $vigiliPerSlot = [];
@@ -1806,7 +1808,7 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
             🕑 Servizio precedente
           </button>
           <?php endif; ?>
-          <a href="scarica_odt.php?data=<?= $dataStr ?>&tipo=<?= $tipoParam ?>"
+          <a href="scarica_odt.php?data=<?= $dataStr ?>&tipo=<?= $tipoParam ?>&turno=<?= $TURNO ?>"
              class="btn btn-grigio btn-sm"
              data-nferie="<?= (int)$nFerieDaApprovare ?>"
              onclick="return scaricaOdt(this)">📄 Scarica .odt</a>

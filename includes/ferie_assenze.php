@@ -7,18 +7,28 @@
 // Tutto reversibile: l'assenza si ricrea dai dati della richiesta
 // (vigile + data + turno).
 
+require_once __DIR__ . '/turni.php';
+
 if (!function_exists('feriaGetOrCreateFoglio')) {
 
-function feriaGetOrCreateFoglio(PDO $pdo, string $data, string $tipo): int {
-    $st = $pdo->prepare("SELECT id FROM fogli_servizio WHERE data_servizio=? AND tipo_turno=?");
-    $st->execute([$data, $tipo]);
+function feriaGetOrCreateFoglio(PDO $pdo, string $data, string $tipo, string $turno): int {
+    // Identità del foglio = (turno, data, tipo), come in foglio/nuovo.php.
+    // Senza il turno si agganciava/creava il foglio di un altro turno
+    // (assenze finite su fogli fantasma col default di colonna 'B').
+    $st = $pdo->prepare("SELECT id FROM fogli_servizio WHERE turno=? AND data_servizio=? AND tipo_turno=?");
+    $st->execute([$turno, $data, $tipo]);
     $id = $st->fetchColumn();
     if ($id) return (int)$id;
+
+    $stS = $pdo->prepare("SELECT id FROM salti_turno WHERE codice=?");
+    $stS->execute([$turno . saltoRiposoNum($data, $tipo)]);
+    $saltoRiposoId = (int)($stS->fetchColumn() ?: 1);
+
     $next = nextId($pdo, 'fogli_servizio');
     $pdo->prepare(
-        "INSERT INTO fogli_servizio (id, data_servizio, tipo_turno, salto_riposo_id, creato_da)
-         VALUES (?, ?, ?, 1, 'ferie')"
-    )->execute([$next, $data, $tipo]);
+        "INSERT INTO fogli_servizio (id, turno, data_servizio, tipo_turno, salto_riposo_id, creato_da)
+         VALUES (?, ?, ?, ?, ?, 'ferie')"
+    )->execute([$next, $turno, $data, $tipo, $saltoRiposoId]);
     return $next;
 }
 
@@ -43,12 +53,15 @@ function feriaDeleteAssenza(PDO $pdo, int $vigileId, string $data, string $tipo)
 }
 
 function feriaSyncAssenza(PDO $pdo, int $vigileId, string $data, string $tipoTurno, string $stato): void {
+    $stT = $pdo->prepare("SELECT turno FROM vigili WHERE id=?");
+    $stT->execute([$vigileId]);
+    $turno = (string)$stT->fetchColumn();
     $tipi = ($tipoTurno === 'DN') ? ['D', 'N'] : [$tipoTurno];
     foreach ($tipi as $t) {
         if ($stato === 'rejected') {
             feriaDeleteAssenza($pdo, $vigileId, $data, $t);
-        } else { // approved | pending → vigile assente sul foglio
-            $foglioId = feriaGetOrCreateFoglio($pdo, $data, $t);
+        } else { // approved | pending → vigile assente sul foglio DEL SUO TURNO
+            $foglioId = feriaGetOrCreateFoglio($pdo, $data, $t, $turno);
             feriaInsertAssenza($pdo, $vigileId, $foglioId);
         }
     }

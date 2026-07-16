@@ -120,21 +120,27 @@ function scambioPiazzaInServizio(PDO $pdo, int $foglioId, int $vigileId): void
  *   - sulle date di A (slot_a): out=A, in=B  (B riposa al posto di A)
  *   - sulle date di B (slot_b): out=B, in=A
  * $sc deve avere: slot_a, slot_b, blocco_inizio, vigile_a_id, vigile_b_id.
+ * I tipi D/N vengono dall'occorrenza reale (per i turni A e D il riposo è
+ * N + D del giro dopo, non la coppia D+N consecutiva del turno B).
  */
-function scambioOverrideRows(array $sc): array
+function scambioOverrideRows(PDO $pdo, array $sc): array
 {
-    $aOcc = slotDatesInBlocco((int)$sc['slot_a'], $sc['blocco_inizio']);
-    $bOcc = slotDatesInBlocco((int)$sc['slot_b'], $sc['blocco_inizio']);
+    $stT = $pdo->prepare("SELECT turno FROM vigili WHERE id=?");
+    $stT->execute([(int)$sc['vigile_a_id']]);
+    $turno = (string)$stT->fetchColumn();
+
+    $aOcc = slotDatesInBlocco((int)$sc['slot_a'], $sc['blocco_inizio'], $turno);
+    $bOcc = slotDatesInBlocco((int)$sc['slot_b'], $sc['blocco_inizio'], $turno);
     if (!$aOcc || !$bOcc) {
         throw new RuntimeException('Slot fuori dal blocco.');
     }
     $aId = (int)$sc['vigile_a_id'];
     $bId = (int)$sc['vigile_b_id'];
     return [
-        [$aOcc[0], 'D', $aId, $bId],
-        [$aOcc[1], 'N', $aId, $bId],
-        [$bOcc[0], 'D', $bId, $aId],
-        [$bOcc[1], 'N', $bId, $aId],
+        [$aOcc[0][0], $aOcc[0][1], $aId, $bId],
+        [$aOcc[1][0], $aOcc[1][1], $aId, $bId],
+        [$bOcc[0][0], $bOcc[0][1], $bId, $aId],
+        [$bOcc[1][0], $bOcc[1][1], $bId, $aId],
     ];
 }
 
@@ -167,12 +173,20 @@ function scambioGuardiaConflitto(PDO $pdo, array $rows, int $aId, int $bId): voi
  */
 function scambioScriviOverride(PDO $pdo, int $sid, array $rows): void
 {
+    // I fogli da patchare sono SOLO quelli del turno dei due vigili: senza il
+    // filtro si rischia di toccare il foglio omonimo (data,tipo) di un altro turno.
+    $stT = $pdo->prepare(
+        "SELECT v.turno FROM bot_scambi_salto s JOIN vigili v ON v.id=s.vigile_a_id WHERE s.id=?"
+    );
+    $stT->execute([$sid]);
+    $turno = (string)$stT->fetchColumn();
+
     $insOv  = $pdo->prepare(
         "INSERT INTO salto_override
             (id, scambio_id, data, tipo, vigile_out_id, vigile_in_id, attivo)
          VALUES (?,?,?,?,?,?,1)"
     );
-    $selF   = $pdo->prepare("SELECT id FROM fogli_servizio WHERE data_servizio=? AND tipo_turno=?");
+    $selF   = $pdo->prepare("SELECT id FROM fogli_servizio WHERE turno=? AND data_servizio=? AND tipo_turno=?");
     $delSS  = $pdo->prepare("DELETE FROM salto_servizio WHERE foglio_id=? AND vigile_id=?");
     $delAss = $pdo->prepare("DELETE FROM assegnazioni  WHERE foglio_id=? AND vigile_id=?");
     $chkSS  = $pdo->prepare("SELECT 1 FROM salto_servizio WHERE foglio_id=? AND vigile_id=?");
@@ -182,7 +196,7 @@ function scambioScriviOverride(PDO $pdo, int $sid, array $rows): void
         $oid = nextId($pdo, 'salto_override');
         $insOv->execute([$oid, $sid, $d, $t, $outId, $inId]);
 
-        $selF->execute([$d, $t]);
+        $selF->execute([$turno, $d, $t]);
         $fid = $selF->fetchColumn();
         if ($fid) {
             $delSS->execute([$fid, $outId]);
@@ -217,7 +231,7 @@ function scambioApprovaEsistente(PDO $pdo, int $sid, int $approvatoDa = 0): arra
         throw new RuntimeException('Scambio non più in attesa (stato: ' . $sc['stato'] . ').');
     }
 
-    $rows = scambioOverrideRows($sc);
+    $rows = scambioOverrideRows($pdo, $sc);
     scambioGuardiaConflitto($pdo, $rows, (int)$sc['vigile_a_id'], (int)$sc['vigile_b_id']);
 
     $appBy = $approvatoDa ?: (int)$sc['vigile_a_id'];
@@ -264,14 +278,20 @@ function scambioAnnulla(PDO $pdo, int $sid): bool
         return false;
     }
 
-    $selF  = $pdo->prepare("SELECT id FROM fogli_servizio WHERE data_servizio=? AND tipo_turno=?");
+    $stT = $pdo->prepare(
+        "SELECT v.turno FROM bot_scambi_salto s JOIN vigili v ON v.id=s.vigile_a_id WHERE s.id=?"
+    );
+    $stT->execute([$sid]);
+    $turno = (string)$stT->fetchColumn();
+
+    $selF  = $pdo->prepare("SELECT id FROM fogli_servizio WHERE turno=? AND data_servizio=? AND tipo_turno=?");
     $delSS = $pdo->prepare("DELETE FROM salto_servizio WHERE foglio_id=? AND vigile_id=?");
     $chkSS = $pdo->prepare("SELECT 1 FROM salto_servizio WHERE foglio_id=? AND vigile_id=?");
     $insSS = $pdo->prepare("INSERT INTO salto_servizio (id, foglio_id, vigile_id, richiamato) VALUES (?,?,?,0)");
     $offO  = $pdo->prepare("UPDATE salto_override SET attivo=0 WHERE id=?");
 
     foreach ($rows as $r) {
-        $selF->execute([$r['data'], $r['tipo']]);
+        $selF->execute([$turno, $r['data'], $r['tipo']]);
         $fid = $selF->fetchColumn();
         if ($fid) {
             // chi era entrato in salto esce; chi cedeva (rester canonico) rientra

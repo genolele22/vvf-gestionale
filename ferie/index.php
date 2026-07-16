@@ -424,8 +424,8 @@ foreach ($stScP->fetchAll() as $s) {
                             . ($d ? ' ' . (int)$d : '');
     $s['a_label'] = $etic($s['a_q'], $s['a_cog'], $s['a_dis']);
     $s['b_label'] = $etic($s['b_q'], $s['b_cog'], $s['b_dis']);
-    $s['a_occ']   = slotDatesInBlocco((int)$s['slot_a'], $s['blocco_inizio']);
-    $s['b_occ']   = slotDatesInBlocco((int)$s['slot_b'], $s['blocco_inizio']);
+    $s['a_occ']   = slotDatesInBlocco((int)$s['slot_a'], $s['blocco_inizio'], $s['turno']);
+    $s['b_occ']   = slotDatesInBlocco((int)$s['slot_b'], $s['blocco_inizio'], $s['turno']);
     $scambiPending[] = $s;
 }
 
@@ -753,12 +753,16 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
   </div>
 
   <?php
-  // Formatta un'occorrenza di riposo (data_D, data_N) → "12/06 ☀️ + 13/06 🌙"
+  // Formatta un'occorrenza di riposo tipizzata → "12/06 ☀️ + 13/06 🌙".
+  // I tipi vengono dall'occorrenza: per i turni A e D il riposo è N + D del
+  // giro dopo, non la coppia D+N consecutiva del turno B.
   $fmtOcc = function (?array $occ): string {
       if (!$occ) return '—';
-      $d = (new DateTime($occ[0]))->format('d/m');
-      $n = (new DateTime($occ[1]))->format('d/m');
-      return "$d ☀️ + $n 🌙";
+      $pezzi = array_map(
+          fn($f) => (new DateTime($f[0]))->format('d/m') . ' ' . ($f[1] === 'D' ? '☀️' : '🌙'),
+          $occ
+      );
+      return implode(' + ', $pezzi);
   };
   ?>
   <?php if ($scambiPending): ?>

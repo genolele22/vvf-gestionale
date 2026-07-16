@@ -19,10 +19,16 @@ if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $data)) {
     exit;
 }
 
-$st = $pdo->prepare("SELECT id, salto_riposo_id FROM fogli_servizio WHERE data_servizio=? AND tipo_turno=?");
-$st->execute([$data, $tipo]);
+// Turno: 3° argomento opzionale, default = turno canonico della rotazione.
+$turnoArg = strtoupper(substr((string)($argv[3] ?? ''), 0, 1));
+if (!in_array($turnoArg, ['A', 'B', 'C', 'D'], true)) {
+    $tg = getTurnoGiorno($data);
+    $turnoArg = $tipo === 'D' ? $tg['diurno']['turno'] : $tg['notte']['turno'];
+}
+$st = $pdo->prepare("SELECT id, salto_riposo_id FROM fogli_servizio WHERE turno=? AND data_servizio=? AND tipo_turno=?");
+$st->execute([$turnoArg, $data, $tipo]);
 $f = $st->fetch();
-if (!$f) exit("Nessun foglio per $data $tipo.\n");
+if (!$f) exit("Nessun foglio per $data $tipo (turno $turnoArg).\n");
 $fid = (int)$f['id'];
 echo "Foglio #$fid — $data $tipo\n";
 

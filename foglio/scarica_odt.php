@@ -14,11 +14,20 @@ $pdo = getDB();
 $foglioId = isset($_GET['id']) && ctype_digit((string)$_GET['id']) ? (int)$_GET['id'] : 0;
 $dataStr  = '';
 if (!$foglioId) {
+    require_once __DIR__ . '/../includes/turni.php';
     $dataStr = preg_replace('/[^0-9\-]/', '', $_GET['data'] ?? '');
     if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dataStr)) { http_response_code(400); exit('Data non valida'); }
     $tipo = (($_GET['tipo'] ?? 'D') === 'N') ? 'N' : 'D';
-    $st = $pdo->prepare("SELECT id FROM fogli_servizio WHERE data_servizio=? AND tipo_turno=?");
-    $st->execute([$dataStr, $tipo]);
+    // Turno: da GET, o (fallback per i link vecchi) quello canonico della
+    // rotazione per (data,tipo) — senza filtro si può beccare il foglio
+    // omonimo di un altro turno.
+    $turno = strtoupper(substr((string)($_GET['turno'] ?? ''), 0, 1));
+    if (!in_array($turno, ['A', 'B', 'C', 'D'], true)) {
+        $tg    = getTurnoGiorno($dataStr);
+        $turno = $tipo === 'D' ? $tg['diurno']['turno'] : $tg['notte']['turno'];
+    }
+    $st = $pdo->prepare("SELECT id FROM fogli_servizio WHERE turno=? AND data_servizio=? AND tipo_turno=?");
+    $st->execute([$turno, $dataStr, $tipo]);
     $foglioId = (int)($st->fetchColumn() ?: 0);
 }
 if (!$foglioId) { http_response_code(404); exit('Foglio non trovato: compilalo prima dalla pagina del servizio.'); }

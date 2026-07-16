@@ -34,9 +34,11 @@ function calcolaDiurno(int $giorniDallAncora): array
 
     // Il salto avanza di 1 ogni 4 giorni
     // Quanti cicli completi di 4 giorni sono passati dall'ancora?
-    // All'ancora siamo al salto 4, quindi:
-    $cicliCompleti = intdiv($giorniDallAncora + TURNI_ANCHOR_TURNO, 4)
-                   - intdiv(TURNI_ANCHOR_TURNO, 4);
+    // All'ancora siamo al salto 4. floor() e non intdiv(): intdiv tronca
+    // verso zero e sbaglia di 1 il salto per le date PRECEDENTI l'ancora
+    // (verificato contro il calendario storico del bot).
+    $cicliCompleti = (int)floor(($giorniDallAncora + TURNI_ANCHOR_TURNO) / 4)
+                   - (int)floor(TURNI_ANCHOR_TURNO / 4);
     // salto 1-8, partiamo da TURNI_ANCHOR_SALTO
     $salto = ((TURNI_ANCHOR_SALTO - 1 + $cicliCompleti) % 8 + 8) % 8 + 1;
 
@@ -132,15 +134,15 @@ function getTurnoGiorno(string $data): array
 }
 
 /**
- * ── Scambio salto turno: blocchi ciclici B1→B8 ──────────────────────────────
- * Replica della logica del bot (calendar_turni.py) sul modello algoritmico.
- * Verificata contro data/calendario.json del bot: 100% sugli slot-dates
- * nella finestra operativa (i confini divergono solo ai bordi del json, dove
- * l'algoritmo estrapola correttamente).
- *
- * Un'occorrenza di riposo dello slot S = (data_D, data_N = data_D + 1 giorno).
- * I giorni di riposo-D del turno B ricorrono ogni 4 giorni; lo slot a riposo
- * avanza +1 ad ogni occorrenza. Un blocco = giro completo B1→B8 (32 giorni).
+ * ── Scambio salto turno: occorrenze di riposo generiche (A/B/C/D) ───────────
+ * Il salto di un foglio segue saltoRiposoNum. L'occorrenza di riposo di uno
+ * slot NON è sempre la coppia (D, N del giorno dopo): vale per i turni B e C;
+ * per A e D è (N di un servizio, D del servizio successivo, 3 giorni dopo) —
+ * verificato sui fogli reali (A6 in salto su 12/07 N e 15/07 D, D7 su 15/07 N).
+ * Per questo le funzioni lavorano per scansione dei servizi del turno, senza
+ * assumere coppie consecutive, e restituiscono occorrenze TIPIZZATE:
+ *     [['Y-m-d', 'D'|'N'], ['Y-m-d', 'D'|'N']]   in ordine cronologico.
+ * Un blocco = giro completo slot 1→8 (32 giorni), cadenza uguale per tutti.
  */
 
 /**
@@ -153,32 +155,78 @@ function saltoRiposoNum(string $data, string $tipo): int
     return (int)($tipo === 'D' ? $tg['notte']['salto'] : $tg['diurno']['salto']);
 }
 
-/**
- * Confini del blocco B1→B8 che contiene $data:
- * ['Y-m-d' di B1 (data_D), 'Y-m-d' di B8 (data_N)].
- */
-function bloccoConfini(string $data): array
+/** Fogli [data, tipo] in cui $turno è in servizio, in [$da, $a] inclusi. */
+function serviziTurno(string $turno, string $da, string $a): array
 {
-    $off   = giorniDallAncora($data);
-    $mod   = (($off % 4) + 4) % 4;                              // dist. dal rest-D corrente
-    $restD = (new DateTime($data))->modify("-{$mod} day");      // rest-D dell'occorrenza
-    $slot  = saltoRiposoNum($restD->format('Y-m-d'), 'D');      // slot di quel rest-D
-    $inizio = (clone $restD)->modify('-' . (($slot - 1) * 4) . ' day');  // B1 data_D
-    $fineN  = (clone $inizio)->modify('+29 day');               // B8 data_N (28 + 1)
-    return [$inizio->format('Y-m-d'), $fineN->format('Y-m-d')];
+    $out  = [];
+    $cur  = new DateTime($da);
+    $fine = new DateTime($a);
+    while ($cur <= $fine) {
+        $ds = $cur->format('Y-m-d');
+        $tg = getTurnoGiorno($ds);
+        if ($tg['diurno']['turno'] === $turno) $out[] = [$ds, 'D'];
+        if ($tg['notte']['turno']  === $turno) $out[] = [$ds, 'N'];
+        $cur->modify('+1 day');
+    }
+    return $out;
 }
 
 /**
- * (data_D, data_N) dello slot dentro il blocco di $data, come ['Y-m-d','Y-m-d'],
- * o null se slot fuori range.
+ * Prime $n occorrenze di riposo dello slot per $turno il cui PRIMO foglio
+ * cade in data >= $da. I 2 fogli di un'occorrenza si raggruppano per
+ * prossimità (gap <= 4 giorni); tra occorrenze passano 32 giorni.
  */
-function slotDatesInBlocco(int $slot, string $data): ?array
+function occorrenzeSlotDa(string $turno, int $slot, string $da, int $n): array
+{
+    $inizioScan = (new DateTime($da))->modify('-5 day')->format('Y-m-d');
+    $fineScan   = (new DateTime($da))->modify('+' . (32 * ($n + 1) + 10) . ' day')->format('Y-m-d');
+    $fogli = array_values(array_filter(
+        serviziTurno($turno, $inizioScan, $fineScan),
+        fn($f) => saltoRiposoNum($f[0], $f[1]) === $slot
+    ));
+    $occ = [];
+    $i = 0;
+    while ($i + 1 < count($fogli) && count($occ) < $n) {
+        $gap = (new DateTime($fogli[$i][0]))->diff(new DateTime($fogli[$i + 1][0]))->days;
+        if ($gap > 4) { $i++; continue; }      // foglio orfano ai margini dello scan
+        if ($fogli[$i][0] >= $da) $occ[] = [$fogli[$i], $fogli[$i + 1]];
+        $i += 2;
+    }
+    return $occ;
+}
+
+/**
+ * Confini del blocco slot 1→8 di $turno che contiene $data:
+ * ['Y-m-d' prima data dell'occ. slot 1, 'Y-m-d' ultima data dell'occ. slot 8].
+ */
+function bloccoConfini(string $data, string $turno = 'B'): array
+{
+    $scanDa = (new DateTime($data))->modify('-33 day')->format('Y-m-d');
+    $occ1   = occorrenzeSlotDa($turno, 1, $scanDa, 2);
+    $inizio = null;
+    foreach ($occ1 as $o) {
+        if ($o[0][0] <= $data) $inizio = $o[0][0];
+    }
+    if ($inizio === null) {  // $data precede la prima occ trovata: blocco precedente
+        $inizio = (new DateTime($occ1[0][0][0]))->modify('-32 day')->format('Y-m-d');
+    }
+    $occ8 = occorrenzeSlotDa($turno, 8, $inizio, 1);
+    return [$inizio, $occ8[0][1][0]];
+}
+
+/**
+ * Occorrenza tipizzata dello slot dentro il blocco di $data
+ * ([['Y-m-d',tipo], ['Y-m-d',tipo]]), o null se slot fuori range.
+ */
+function slotDatesInBlocco(int $slot, string $data, string $turno = 'B'): ?array
 {
     if ($slot < 1 || $slot > 8) return null;
-    [$inizio, ] = bloccoConfini($data);
-    $dD = (new DateTime($inizio))->modify('+' . (($slot - 1) * 4) . ' day');
-    $dN = (clone $dD)->modify('+1 day');
-    return [$dD->format('Y-m-d'), $dN->format('Y-m-d')];
+    [$inizio, ] = bloccoConfini($data, $turno);
+    $occ = occorrenzeSlotDa($turno, $slot, $inizio, 1);
+    if ($occ && (new DateTime($inizio))->diff(new DateTime($occ[0][0][0]))->days < 32) {
+        return $occ[0];
+    }
+    return null;
 }
 
 /**

@@ -157,8 +157,8 @@ $vigili = $pdo->query(
     Strumento interno per caricare le ferie (estive e dell'agenda cartacea) come se fossero
     arrivate dal bot: crea la voce in <strong>Agenda</strong> (stato <em>pending</em>) e l'assenza
     sul <strong>foglio del giorno giusto</strong>. Nessuna mail inviata.<br>
-    Ogni giorno mostra lo slot reale del turno B: ☀️ diurno, 🌙 notturno. I giorni in cui il turno B
-    non è in servizio non sono selezionabili.
+    Ogni giorno mostra lo slot reale del turno <?= htmlspecialchars($TURNO) ?>: ☀️ diurno, 🌙 notturno.
+    I giorni in cui il turno non è in servizio non sono selezionabili.
   </p>
 
   <div class="fs-wrap">
