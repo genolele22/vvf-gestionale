@@ -1867,63 +1867,6 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
       </div>
     </div><!-- /.foglio-header-top -->
 
-    <!-- Campi intestazione -->
-    <form id="formIntestazione">
-    <div class="foglio-header-fields">
-
-      <!-- Capo Servizio (drag: trascina qui un vigile) -->
-      <div class="fh-field">
-        <div class="fh-label">Capo Servizio</div>
-        <div class="fh-value fh-dropzone" id="dropCapoServizio" title="Trascina qui un vigile">
-          <input type="hidden" name="capo_servizio_id" id="csId"
-                 value="<?= (int)($foglio['capo_servizio_id'] ?? 0) ?: '' ?>">
-          <span id="csNome" class="dz-nome<?= $capoNome ? '' : ' vuoto' ?>">
-            <?= $capoNome ? htmlspecialchars($capoNome) : 'Trascina qui…' ?>
-          </span>
-          <button type="button" class="fh-clear" id="csClear" title="Togli capo servizio"
-                  onclick="svuotaRuolo(true)"<?= $capoNome ? '' : ' style="display:none"' ?>>×</button>
-        </div>
-      </div>
-
-      <!-- Vice Capo Servizio (drag: trascina qui un vigile) -->
-      <div class="fh-field">
-        <div class="fh-label">Vice Capo Servizio</div>
-        <div class="fh-value fh-dropzone" id="dropViceCapo" title="Trascina qui un vigile">
-          <input type="hidden" name="vice_capo_id" id="vcsId"
-                 value="<?= (int)($foglio['vice_capo_id'] ?? 0) ?: '' ?>">
-          <span id="vcsNome" class="dz-nome<?= $viceNome ? '' : ' vuoto' ?>">
-            <?= $viceNome ? htmlspecialchars($viceNome) : 'Trascina qui…' ?>
-          </span>
-          <button type="button" class="fh-clear" id="vcsClear" title="Togli vice capo"
-                  onclick="svuotaRuolo(false)"<?= $viceNome ? '' : ' style="display:none"' ?>>×</button>
-        </div>
-      </div>
-
-      <!-- Funzionario -->
-      <div class="fh-field">
-        <div class="fh-label">Funzionario</div>
-        <div class="fh-value">
-          <select name="funzionario" id="funzionario">
-            <option value="">— seleziona il funzionario —</option>
-            <?php
-              $funzInLista = false;
-              foreach ($funzionariOpt as $fnome):
-                  if ($fnome === $funzCorrente) $funzInLista = true; ?>
-              <option value="<?= htmlspecialchars($fnome) ?>"<?= $fnome === $funzCorrente ? ' selected' : '' ?>>
-                <?= htmlspecialchars($fnome) ?>
-              </option>
-            <?php endforeach; ?>
-            <?php if ($funzCorrente !== '' && !$funzInLista): ?>
-              <!-- valore storico non più in anagrafica: lo conservo finché non si ri-salva -->
-              <option value="<?= htmlspecialchars($funzCorrente) ?>" selected><?= htmlspecialchars($funzCorrente) ?> (fuori lista)</option>
-            <?php endif; ?>
-          </select>
-        </div>
-      </div>
-
-    </div>
-    </form>
-
   </div><!-- /.foglio-header -->
 
   <div id="msgBox"></div>
@@ -2299,6 +2242,65 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
            L'Aeroporto parte in 7ª colonna direttamente sotto 1SMZ. -->
       <div class="sede-block sede-full">
         <div class="sede-head">🏠 Centrale</div>
+
+        <!-- Campi intestazione (CS/VCS/Funzionario): sotto la scritta "Centrale",
+             sopra le prime squadre — stesso raggruppamento visivo del foglio. -->
+        <form id="formIntestazione">
+        <div class="foglio-header-fields">
+
+          <!-- Capo Servizio (drag: trascina qui un vigile) -->
+          <div class="fh-field">
+            <div class="fh-label">Capo Servizio</div>
+            <div class="fh-value fh-dropzone" id="dropCapoServizio" title="Trascina qui un vigile">
+              <input type="hidden" name="capo_servizio_id" id="csId"
+                     value="<?= (int)($foglio['capo_servizio_id'] ?? 0) ?: '' ?>">
+              <span id="csNome" class="dz-nome<?= $capoNome ? '' : ' vuoto' ?>">
+                <?= $capoNome ? htmlspecialchars($capoNome) : 'Trascina qui…' ?>
+              </span>
+              <button type="button" class="fh-clear" id="csClear" title="Togli capo servizio"
+                      onclick="svuotaRuolo(true)"<?= $capoNome ? '' : ' style="display:none"' ?>>×</button>
+            </div>
+          </div>
+
+          <!-- Vice Capo Servizio (drag: trascina qui un vigile) -->
+          <div class="fh-field">
+            <div class="fh-label">Vice Capo Servizio</div>
+            <div class="fh-value fh-dropzone" id="dropViceCapo" title="Trascina qui un vigile">
+              <input type="hidden" name="vice_capo_id" id="vcsId"
+                     value="<?= (int)($foglio['vice_capo_id'] ?? 0) ?: '' ?>">
+              <span id="vcsNome" class="dz-nome<?= $viceNome ? '' : ' vuoto' ?>">
+                <?= $viceNome ? htmlspecialchars($viceNome) : 'Trascina qui…' ?>
+              </span>
+              <button type="button" class="fh-clear" id="vcsClear" title="Togli vice capo"
+                      onclick="svuotaRuolo(false)"<?= $viceNome ? '' : ' style="display:none"' ?>>×</button>
+            </div>
+          </div>
+
+          <!-- Funzionario -->
+          <div class="fh-field">
+            <div class="fh-label">Funzionario</div>
+            <div class="fh-value">
+              <select name="funzionario" id="funzionario">
+                <option value="">— seleziona il funzionario —</option>
+                <?php
+                  $funzInLista = false;
+                  foreach ($funzionariOpt as $fnome):
+                      if ($fnome === $funzCorrente) $funzInLista = true; ?>
+                  <option value="<?= htmlspecialchars($fnome) ?>"<?= $fnome === $funzCorrente ? ' selected' : '' ?>>
+                    <?= htmlspecialchars($fnome) ?>
+                  </option>
+                <?php endforeach; ?>
+                <?php if ($funzCorrente !== '' && !$funzInLista): ?>
+                  <!-- valore storico non più in anagrafica: lo conservo finché non si ri-salva -->
+                  <option value="<?= htmlspecialchars($funzCorrente) ?>" selected><?= htmlspecialchars($funzCorrente) ?> (fuori lista)</option>
+                <?php endif; ?>
+              </select>
+            </div>
+          </div>
+
+        </div>
+        </form>
+
         <div class="sede-body griglia-unica">
           <?php
           $usati = [];
