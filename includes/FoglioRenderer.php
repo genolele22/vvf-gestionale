@@ -27,8 +27,10 @@ class FoglioRenderer
         'AP-2VI'=>'AP-2VI','ML-1NAU'=>'ML-1NAU','EL-1SMZ'=>'EL-1SMZ',
     ];
     // colonne sezione assenti (start-col nel modello).
-    // FER_SIG/RC_SIG = colonna sigla sede (a destra del nome, già centrata).
+    // FER_SIG/RC_SIG/ASSENTI_SIG = colonna sigla sede (a destra del nome, già centrata
+    // in verticale nel modello; l'allineamento orizzontale lo forza setSigla()).
     const FER_COG=0, FER_SIG=4, FER_TUR=6, FER_DA=7, FER_A=9, RC_COG=12, RC_SIG=15, RC_VAR=17;
+    const ASSENTI_COG=0, ASSENTI_SIG=4;
 
     private PDO $pdo;
     private array $foglio;
@@ -224,15 +226,24 @@ class FoglioRenderer
 
         // escludi chi è assegnato (in servizio) o assente (ferie/missione/...).
         // assByCode può contenere esterni al turno (nome_libero, senza vigile_id):
-        // non sono vigili del salto, vanno ignorati qui.
-        $occupati = [];
-        foreach ($this->assByCode as $list) foreach ($list as $a) { if (!empty($a['vigile_id'])) $occupati[(int)$a['vigile_id']] = true; }
+        // non sono vigili del salto, vanno ignorati qui. Chi è richiamato in
+        // STRAORDINARIO invece resta nel riposo compensativo: va scritto in
+        // entrambi i posti (squadra + elenco salto), non spostato dall'uno
+        // all'altro — la sua riga qui viene marcata per lo stesso stile
+        // grassetto/evidenziato che ha già in squadra.
+        $occupati = []; $straordSet = [];
+        foreach ($this->assByCode as $list) foreach ($list as $a) {
+            if (empty($a['vigile_id'])) continue;
+            if (!empty($a['in_straordinario'])) { $straordSet[(int)$a['vigile_id']] = true; continue; }
+            $occupati[(int)$a['vigile_id']] = true;
+        }
         foreach ($this->perTipo as $list) foreach ($list as $a) { if (!empty($a['vigile_id'])) $occupati[(int)$a['vigile_id']] = true; }
 
         foreach ($resters as $vid => $r) {
             if (isset($occupati[$vid])) continue;
             $r['sede_distaccata'] = $r['sede_distaccata'] ?? null;
             $r['note'] = $r['note'] ?? null;   // preserva "Riposa per <out>" se impostato
+            if (isset($straordSet[$vid])) $r['in_straordinario'] = 1;
             $this->perTipo['RC'][] = $r;
         }
         if (!empty($this->perTipo['RC'])) {
@@ -257,19 +268,28 @@ class FoglioRenderer
      * di ferie del vigile che contiene la data di questo foglio. Stessa logica
      * dell'Agenda (includes/ferie_blocchi.php): un blocco = richieste con gap
      * <= 3 giorni; DN vale 2 turni.
+     *
+     * Fonte: assenze+fogli_servizio (tipo_assenza_id=1), non bot_requests — le
+     * ferie assegnate d'ufficio direttamente dal foglio (azione 'ferie_ufficio'
+     * in nuovo.php) creano l'assenza ma NESSUNA riga in bot_requests, quindi
+     * restavano sempre senza turni/periodo. L'assenza copre sempre entrambe le
+     * origini (bot e d'ufficio) ed è sempre presente/coerente: una richiesta
+     * respinta non ha mai assenza (rimossa da feriaDeleteAssenza), quindi qui
+     * non serve isolare uno stato "respinto" come fa bot_requests.
      */
     private function arricchisciFerie(): void
     {
         if (empty($this->perTipo['FER'])) return;
-        // stato serve a blocchiContigui() per isolare le richieste RESPINTE (non
-        // devono mai far da ponte tra due periodi accettati, vedi ferie_blocchi.php).
         $req = $this->pdo->prepare(
-            "SELECT data_richiesta, tipo_turno, stato FROM bot_requests
-              WHERE vigile_id=? ORDER BY data_richiesta"
+            "SELECT f.data_servizio AS data_richiesta, f.tipo_turno
+               FROM assenze a JOIN fogli_servizio f ON f.id = a.foglio_id
+              WHERE a.vigile_id=? AND a.tipo_assenza_id=1
+              ORDER BY f.data_servizio, f.tipo_turno"
         );
         foreach ($this->perTipo['FER'] as $i => $a) {
             $req->execute([(int)$a['vigile_id']]);
-            $blocchi = blocchiContigui($req->fetchAll());
+            $righe = array_map(fn($r) => $r + ['stato' => 'approved'], $req->fetchAll());
+            $blocchi = blocchiContigui($righe);
             foreach ($blocchi as $b) {
                 $da = $b[0]['data_richiesta'];
                 $aa = end($b)['data_richiesta'];
@@ -325,6 +345,18 @@ class FoglioRenderer
         }, $s);
     }
 
+    /** Nome funzionario: in anagrafica è salvato tutto maiuscolo (es. "IA BAGHINO"),
+     *  qui va nello stesso stile degli altri nomi sul foglio — stessa regola usata
+     *  per i nomi esterni al turno (etichetta(), campo nome_libero). */
+    private static function formattaFunzionario(string $nome): string
+    {
+        $nome = trim($nome);
+        if ($nome === '') return '';
+        return self::$formatoNome === 'tutto_maiusc'
+            ? mb_strtoupper($nome, 'UTF-8')
+            : self::capitalizzaParole(mb_strtolower($nome, 'UTF-8'));
+    }
+
     private static function etichetta(array $v): string
     {
         if (isset($v['nome_libero'])) {   // esterno al turno: stesso stile testo dei vigili
@@ -347,11 +379,11 @@ class FoglioRenderer
              . (!empty($v['disambiguatore']) ? ' ' . (int)$v['disambiguatore'] : '');
     }
     /**
-     * Stile testo: colore patente + straordinario (giallo) + sottolineato (in servizio
-     * fuori sede). Ritorna SEMPRE uno stile esplicito, anche per il caso "nessun colore
-     * speciale": senza, il nome eredita la formattazione della cella del modello.odt,
-     * che non è uniforme cella per cella — un nome nero spostato in un'altra casella
-     * poteva uscire blu o rosso (#67).
+     * Stile testo: colore patente + straordinario (giallo + grassetto) + sottolineato
+     * (in servizio fuori sede). Ritorna SEMPRE uno stile esplicito, anche per il caso
+     * "nessun colore speciale": senza, il nome eredita la formattazione della cella del
+     * modello.odt, che non è uniforme cella per cella — un nome nero spostato in
+     * un'altra casella poteva uscire blu o rosso (#67).
      */
     private static function nameStyle(?string $t, bool $straord, bool $und = false): string
     {
@@ -491,7 +523,8 @@ class FoglioRenderer
         if ($this->visite) $queue['5A'] = array_merge($queue['5A'] ?? [], $this->visite);
 
         for ($i = 0; $i < $pa; $i++) {
-            foreach ($this->rowCells($rows[$i]) as [$col, $cell]) {
+            $cells = $this->rowCells($rows[$i]);
+            foreach ($cells as $j => [$col, $cell]) {
                 $txt = trim($cell->textContent);
                 if ($txt !== '' && isset(self::HDR2CODE[$txt])) {      // header mezzo
                     $colCode[$col] = self::HDR2CODE[$txt];
@@ -504,10 +537,26 @@ class FoglioRenderer
                     $code = $colCode[$col];
                     if (!empty($queue[$code])) {
                         $a = array_shift($queue[$code]);
-                        // fuori sede: sigla in suffisso (come in FERIE, mai per chi è di
-                        // Centrale) + nome SEMPRE sottolineato se fuori sede, sigla o no
-                        $sfx = !empty($a['sigla']) ? ' ' . $a['sigla'] : '';
+                        // fuori sede: sigla nella colonna adiacente se il modello ne
+                        // prevede una per questo mezzo (cella stretta, subito dopo,
+                        // non assegnata ad alcun mezzo — non tutti i mezzi ce l'hanno:
+                        // fallback in coda al nome, come prima, se manca) + nome SEMPRE
+                        // sottolineato se fuori sede, sigla o no (mai per chi è di Centrale)
+                        $sfx = '';
+                        $siglaCell = null;
+                        if (!empty($a['sigla'])) {
+                            $next = $cells[$j + 1] ?? null;
+                            if ($next !== null) {
+                                [$ncol, $ncell] = $next;
+                                $span = max(1, (int)$ncell->getAttributeNS(self::TBL, 'number-columns-spanned') ?: 1);
+                                if (trim($ncell->textContent) === '' && !isset($colCode[$ncol]) && $span <= 2) {
+                                    $siglaCell = $ncell;
+                                }
+                            }
+                            if ($siglaCell === null) $sfx = ' ' . $a['sigla'];
+                        }
                         $this->writeName($doc, $cell, $a, $sfx, '', !empty($a['fuori_sede']));
+                        if ($siglaCell !== null) $this->setSigla($doc, $siglaCell, $a['sigla']);
                         $lastCell[$code] = $cell;
                     }
                 }
@@ -534,7 +583,7 @@ class FoglioRenderer
                 $a = $fer[$fi++];
                 // sigla sede nella colonna dedicata (a destra del nome, centrata), non in coda al nome
                 $this->writeName($doc, $byCol[self::FER_COG], $a);
-                if (isset($byCol[self::FER_SIG])) $this->setText($doc, $byCol[self::FER_SIG], $a['sigla'] ?? '');
+                if (isset($byCol[self::FER_SIG])) $this->setSigla($doc, $byCol[self::FER_SIG], $a['sigla'] ?? '');
                 if (isset($byCol[self::FER_TUR])) $this->setText($doc, $byCol[self::FER_TUR], $a['nr_turni'] ? (string)(int)$a['nr_turni'] : '');
                 if (isset($byCol[self::FER_DA]))  $this->setText($doc, $byCol[self::FER_DA], $a['data_da'] ? date('j', strtotime($a['data_da'])) : '');
                 if (isset($byCol[self::FER_A]))   $this->setText($doc, $byCol[self::FER_A], $a['data_a'] ? date('j', strtotime($a['data_a'])) : '');
@@ -542,7 +591,7 @@ class FoglioRenderer
             if ($ri < count($rc) && isset($byCol[self::RC_COG])) {
                 $a = $rc[$ri++];
                 $this->writeName($doc, $byCol[self::RC_COG], $a);
-                if (isset($byCol[self::RC_SIG])) $this->setText($doc, $byCol[self::RC_SIG], $a['sigla'] ?? '');
+                if (isset($byCol[self::RC_SIG])) $this->setSigla($doc, $byCol[self::RC_SIG], $a['sigla'] ?? '');
                 if (isset($byCol[self::RC_VAR])) $this->setText($doc, $byCol[self::RC_VAR], $a['note'] ?? '');  // solo "Riposa per X"
             }
         }
@@ -560,9 +609,11 @@ class FoglioRenderer
         $k = 0;
         for ($i = $from; $i < $to && $k < count($items); $i++) {
             $byCol = $this->rowCellsByCol($rows[$i]);
-            if (isset($byCol[0])) {
+            if (isset($byCol[self::ASSENTI_COG])) {
                 $it = $items[$k++];
-                $this->writeName($doc, $byCol[0], $it, !empty($it['sigla']) ? ' ' . $it['sigla'] : '');
+                // sigla sede nella colonna dedicata (a destra del nome, come in FERIE), non in coda al nome
+                $this->writeName($doc, $byCol[self::ASSENTI_COG], $it);
+                if (isset($byCol[self::ASSENTI_SIG])) $this->setSigla($doc, $byCol[self::ASSENTI_SIG], $it['sigla'] ?? '');
             }
         }
     }
@@ -589,7 +640,8 @@ class FoglioRenderer
                     $this->setText($doc, $cells[$j+1][1], $this->capo ? self::etichetta($this->capo) : '',
                         self::nameStyle(null, $this->inSaltoRiposo($this->capo)));
                 elseif (strpos($tl, 'funzionario') !== false && isset($cells[$j+1]))
-                    $this->setText($doc, $cells[$j+1][1], $this->foglio['funzionario'] ?? '', self::nameStyle(null, false));
+                    $this->setText($doc, $cells[$j+1][1], self::formattaFunzionario($this->foglio['funzionario'] ?? ''),
+                        self::nameStyle(null, false));
             }
         }
         // due righe data: la più in alto = inizio servizio, la sotto = fine
@@ -676,6 +728,21 @@ class FoglioRenderer
             $p->appendChild($span);
         } else {
             $p->appendChild($doc->createTextNode($text));
+        }
+    }
+
+    /** scrive una sigla in una colonna dedicata: verticale-centro (già nella cella
+     *  del modello) + orizzontale-destra (forzato: non tutte le celle-sigla del
+     *  modello ce l'hanno già impostato, es. nell'area servizio). */
+    private function setSigla(DOMDocument $doc, DOMElement $cell, string $text): void
+    {
+        $this->setText($doc, $cell, $text);
+        if ($text === '') return;
+        foreach ($cell->childNodes as $n) {
+            if ($n->nodeType === XML_ELEMENT_NODE && $n->localName === 'p') {
+                $n->setAttributeNS(self::TXT, 'text:style-name', 'PSiglaDx');
+                break;
+            }
         }
     }
 
@@ -826,6 +893,7 @@ class FoglioRenderer
                     $c = $p->getAttributeNS(self::FO, 'color'); if ($c) $css[] = 'color:' . $c;
                     $bg = $p->getAttributeNS(self::FO, 'background-color'); if ($bg) $css[] = 'background:' . $bg;
                     $us = $p->getAttributeNS(self::STY, 'text-underline-style'); if ($us && $us !== 'none') $css[] = 'text-decoration:underline';
+                    $fw = $p->getAttributeNS(self::FO, 'font-weight'); if ($fw) $css[] = 'font-weight:' . $fw;
                     if ($css) $textCol[$name] = implode(';', $css);
                 }
             }
@@ -850,6 +918,20 @@ class FoglioRenderer
             $st->appendChild($tp);
             $auto->appendChild($st);
         }
+        // stile paragrafo per le colonne sigla (fuori sede): verticale-centro è già
+        // nella cella del modello ovunque, orizzontale-destra no sempre (le colonne
+        // adiacenti nell'area servizio non ce l'hanno) — lo forziamo qui, uguale per
+        // ferie/riposo/assenti/area servizio invece di dipendere dal modello.
+        if (!isset($have['PSiglaDx'])) {
+            $st = $doc->createElementNS(self::STY, 'style:style');
+            $st->setAttributeNS(self::STY, 'style:name', 'PSiglaDx');
+            $st->setAttributeNS(self::STY, 'style:family', 'paragraph');
+            $st->setAttributeNS(self::STY, 'style:parent-style-name', 'Table_20_Contents');
+            $pp = $doc->createElementNS(self::STY, 'style:paragraph-properties');
+            $pp->setAttributeNS(self::FO, 'fo:text-align', 'end');
+            $st->appendChild($pp);
+            $auto->appendChild($st);
+        }
         $YEL = '#FFFF66';
         // matrice: colore patente × straordinario (giallo) × sottolineato (fuori sede).
         // '' → nero esplicito (#000000), MAI lasciato senza stile: altrimenti il nome
@@ -865,7 +947,10 @@ class FoglioRenderer
                     $st->setAttributeNS(self::STY, 'style:family', 'text');
                     $tp = $doc->createElementNS(self::STY, 'style:text-properties');
                     if ($col)     $tp->setAttributeNS(self::FO, 'fo:color', $col);
-                    if ($straord) $tp->setAttributeNS(self::FO, 'fo:background-color', $YEL);
+                    if ($straord) {
+                        $tp->setAttributeNS(self::FO, 'fo:background-color', $YEL);
+                        $tp->setAttributeNS(self::FO, 'fo:font-weight', 'bold');
+                    }
                     if ($und) {
                         $tp->setAttributeNS(self::STY, 'style:text-underline-style', 'solid');
                         $tp->setAttributeNS(self::STY, 'style:text-underline-width', 'auto');
