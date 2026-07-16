@@ -31,11 +31,6 @@ class FoglioRenderer
     // in verticale nel modello; l'allineamento orizzontale lo forza setSigla()).
     const FER_COG=0, FER_SIG=4, FER_TUR=6, FER_DA=7, FER_A=9, RC_COG=12, RC_SIG=15, RC_VAR=17;
     const ASSENTI_COG=0, ASSENTI_SIG=4;
-    // Le uniche 4 posizioni dell'area servizio senza colonna sigla adiacente:
-    // nel modello hanno invece una cella STRETTA seguita da una cella LARGA
-    // (invece di nome+sigla-adiacente come tutte le altre) — nome nella
-    // cella larga, sigla in quella stretta (scelta di Lele, #masino).
-    const SPLIT_SIG_FIRST = ['CENTR-OP', '1SMZ', 'ML-1A', 'GA-1NAU'];
 
     private PDO $pdo;
     private array $foglio;
@@ -542,44 +537,27 @@ class FoglioRenderer
                     $code = $colCode[$col];
                     if (!empty($queue[$code])) {
                         $a = array_shift($queue[$code]);
-                        $next = $cells[$j + 1] ?? null;
-
-                        if (in_array($code, self::SPLIT_SIG_FIRST, true)) {
-                            // cella stretta (questa, $cell) + cella larga adiacente: il
-                            // nome va nella larga, la sigla in quella stretta. Se manca
-                            // la cella larga (riga anomala) fallback: come le altre
-                            // posizioni, sigla in coda al nome nella cella corrente.
-                            if ($next !== null && trim($next[1]->textContent) === '') {
-                                $this->writeName($doc, $next[1], $a, '', '', !empty($a['fuori_sede']));
-                                if (!empty($a['sigla'])) $this->setSigla($doc, $cell, $a['sigla']);
-                                $lastCell[$code] = $next[1];
-                            } else {
-                                $sfx = !empty($a['sigla']) ? ' ' . $a['sigla'] : '';
-                                $this->writeName($doc, $cell, $a, $sfx, '', !empty($a['fuori_sede']));
-                                $lastCell[$code] = $cell;
-                            }
-                        } else {
-                            // fuori sede: sigla nella colonna adiacente se il modello ne
-                            // prevede una per questo mezzo (cella stretta, subito dopo,
-                            // non assegnata ad alcun mezzo — non tutti i mezzi ce l'hanno:
-                            // fallback in coda al nome, come prima, se manca) + nome SEMPRE
-                            // sottolineato se fuori sede, sigla o no (mai per chi è di Centrale)
-                            $sfx = '';
-                            $siglaCell = null;
-                            if (!empty($a['sigla'])) {
-                                if ($next !== null) {
-                                    [$ncol, $ncell] = $next;
-                                    $span = max(1, (int)$ncell->getAttributeNS(self::TBL, 'number-columns-spanned') ?: 1);
-                                    if (trim($ncell->textContent) === '' && !isset($colCode[$ncol]) && $span <= 2) {
-                                        $siglaCell = $ncell;
-                                    }
+                        // fuori sede: sigla nella colonna adiacente se il modello ne
+                        // prevede una per questo mezzo (cella stretta, subito dopo,
+                        // non assegnata ad alcun mezzo — non tutti i mezzi ce l'hanno:
+                        // fallback in coda al nome, come prima, se manca) + nome SEMPRE
+                        // sottolineato se fuori sede, sigla o no (mai per chi è di Centrale)
+                        $sfx = '';
+                        $siglaCell = null;
+                        if (!empty($a['sigla'])) {
+                            $next = $cells[$j + 1] ?? null;
+                            if ($next !== null) {
+                                [$ncol, $ncell] = $next;
+                                $span = max(1, (int)$ncell->getAttributeNS(self::TBL, 'number-columns-spanned') ?: 1);
+                                if (trim($ncell->textContent) === '' && !isset($colCode[$ncol]) && $span <= 2) {
+                                    $siglaCell = $ncell;
                                 }
-                                if ($siglaCell === null) $sfx = ' ' . $a['sigla'];
                             }
-                            $this->writeName($doc, $cell, $a, $sfx, '', !empty($a['fuori_sede']));
-                            if ($siglaCell !== null) $this->setSigla($doc, $siglaCell, $a['sigla']);
-                            $lastCell[$code] = $cell;
+                            if ($siglaCell === null) $sfx = ' ' . $a['sigla'];
                         }
+                        $this->writeName($doc, $cell, $a, $sfx, '', !empty($a['fuori_sede']));
+                        if ($siglaCell !== null) $this->setSigla($doc, $siglaCell, $a['sigla']);
+                        $lastCell[$code] = $cell;
                     }
                 }
             }
