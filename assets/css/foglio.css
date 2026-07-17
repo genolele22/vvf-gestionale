@@ -67,20 +67,21 @@
 /* Campi intestazione (CS, VCS, funzionario) — dentro il riquadro "Centrale",
    sopra la griglia delle squadre: serve un padding proprio (non più ereditato
    da .foglio-header) più un bordo per separarli visivamente dalla griglia. */
-/* I tre campi affiancati su un'unica riga, ciascuno con label sopra la casella. */
+/* #151: i tre campi su un'unica riga, ruolo a sinistra del valore, larghezza
+   piena (come la griglia CENTR-OP…1SMZ sotto). */
 .foglio-header-fields {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    display: flex;
     gap: 16px;
     padding: 10px 12px;
     border-bottom: 1px solid #e8e8e8;
 }
 .fh-field {
     display: flex;
-    flex-direction: column;
-    align-items: stretch;
-    gap: 4px;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
     min-width: 0;
+    flex: 1;
 }
 .fh-label {
     flex: none;
@@ -93,7 +94,7 @@
 }
 /* Su schermi stretti torna a colonna così non si schiaccia. */
 @media (max-width: 640px) {
-    .foglio-header-fields { grid-template-columns: 1fr; }
+    .foglio-header-fields { flex-direction: column; }
 }
 .fh-value {
     flex: 1;
@@ -546,8 +547,10 @@ body.cruscotto-bloccato .foglio-layout {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    flex: 1 1 auto;   /* #140: il nome cresce/tronca, i simboli restano ancorati a destra */
 }
 .ass-card .ass-nome > :not(.ass-nome-txt) { flex-shrink: 0; }
+.ass-card .ass-nome > .persona-salto { order: 9; }   /* #140: la sigla sede è sempre l'ultimo simbolo */
 
 /* ── Riga bersaglio durante il drag ── */
 /* Righe fisse: nessun gap che si apre, si evidenzia solo dove si atterrerebbe */
@@ -668,6 +671,9 @@ body.cruscotto-bloccato .foglio-layout {
     border: 1px solid #ececec;
 }
 .assente-nome { flex: 1; font-weight: 600; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+/* #140: la sigla sede è sempre l'ultimo simbolo, ancorata a destra (il nome è testo
+   libero, non un <span> dedicato, quindi qui il push a destra passa dal badge stesso). */
+.assente-nome > .persona-salto { order: 9; margin-left: auto; }
 .assente-info { font-size: .68rem; color: var(--grigio-md); }
 .assente-del {
     background: none;

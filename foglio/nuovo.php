@@ -587,6 +587,7 @@ $pdo->exec(
         posizione_id     SMALLINT UNSIGNED NOT NULL,
         nome             VARCHAR(80) NOT NULL,
         in_straordinario TINYINT(1) NOT NULL DEFAULT 1,
+        patente_forzata  CHAR(1) NULL,
         ordine           TINYINT UNSIGNED NOT NULL DEFAULT 0,
         KEY idx_foglio (foglio_id),
         KEY idx_foglio_pos (foglio_id, posizione_id)
@@ -652,7 +653,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                        'rimuovi_assenza', 'metti_salto', 'richiama_salto', 'reset_foglio',
                        'ferie_ufficio', 'rimuovi_ufficio', 'scambia_salto', 'annulla_scambio',
                        'sposta_riga', 'copia_da_diurno', 'scambia_posizioni',
-                       'assegna_esterno', 'rimuovi_esterno'];
+                       'assegna_esterno', 'rimuovi_esterno', 'rimuovi_da_posizione'];
     if ($foglioBloccato && in_array($azione, $azioniModifica, true)) {
         echo json_encode(['ok' => false, 'bloccato' => true,
                           'errore' => 'Foglio bloccato. Sblocca per modificare.']);
@@ -664,12 +665,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $vcsId = (int)($_POST['vice_capo_id']     ?? 0) ?: null;
         $fun   = trim($_POST['funzionario']        ?? '');
         $note  = trim($_POST['note_generali']      ?? '');
+        // #145: straordinario per capo/vice = era in salto (riposo) quando è stato
+        // messo qui, stessa logica delle posizioni normali (calcolata lato client).
+        $csStr  = $csId  ? (int)!empty($_POST['capo_straordinario']) : 0;
+        $vcsStr = $vcsId ? (int)!empty($_POST['vice_straordinario']) : 0;
 
         $pdo->prepare(
             "UPDATE fogli_servizio
-             SET capo_servizio_id=?, vice_capo_id=?, funzionario=?, note_generali=?
+             SET capo_servizio_id=?, capo_straordinario=?, vice_capo_id=?, vice_straordinario=?,
+                 funzionario=?, note_generali=?
              WHERE id=?"
-        )->execute([$csId, $vcsId, $fun, $note, $foglioId]);
+        )->execute([$csId, $csStr, $vcsId, $vcsStr, $fun, $note, $foglioId]);
 
         // Capo e vice non possono stare anche in squadra/salto/assenza: chi finisce
         // in un riquadro dell'intestazione sparisce dal resto del servizio.
@@ -759,6 +765,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         echo json_encode(['ok' => true, 'ordine' => $ordine]);
+        exit;
+    }
+
+    // ── AJAX: togli un vigile IN STRAORDINARIO da una posizione, senza
+    //    toccare salto_servizio/assenze (#143) — a differenza di 'rimuovi',
+    //    che libera da TUTTO. Chi era richiamato dal salto torna in salto
+    //    (resterEffettivi lo ritrova da solo, non essendo più in assegnazioni).
+    if ($azione === 'rimuovi_da_posizione') {
+        $vigileId    = (int)($_POST['vigile_id']    ?? 0);
+        $posizioneId = (int)($_POST['posizione_id'] ?? 0);
+        $pdo->prepare(
+            "DELETE FROM assegnazioni WHERE foglio_id=? AND vigile_id=? AND posizione_id=?"
+        )->execute([$foglioId, $vigileId, $posizioneId]);
+        echo json_encode(['ok' => true]);
         exit;
     }
 
@@ -853,6 +873,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $posizioneId = (int)($_POST['posizione_id'] ?? 0);
         $nome        = trim($_POST['nome'] ?? '');
         $straord     = (int)($_POST['straordinario'] ?? 1) ? 1 : 0;
+        $patForzata  = in_array($_POST['patente_forzata'] ?? '', ['2', '3'], true) ? $_POST['patente_forzata'] : null;
         $extId       = (int)($_POST['ext_id'] ?? 0);   // >0 = sposta esistente
         $rigaReq     = (int)($_POST['ordine'] ?? 0);    // riga scelta col drop, 0 = nessuna preferenza
         $nome        = mb_substr($nome, 0, 80);
@@ -881,15 +902,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($extId > 0) {   // sposta
             $pdo->prepare(
-                "UPDATE assegnazioni_esterni SET posizione_id=?, ordine=?, in_straordinario=?
+                "UPDATE assegnazioni_esterni SET posizione_id=?, ordine=?, in_straordinario=?, patente_forzata=?
                  WHERE id=? AND foglio_id=?"
-            )->execute([$posizioneId, $ordine, $straord, $extId, $foglioId]);
+            )->execute([$posizioneId, $ordine, $straord, $patForzata, $extId, $foglioId]);
         } else {            // crea
             $extId = nextId($pdo, 'assegnazioni_esterni');
             $pdo->prepare(
-                "INSERT INTO assegnazioni_esterni (id, foglio_id, posizione_id, nome, in_straordinario, ordine)
-                 VALUES (?,?,?,?,?,?)"
-            )->execute([$extId, $foglioId, $posizioneId, $nome, $straord, $ordine]);
+                "INSERT INTO assegnazioni_esterni (id, foglio_id, posizione_id, nome, in_straordinario, patente_forzata, ordine)
+                 VALUES (?,?,?,?,?,?,?)"
+            )->execute([$extId, $foglioId, $posizioneId, $nome, $straord, $patForzata, $ordine]);
         }
         echo json_encode(['ok' => true, 'ext_id' => $extId, 'ordine' => $ordine]);
         exit;
@@ -1001,8 +1022,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     // ── AJAX: ferie d'ufficio (assenza ferie diretta, senza richiesta) ──
+    // #144: N turni consecutivi a partire da questo servizio, non solo il foglio
+    // corrente. Nessun bot_request creato: restano "d'ufficio" per costruzione,
+    // separate da quelle Telegram (che sono l'UNICA cosa che genera comunicazioni/
+    // mail — vedi contaFerieDaNotificare, invariata).
     if ($azione === 'ferie_ufficio') {
+        require_once __DIR__ . '/../includes/ferie_assenze.php';   // feriaGetOrCreateFoglio
         $vigileId = (int)($_POST['vigile_id'] ?? 0);
+        $nTurni   = max(1, min(60, (int)($_POST['n_turni'] ?? 1)));
         if ($vigileId <= 0) { echo json_encode(['ok' => false]); exit; }
 
         // Libera da posizioni/salto/assenze sul foglio corrente
@@ -1010,13 +1037,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pdo->prepare("DELETE FROM salto_servizio WHERE foglio_id=? AND vigile_id=?")->execute([$foglioId, $vigileId]);
         $pdo->prepare("DELETE FROM assenze        WHERE foglio_id=? AND vigile_id=?")->execute([$foglioId, $vigileId]);
 
-        // Crea assenza FERIE (tipo=1) — nessun bot_request
-        $nid = nextId($pdo, 'assenze');
-        $pdo->prepare(
-            "INSERT INTO assenze (id, foglio_id, vigile_id, tipo_assenza_id) VALUES (?, ?, ?, 1)"
-        )->execute([$nid, $foglioId, $vigileId]);
+        // N slot consecutivi del turno, a partire da questo servizio.
+        $slots = [['data' => $dataStr, 'tipo' => $tipoParam]];
+        $cur   = $slots[0];
+        for ($i = 1; $i < $nTurni; $i++) {
+            $next = servizioAdiacenteB($cur['data'], $cur['tipo'], 1, $TURNO);
+            if (!$next) break;   // fine calendario noto: si ferma qui, non blocca
+            $slots[] = $next;
+            $cur = $next;
+        }
+        $nEff   = count($slots);
+        $dataDa = $slots[0]['data'];
+        $dataA  = $slots[$nEff - 1]['data'];
 
-        echo json_encode(['ok' => true]);
+        foreach ($slots as $s) {
+            $fid = ($s['data'] === $dataStr && $s['tipo'] === $tipoParam)
+                ? $foglioId
+                : feriaGetOrCreateFoglio($pdo, $s['data'], $s['tipo'], $TURNO);
+            $stEx = $pdo->prepare(
+                "SELECT id FROM assenze WHERE foglio_id=? AND vigile_id=? AND tipo_assenza_id=1"
+            );
+            $stEx->execute([$fid, $vigileId]);
+            $aid = $stEx->fetchColumn();
+            if ($aid) {
+                $pdo->prepare("UPDATE assenze SET nr_turni=?, data_da=?, data_a=? WHERE id=?")
+                    ->execute([$nEff, $dataDa, $dataA, $aid]);
+            } else {
+                $nid = nextId($pdo, 'assenze');
+                $pdo->prepare(
+                    "INSERT INTO assenze (id, foglio_id, vigile_id, tipo_assenza_id, nr_turni, data_da, data_a)
+                     VALUES (?, ?, ?, 1, ?, ?, ?)"
+                )->execute([$nid, $fid, $vigileId, $nEff, $dataDa, $dataA]);
+            }
+        }
+
+        echo json_encode(['ok' => true, 'n_turni' => $nEff, 'data_da' => $dataDa, 'data_a' => $dataA]);
         exit;
     }
 
@@ -1446,7 +1501,7 @@ foreach ($assegnazioni as $ass) {
 // Nomi esterni (turno C/sommozzatori/nautici) per posizione
 $esterniPerPosizione = [];
 $stE = $pdo->prepare(
-    "SELECT id, posizione_id, nome, in_straordinario, ordine
+    "SELECT id, posizione_id, nome, in_straordinario, patente_forzata, ordine
        FROM assegnazioni_esterni WHERE foglio_id=? ORDER BY posizione_id, ordine"
 );
 $stE->execute([$foglioId]);
@@ -1679,19 +1734,27 @@ $nFerieDaApprovare = contaFeriePending($pdo, $foglioId, $dataStr, $tipoParam);
 
 // Furieri del foglio
 // Nomi capo/vice per le drop-zone (qualsiasi vigile, non solo Centrale).
+// #152: patente_max serve per colorare il nome come le altre card (stessa regola).
+$patMaxCV = "(SELECT MAX(pt.tipo) FROM vigili_patenti vp JOIN patenti pt ON pt.id=vp.patente_id WHERE vp.vigile_id=v.id)";
 $stCV = $pdo->prepare(
-    "SELECT v.cognome, v.disambiguatore, q.codice AS qcodice
+    "SELECT v.cognome, v.disambiguatore, q.codice AS qcodice, $patMaxCV AS patente_max
      FROM vigili v JOIN qualifiche q ON q.id = v.qualifica_id WHERE v.id = ?"
 );
-$nomeRuolo = function ($id) use ($stCV): string {
+$ruoloInfo = function ($id) use ($stCV): array {
     $id = (int)$id;
-    if ($id <= 0) return '';
+    if ($id <= 0) return ['nome' => '', 'colore' => colorePatentePHP(null)];
     $stCV->execute([$id]);
     $r = $stCV->fetch();
-    return $r ? etichettaVigile($r) : '';
+    return $r
+        ? ['nome' => etichettaVigile($r), 'colore' => colorePatentePHP($r['patente_max'] ?? null)]
+        : ['nome' => '', 'colore' => colorePatentePHP(null)];
 };
-$capoNome = $nomeRuolo($foglio['capo_servizio_id'] ?? 0);
-$viceNome = $nomeRuolo($foglio['vice_capo_id'] ?? 0);
+$capoInfo   = $ruoloInfo($foglio['capo_servizio_id'] ?? 0);
+$viceInfo   = $ruoloInfo($foglio['vice_capo_id'] ?? 0);
+$capoNome   = $capoInfo['nome'];
+$viceNome   = $viceInfo['nome'];
+$capoColore = $capoInfo['colore'];
+$viceColore = $viceInfo['colore'];
 $capoId   = (int)($foglio['capo_servizio_id'] ?? 0);
 $viceId   = (int)($foglio['vice_capo_id'] ?? 0);
 
@@ -1899,6 +1962,14 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
           </label>
           <button type="button" class="btn btn-sm btn-verde" onclick="aggiungiEsterno()">Aggiungi</button>
         </div>
+        <div class="aggiungi-esterno-row">
+          <label title="Colora il nome come patente 2ª categoria">
+            <input type="checkbox" id="esternoPat2" onchange="if(this.checked)document.getElementById('esternoPat3').checked=false"> 2 cat.
+          </label>
+          <label title="Colora il nome come patente 3ª/4ª categoria">
+            <input type="checkbox" id="esternoPat3" onchange="if(this.checked)document.getElementById('esternoPat2').checked=false"> 3 cat.
+          </label>
+        </div>
       </div>
 
       <div class="organico-list" id="organicoList">
@@ -1971,15 +2042,6 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
 
 </div><!-- /.organico-list -->
 
-      <!-- Legenda organico -->
-      <div style="padding:8px 10px;border-top:1px solid #e8e8e8;
-                  font-size:.68rem;color:var(--grigio-md);line-height:1.8">
-        <span style="background:var(--giallo-bg);border:1px solid var(--giallo);
-                     padding:1px 5px;border-radius:3px">
-          Salto <?= htmlspecialchars($codSaltoRip) ?>
-        </span> = riposo canonico
-      </div>
-
     </div><!-- /.organico-panel -->
 
     <!-- ── PANNELLO FERIE RESPINTE ─────────────────────────── -->
@@ -2049,6 +2111,12 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
                     <span class="persona-salto"><?= htmlspecialchars(siglaSede($a['sede_codice'])) ?></span>
                 <?php endif; ?>
             </span>
+            <?php if ($a['nr_turni']): ?>
+                <span class="assente-info" style="font-size:.65rem;color:var(--grigio-md)"
+                      title="<?= $a['data_da'] ? date('d/m', strtotime($a['data_da'])) . '→' . date('d/m', strtotime($a['data_a'])) : '' ?>">
+                    <?= (int)$a['nr_turni'] ?>T
+                </span>
+            <?php endif; ?>
             <button class="assente-del"
                     onclick="rimuoviFerieUfficio(<?= $a['vigile_id'] ?>)"
                     title="Togli ferie d'ufficio">✕</button>
@@ -2167,6 +2235,7 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
                      data-vigile-id="<?= $ass['vigile_id'] ?>"
                      data-pos-id="<?= $pos['id'] ?>"
                      data-ordine="<?= $riga ?>"
+                     data-straord="<?= (int)$ass['in_straordinario'] ?>"
                      draggable="true">
                   <span class="qual-dot <?= htmlspecialchars($ass['qcodice']) ?>"></span>
                   <span class="ass-nome" style="color:<?= $colore ?>"
@@ -2187,6 +2256,11 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
                         <span title="Visita medica" style="font-size:.7rem">🚑</span>
                     <?php endif; ?>
                   </span>
+                  <?php if ($ass['in_straordinario']): ?>
+                      <button class="remove-btn"
+                              onclick="rimuoviStraordinarioPos(<?= (int)$ass['vigile_id'] ?>, <?= (int)$pos['id'] ?>)"
+                              title="Togli dalla squadra, torna in salto">✕</button>
+                  <?php endif; ?>
                 </div>
               <?php else: // esterno al turno (non in `vigili`)
                   $e = $r['d']; ?>
@@ -2195,12 +2269,13 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
                      data-ext-id="<?= (int)$e['id'] ?>"
                      data-ext-nome="<?= htmlspecialchars($e['nome']) ?>"
                      data-straord="<?= (int)$e['in_straordinario'] ?>"
+                     data-pat="<?= htmlspecialchars((string)$e['patente_forzata']) ?>"
                      data-pos-id="<?= $pos['id'] ?>"
                      data-ordine="<?= $riga ?>"
                      draggable="true">
                   <span class="esterno-dot" title="Personale esterno al turno">★</span>
                   <span class="ass-nome" title="<?= htmlspecialchars($e['nome']) ?> (esterno)">
-                    <span class="ass-nome-txt"><?= htmlspecialchars($e['nome']) ?></span>
+                    <span class="ass-nome-txt" style="color:<?= colorePatentePHP($e['patente_forzata']) ?>"><?= htmlspecialchars($e['nome']) ?></span>
                     <?php if ((int)$e['in_straordinario']): ?>
                         <span style="font-size:.6rem;color:var(--giallo);font-weight:700">STR</span>
                     <?php endif; ?>
@@ -2254,9 +2329,14 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
             <div class="fh-value fh-dropzone" id="dropCapoServizio" title="Trascina qui un vigile">
               <input type="hidden" name="capo_servizio_id" id="csId"
                      value="<?= (int)($foglio['capo_servizio_id'] ?? 0) ?: '' ?>">
-              <span id="csNome" class="dz-nome<?= $capoNome ? '' : ' vuoto' ?>">
+              <input type="hidden" name="capo_straordinario" id="csStraordInput"
+                     value="<?= (int)($foglio['capo_straordinario'] ?? 0) ?>">
+              <span id="csNome" class="dz-nome<?= $capoNome ? '' : ' vuoto' ?>"
+                    style="<?= $capoNome ? 'color:' . $capoColore : '' ?>">
                 <?= $capoNome ? htmlspecialchars($capoNome) : 'Trascina qui…' ?>
               </span>
+              <span id="csStr" class="str-badge"
+                    style="font-size:.65rem;color:var(--giallo);font-weight:700;<?= !empty($foglio['capo_straordinario']) ? '' : 'display:none' ?>">★ STR</span>
               <button type="button" class="fh-clear" id="csClear" title="Togli capo servizio"
                       onclick="svuotaRuolo(true)"<?= $capoNome ? '' : ' style="display:none"' ?>>×</button>
             </div>
@@ -2268,9 +2348,14 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
             <div class="fh-value fh-dropzone" id="dropViceCapo" title="Trascina qui un vigile">
               <input type="hidden" name="vice_capo_id" id="vcsId"
                      value="<?= (int)($foglio['vice_capo_id'] ?? 0) ?: '' ?>">
-              <span id="vcsNome" class="dz-nome<?= $viceNome ? '' : ' vuoto' ?>">
+              <input type="hidden" name="vice_straordinario" id="vcsStraordInput"
+                     value="<?= (int)($foglio['vice_straordinario'] ?? 0) ?>">
+              <span id="vcsNome" class="dz-nome<?= $viceNome ? '' : ' vuoto' ?>"
+                    style="<?= $viceNome ? 'color:' . $viceColore : '' ?>">
                 <?= $viceNome ? htmlspecialchars($viceNome) : 'Trascina qui…' ?>
               </span>
+              <span id="vcsStr" class="str-badge"
+                    style="font-size:.65rem;color:var(--giallo);font-weight:700;<?= !empty($foglio['vice_straordinario']) ? '' : 'display:none' ?>">★ STR</span>
               <button type="button" class="fh-clear" id="vcsClear" title="Togli vice capo"
                       onclick="svuotaRuolo(false)"<?= $viceNome ? '' : ' style="display:none"' ?>>×</button>
             </div>
@@ -2450,9 +2535,14 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
   <div id="colSalto">
 
     <?php
-    foreach ($tuttoPersonale as $v):
-      $vid          = $v['id'];
-      if (!in_array($vid, $idVigiliInSalto)) continue;   // verità: salto_servizio (riflette gli scambi)
+    // #132: qui SOLO per cognome (non qualifica→cognome come $tuttoPersonale altrove).
+    $personaleSalto = array_values(array_filter($tuttoPersonale, fn($v) => in_array($v['id'], $idVigiliInSalto)));
+    usort($personaleSalto, fn($a, $b) => strcasecmp(
+        $a['cognome'] . sprintf('%03d', (int)$a['disambiguatore']),
+        $b['cognome'] . sprintf('%03d', (int)$b['disambiguatore'])
+    ));
+    foreach ($personaleSalto as $v):
+      $vid          = $v['id'];   // verità: salto_servizio (riflette gli scambi)
       $isAssegnatoStr = !empty($saltoRichiamato[$vid]);   // STR = richiamato (straordinario)
       $label        = etichettaVigile($v);
     ?>
@@ -3047,25 +3137,30 @@ function buildAssCard(p, posId, straord, ordine) {
     const visitaBadge = p.visita
         ? `<span title="Visita medica" style="font-size:.7rem">🚑</span>` : '';
     const colore = colorePatente(p.patente);
+    const removeBtn = straord
+        ? `<button class="remove-btn" onclick="rimuoviStraordinarioPos(${p.id}, ${posId})"
+                    title="Togli dalla squadra, torna in salto">✕</button>` : '';
 
     return `<div class="ass-card"
                  id="ass-${p.id}"
                  data-vigile-id="${p.id}"
                  data-pos-id="${posId}"
                  data-ordine="${ordine}"
+                 data-straord="${straord ? 1 : 0}"
                  draggable="true">
               <span class="qual-dot ${p.qcodice}"></span>
               <span class="ass-nome" style="color:${colore}" title="${p.nome}">
                 <span class="ass-nome-txt">${p.nome}</span>${sedeBadge}${strBadge}${visitaBadge}
-              </span>
+              </span>${removeBtn}
             </div>`;
 }
 
 
-function buildAssenteRow(p, tipoCodice) {
+function buildAssenteRow(p, tipoCodice, nTurni, dataDa, dataA) {
     const sedeBadge = (!p.sedeCentrale && p.sede)
         ? `<span class="persona-salto">${siglaSede(p.sede)}</span>` : '';
     const colore = colorePatente(p.patente);
+    const turniInfo = nTurni ? `${nTurni}T` : tipoCodice;
 
     return `<div class="assente-row"
                  data-vigile-id="${p.id}">
@@ -3075,8 +3170,9 @@ function buildAssenteRow(p, tipoCodice) {
                 ${p.nome}${sedeBadge}
               </span>
               <span class="assente-info"
-                    style="font-size:.65rem;color:var(--grigio-md)">
-                ${tipoCodice}
+                    style="font-size:.65rem;color:var(--grigio-md)"
+                    title="${nTurni ? (dataDa || '') + '→' + (dataA || '') : ''}">
+                ${turniInfo}
               </span>
               <button class="assente-del"
                       onclick="rimuoviDaAssenza(${p.id})"
@@ -3100,6 +3196,7 @@ document.addEventListener('dragstart', function(e) {
             extId:  inPos ? parseInt(extCard.dataset.extId) : 0,
             nome:   extCard.dataset.extNome,
             str:    extCard.dataset.straord === '1' ? 1 : 0,
+            pat:    extCard.dataset.pat || '',
             source: inPos ? 'esterno_pos' : 'esterno_disp',
             el:     extCard,
         };
@@ -3237,17 +3334,18 @@ document.addEventListener('drop', async function(e) {
             const rigaTarget = (riga && riga.classList.contains('slot-empty'))
                 ? parseInt(riga.dataset.ordine) : 0;
             const res = await ajax({
-                azione:        'assegna_esterno',
-                posizione_id:  posId,
-                nome:          ext.nome,
-                straordinario: ext.str,
-                ext_id:        ext.extId || 0,
-                ordine:        rigaTarget,
+                azione:          'assegna_esterno',
+                posizione_id:    posId,
+                nome:            ext.nome,
+                straordinario:   ext.str,
+                patente_forzata: ext.pat,
+                ext_id:          ext.extId || 0,
+                ordine:          rigaTarget,
             });
             if (!res.ok) { showMsg(res.errore || '⚠️ Errore.', 'err'); return; }
             const oldBody = (ext.source === 'esterno_pos') ? ext.el.parentElement : null;
             ext.el.remove();                                    // toglie card sorgente
-            body.appendChild(cardEsternoPos(res.ext_id, ext.nome, ext.str, posId, res.ordine));
+            body.appendChild(cardEsternoPos(res.ext_id, ext.nome, ext.str, ext.pat, posId, res.ordine));
             sincronizzaSlot(body);
             if (oldBody && oldBody !== body) sincronizzaSlot(oldBody);
             showMsg('➕ ' + ext.nome + ' aggiunto.');
@@ -3260,7 +3358,7 @@ document.addEventListener('drop', async function(e) {
             const oldBody = ext.el.parentElement;
             ext.el.remove();
             sincronizzaSlot(oldBody);
-            aggiungiCardEsternoDisp(ext.nome, ext.str);        // torna disponibile
+            aggiungiCardEsternoDisp(ext.nome, ext.str, ext.pat);   // torna disponibile
         }
         return;
     }
@@ -3288,8 +3386,17 @@ document.addEventListener('drop', async function(e) {
         const inputEl = document.getElementById(isCapo ? 'csId' : 'vcsId');
         const prevId  = parseInt(inputEl.value) || 0;
         inputEl.value = String(vigileId);
+        // #145: straordinario se era in salto (riposo), stessa regola delle posizioni normali.
+        const straord = (source === 'salto' || p.saltoEff) ? 1 : 0;
+        document.getElementById(isCapo ? 'csStraordInput' : 'vcsStraordInput').value = straord;
         const nomeEl = document.getElementById(isCapo ? 'csNome' : 'vcsNome');
-        if (nomeEl) { nomeEl.textContent = p.nome; nomeEl.classList.remove('vuoto'); }
+        if (nomeEl) {
+            nomeEl.textContent = p.nome;
+            nomeEl.classList.remove('vuoto');
+            nomeEl.style.color = colorePatente(p.patente);   // #152
+        }
+        const strEl = document.getElementById(isCapo ? 'csStr' : 'vcsStr');
+        if (strEl) strEl.style.display = straord ? '' : 'none';
         const clearEl = document.getElementById(isCapo ? 'csClear' : 'vcsClear');
         if (clearEl) clearEl.style.display = '';
         await salvaIntestazioneAjax();
@@ -3369,19 +3476,33 @@ document.addEventListener('drop', async function(e) {
     }
 
     // ── Drop su box Ferie d'ufficio ──────────────────────────
+    // #144: chiede quanti turni consecutivi assegnare (non solo questo foglio).
     if (target.id === 'colFerieUfficio') {
-        const res = await ajax({ azione: 'ferie_ufficio', vigile_id: vigileId });
-        if (!res.ok) { showMsg('⚠️ Errore.','err'); return; }
+        chiediConferma({
+            titolo:  "Ferie d'ufficio",
+            testo:   `Quanti turni consecutivi di ferie d'ufficio per <b>${p.nome}</b>?<br>` +
+                     `<input type="number" id="nTurniUfficio" min="1" max="60" value="1" ` +
+                     `style="width:80px;margin-top:8px;padding:6px 8px;border:1px solid #ccc;` +
+                     `border-radius:6px;font:inherit">`,
+            okLabel: 'Conferma',
+            onOk: async () => {
+                const nInput = document.getElementById('nTurniUfficio');
+                const n = Math.max(1, parseInt(nInput ? nInput.value : '1') || 1);
+                const res = await ajax({ azione: 'ferie_ufficio', vigile_id: vigileId, n_turni: n });
+                if (!res.ok) { showMsg(res.errore || '⚠️ Errore.', 'err'); return; }
 
-        rimuoviDOM(vigileId);
-        document.getElementById('ferieUfficioVuoto')?.remove();
-        target.insertAdjacentHTML('beforeend', buildUfficioRow(p));
-        // Ridondanza: la ferie a mano si vede anche nella colonna Ferie
-        document.getElementById('colFerie')
-            ?.insertAdjacentHTML('beforeend', buildAssenteRow(p, 'FER'));
-        if (!p.saltoCanon) setOccupato(vigileId, true, 'ferie ufficio');
-        updateUfficioCount();
-        showMsg('🏛️ ' + p.nome + ' → ferie d\'ufficio (anche in Ferie).');
+                rimuoviDOM(vigileId);
+                document.getElementById('ferieUfficioVuoto')?.remove();
+                target.insertAdjacentHTML('beforeend', buildUfficioRow(p, res.n_turni, res.data_da, res.data_a));
+                // Ridondanza: la ferie a mano si vede anche nella colonna Ferie
+                document.getElementById('colFerie')?.insertAdjacentHTML(
+                    'beforeend', buildAssenteRow(p, 'FER', res.n_turni, res.data_da, res.data_a));
+                if (!p.saltoCanon) setOccupato(vigileId, true, 'ferie ufficio');
+                updateUfficioCount();
+                const turniTxt = res.n_turni === 1 ? '1 turno' : (res.n_turni + ' turni');
+                showMsg('🏛️ ' + p.nome + ' → ferie d\'ufficio (' + turniTxt + ').');
+            },
+        });
         return;
     }
 
@@ -3451,13 +3572,13 @@ function reinserisciInSalto(vigileId) {
            <span class="drag-icon-salto" style="font-size:.75rem;color:var(--grigio-md);margin-left:auto"
                  title="Trascina su posizione o assenza">⇄</span>
          </div>`;
-    // Inserisce nel punto giusto dell'ordinamento standard (qualifica poi
-    // cognome), non sempre in fondo (#122): trova la prima riga con rango
+    // Inserisce nel punto giusto dell'ordinamento del box salto — SOLO cognome
+    // (#132), non sempre in fondo (#122): trova la prima riga con cognome
     // maggiore e si mette prima di quella.
     const righe = [...col.querySelectorAll('.assente-row[data-vigile-id]')];
     const dopo = righe.find(r => {
         const rp = PERSONALE[r.dataset.vigileId];
-        return rp && rp.rango > p.rango;
+        return rp && rp.cognome.toLowerCase() > p.cognome.toLowerCase();
     });
     if (dopo) dopo.insertAdjacentHTML('beforebegin', html);
     else {
@@ -3466,6 +3587,25 @@ function reinserisciInSalto(vigileId) {
         else           col.insertAdjacentHTML('beforeend', html);
     }
     setOccupato(vigileId, true, 'in salto');
+}
+
+// #143: ✕ su una card IN STRAORDINARIO dentro una squadra → la toglie dalla
+// posizione e basta (niente assenza/salto_servizio toccati). Chi era richiamato
+// dal salto ha GIÀ una riga nel box salto (marcata "richiamato"/STR): la si
+// ricostruisce pulita invece di lasciarla con lo stato vecchio.
+async function rimuoviStraordinarioPos(vigileId, posId) {
+    if (BLOCCATO) { showMsg('🔒 Foglio bloccato.', 'err'); return; }
+    const p = PERSONALE[vigileId];
+    const res = await ajax({ azione: 'rimuovi_da_posizione', vigile_id: vigileId, posizione_id: posId });
+    if (!res.ok) { showMsg(res.errore || '⚠️ Errore.', 'err'); return; }
+    const card = document.getElementById('ass-' + vigileId);
+    const body = card ? card.parentElement : null;
+    if (card) card.remove();
+    if (body) sincronizzaSlot(body);
+    const saltoRow = document.getElementById('salto-' + vigileId);
+    if (saltoRow) saltoRow.remove();
+    reinserisciInSalto(vigileId);
+    showMsg('↩️ ' + (p ? p.nome : 'Vigile') + ' torna in salto.');
 }
 
 async function azioneAssenza(vigileId, tipoCodice) {
@@ -3798,17 +3938,18 @@ function escHtml(s) {
 
 // Crea una card esterna trascinabile nei DISPONIBILI (non persistita finché
 // non viene trascinata su una posizione). La ✕ qui la elimina e basta.
-function aggiungiCardEsternoDisp(nome, str) {
+function aggiungiCardEsternoDisp(nome, str, pat) {
     const list = document.getElementById('organicoList');
     const card = document.createElement('div');
     card.className = 'persona-card esterno';
     card.dataset.extNome = nome;
     card.dataset.straord = str ? '1' : '0';
+    card.dataset.pat     = pat || '';
     card.dataset.nome    = nome.toLowerCase();   // per il filtro ricerca
     card.setAttribute('draggable', 'true');
     card.innerHTML =
         '<span class="esterno-dot" title="Personale esterno al turno">★</span>' +
-        '<span class="persona-nome">' + escHtml(nome) +
+        '<span class="persona-nome" style="color:' + colorePatente(pat) + '">' + escHtml(nome) +
             (str ? ' <small style="color:var(--giallo);font-weight:700">STR</small>' : '') +
         '</span>' +
         '<button class="remove-btn" title="Elimina" ' +
@@ -3817,20 +3958,21 @@ function aggiungiCardEsternoDisp(nome, str) {
 }
 
 // Card esterna DENTRO una posizione (persistita: ext_id reale)
-function cardEsternoPos(extId, nome, str, posId, ordine) {
+function cardEsternoPos(extId, nome, str, pat, posId, ordine) {
     const card = document.createElement('div');
     card.className = 'ass-card esterno';
     card.id = 'extass-' + extId;
     card.dataset.extId   = extId;
     card.dataset.extNome = nome;
     card.dataset.straord = str ? '1' : '0';
+    card.dataset.pat     = pat || '';
     card.dataset.posId   = posId;
     card.dataset.ordine  = ordine;
     card.setAttribute('draggable', 'true');
     card.innerHTML =
         '<span class="esterno-dot" title="Personale esterno al turno">★</span>' +
         '<span class="ass-nome" title="' + escHtml(nome) + ' (esterno)">' +
-            '<span class="ass-nome-txt">' + escHtml(nome) + '</span>' +
+            '<span class="ass-nome-txt" style="color:' + colorePatente(pat) + '">' + escHtml(nome) + '</span>' +
             (str ? '<span style="font-size:.6rem;color:var(--giallo);font-weight:700">STR</span>' : '') +
         '</span>' +
         '<button class="remove-btn" title="Rimuovi" ' +
@@ -3844,7 +3986,9 @@ function aggiungiEsterno() {
     const nome = inp.value.trim();
     if (!nome) { inp.focus(); return; }
     const str = document.getElementById('esternoStr').checked ? 1 : 0;
-    aggiungiCardEsternoDisp(nome, str);
+    const pat = document.getElementById('esternoPat2').checked ? '2'
+              : document.getElementById('esternoPat3').checked ? '3' : '';
+    aggiungiCardEsternoDisp(nome, str, pat);
     inp.value = '';
     inp.focus();
     showMsg('➕ "' + nome + '" creato: trascinalo su una posizione.');
@@ -3858,10 +4002,10 @@ async function rimuoviEsternoPos(extId) {
     if (!res.ok) { showMsg('⚠️ Errore.', 'err'); return; }
     if (card) {
         const body = card.parentElement;
-        const nome = card.dataset.extNome, str = card.dataset.straord === '1' ? 1 : 0;
+        const nome = card.dataset.extNome, str = card.dataset.straord === '1' ? 1 : 0, pat = card.dataset.pat || '';
         card.remove();
         sincronizzaSlot(body);
-        aggiungiCardEsternoDisp(nome, str);
+        aggiungiCardEsternoDisp(nome, str, pat);
     }
     showMsg('↩️ Esterno rimosso dalla posizione.');
 }
@@ -3945,14 +4089,18 @@ function updateRespinteCount() {
 }
 
 // ── Ferie d'ufficio ──────────────────────────────────────────
-function buildUfficioRow(p) {
+function buildUfficioRow(p, nTurni, dataDa, dataA) {
     const sedeBadge = (!p.sedeCentrale && p.sede)
         ? `<span class="persona-salto">${siglaSede(p.sede)}</span>` : '';
     const colore = colorePatente(p.patente);
+    const turniBadge = nTurni
+        ? `<span class="assente-info" style="font-size:.65rem;color:var(--grigio-md)"
+                 title="${dataDa || ''}→${dataA || ''}">${nTurni}T</span>` : '';
     return `<div class="assente-row" data-vigile-id="${p.id}"
                  draggable="true" style="cursor:grab">
               <span class="qual-dot ${p.qcodice}"></span>
               <span class="assente-nome" style="color:${colore}">${p.nome}${sedeBadge}</span>
+              ${turniBadge}
               <button class="assente-del" onclick="rimuoviFerieUfficio(${p.id})"
                       title="Togli ferie d'ufficio">✕</button>
             </div>`;
@@ -4180,10 +4328,12 @@ async function salvaIntestazioneAjax(proponiFerie = false) {
 
 async function _salvaIntestazioneEsegui(proponiFerie) {
     const res = await ajax({
-        azione:           'salva_intestazione',
-        capo_servizio_id: document.getElementById('csId').value,
-        vice_capo_id:     document.getElementById('vcsId').value,
-        funzionario:      document.getElementById('funzionario').value,
+        azione:             'salva_intestazione',
+        capo_servizio_id:   document.getElementById('csId').value,
+        capo_straordinario: document.getElementById('csStraordInput').value,
+        vice_capo_id:       document.getElementById('vcsId').value,
+        vice_straordinario: document.getElementById('vcsStraordInput').value,
+        funzionario:        document.getElementById('funzionario').value,
     });
     if (!res.ok) { if (res.errore) showMsg('⚠️ ' + res.errore, 'err'); return; }
 
@@ -4235,8 +4385,11 @@ async function svuotaRuolo(isCapo) {
     const prevId  = parseInt(inputEl.value) || 0;
     if (!prevId) return;
     inputEl.value = '';
+    document.getElementById(isCapo ? 'csStraordInput' : 'vcsStraordInput').value = 0;
     const nomeEl  = document.getElementById(isCapo ? 'csNome' : 'vcsNome');
-    if (nomeEl) { nomeEl.textContent = 'Trascina qui…'; nomeEl.classList.add('vuoto'); }
+    if (nomeEl) { nomeEl.textContent = 'Trascina qui…'; nomeEl.classList.add('vuoto'); nomeEl.style.color = ''; }
+    const strEl   = document.getElementById(isCapo ? 'csStr' : 'vcsStr');
+    if (strEl) strEl.style.display = 'none';
     const clearEl = document.getElementById(isCapo ? 'csClear' : 'vcsClear');
     if (clearEl) clearEl.style.display = 'none';
     await salvaIntestazioneAjax();
