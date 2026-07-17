@@ -491,9 +491,13 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
 <style>
 .ferie-page { max-width: 1100px; margin: 24px auto; padding: 0 16px 40px; }
 
-/* ── Stat bar ── */
+/* ── Stat bar (#150: e box visita medica, stessa riga) ── */
+.stat-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; flex-wrap: wrap; margin-bottom: 16px;
+}
 .stat-bar {
-    display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px;
+    display: flex; gap: 12px; flex-wrap: wrap;
 }
 .stat-pill {
     background: var(--bianco); border-radius: 8px; box-shadow: var(--shadow);
@@ -514,10 +518,10 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
     padding: 12px 20px; margin-bottom: 16px;
     display: flex; align-items: center; justify-content: space-between; gap: 12px;
 }
-/* ── Box visita medica (#95): sotto il riquadro mese, a destra ── */
+/* ── Box visita medica (#95): #150 sulla riga dei contatori ferie, a destra ── */
 .visita-box {
     background: var(--bianco); border-radius: var(--radius); box-shadow: var(--shadow);
-    padding: 10px 16px; margin: -6px 0 16px auto; width: fit-content;
+    padding: 10px 16px; width: fit-content;
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
 }
 .visita-box .visita-lbl { font-size: .8rem; font-weight: 800; text-transform: uppercase; color: var(--rosso); }
@@ -691,33 +695,6 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
     <a href="?anno=<?= $annoNext ?>&mese=<?= $meseNext ?>" class="btn btn-grigio btn-sm">▶</a>
   </div>
 
-  <?php if ($visitaVigili && $visitaDiurni): ?>
-  <!-- Inserimento visita medica (#95): vigile + servizio diurno del mese.
-       La data si accende di rosso se la visita cade nel giorno di riposo del vigile. -->
-  <div class="visita-box">
-    <span class="visita-lbl">🚑 Visita medica</span>
-    <select id="visitaVigile" onchange="visitaCheckRiposo()">
-      <option value="">— vigile —</option>
-      <?php foreach ($visitaVigili as $v): ?>
-        <option value="<?= (int)$v['id'] ?>"
-                data-salto="<?= (int)substr($v['salto_codice'], 1) ?>">
-          <?= htmlspecialchars(etichettaVigile($v)) ?> (<?= htmlspecialchars($v['salto_codice']) ?>)
-        </option>
-      <?php endforeach; ?>
-    </select>
-    <select id="visitaData" onchange="visitaCheckRiposo()">
-      <option value="">— giorno —</option>
-      <?php foreach ($visitaDiurni as $vd):
-        $dtV = new DateTime($vd['data']); ?>
-        <option value="<?= $vd['data'] ?>" data-riposo="<?= (int)$vd['riposo'] ?>">
-          <?= $giorniNomi[(int)$dtV->format('N')] ?> <?= $dtV->format('d/m') ?> ☀️ — riposo <?= htmlspecialchars($TURNO) ?><?= (int)$vd['riposo'] ?>
-        </option>
-      <?php endforeach; ?>
-    </select>
-    <button class="btn btn-rosso btn-sm" onclick="visitaAggiungi()">➕ Inserisci</button>
-  </div>
-  <?php endif; ?>
-
   <!-- Turni extra in sola lettura: affianca le richieste di altri turni visibili -->
   <?php $turniAltri = array_diff(turniVisibili(), [$TURNO]);
   if ($turniAltri): ?>
@@ -736,20 +713,49 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
   </form>
   <?php endif; ?>
 
-  <!-- Stat bar -->
-  <div class="stat-bar">
-    <div class="stat-pill vigili">
-      <span class="n"><?= $totVigili ?></span>
-      <span class="lbl">Vigili</span>
+  <!-- Stat bar + box visita medica (#150: stessa riga) -->
+  <div class="stat-row">
+    <div class="stat-bar">
+      <div class="stat-pill vigili">
+        <span class="n"><?= $totVigili ?></span>
+        <span class="lbl">Vigili</span>
+      </div>
+      <div class="stat-pill approved">
+        <span class="n" id="statApproved"><?= $totApproved ?></span>
+        <span class="lbl">Accettati</span>
+      </div>
+      <div class="stat-pill rejected">
+        <span class="n" id="statRejected"><?= $totRejected ?></span>
+        <span class="lbl">Rifiutati</span>
+      </div>
     </div>
-    <div class="stat-pill approved">
-      <span class="n" id="statApproved"><?= $totApproved ?></span>
-      <span class="lbl">Accettati</span>
+
+    <?php if ($visitaVigili && $visitaDiurni): ?>
+    <!-- Inserimento visita medica (#95): vigile + servizio diurno del mese.
+         La data si accende di rosso se la visita cade nel giorno di riposo del vigile. -->
+    <div class="visita-box">
+      <span class="visita-lbl">🚑 Visita medica</span>
+      <select id="visitaVigile" onchange="visitaCheckRiposo()">
+        <option value="">— vigile —</option>
+        <?php foreach ($visitaVigili as $v): ?>
+          <option value="<?= (int)$v['id'] ?>"
+                  data-salto="<?= (int)substr($v['salto_codice'], 1) ?>">
+            <?= htmlspecialchars(etichettaVigile($v)) ?> (<?= htmlspecialchars($v['salto_codice']) ?>)
+          </option>
+        <?php endforeach; ?>
+      </select>
+      <select id="visitaData" onchange="visitaCheckRiposo()">
+        <option value="">— giorno —</option>
+        <?php foreach ($visitaDiurni as $vd):
+          $dtV = new DateTime($vd['data']); ?>
+          <option value="<?= $vd['data'] ?>" data-riposo="<?= (int)$vd['riposo'] ?>">
+            <?= $giorniNomi[(int)$dtV->format('N')] ?> <?= $dtV->format('d/m') ?> ☀️ — riposo <?= htmlspecialchars($TURNO) ?><?= (int)$vd['riposo'] ?>
+          </option>
+        <?php endforeach; ?>
+      </select>
+      <button class="btn btn-rosso btn-sm" onclick="visitaAggiungi()">➕ Inserisci</button>
     </div>
-    <div class="stat-pill rejected">
-      <span class="n" id="statRejected"><?= $totRejected ?></span>
-      <span class="lbl">Rifiutati</span>
-    </div>
+    <?php endif; ?>
   </div>
 
   <?php

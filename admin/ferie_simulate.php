@@ -21,6 +21,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $vigili = is_array($vigili)
             ? array_values(array_filter(array_map('intval', $vigili), fn($i) => $i > 0)) : [];
         $voci = is_array($voci) ? $voci : [];
+        // #141: visto "ferie estiva" applicato a tutte le voci create in questo giro
+        // (solo GIU-SET, stessa regola di toggle_estiva sopra — fuori stagione ignorato,
+        // non blocca il resto del batch).
+        $estiva = !empty($_POST['estiva']);
 
         if (!$vigili || !$voci) {
             echo json_encode(['ok' => false, 'errore' => 'Seleziona almeno un vigile e un giorno.']);
@@ -36,8 +40,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         };
 
         $insReq = $pdo->prepare(
-            "INSERT IGNORE INTO bot_requests (vigile_id, data_richiesta, tipo_turno, stato, processed_at)
-             VALUES (?, ?, ?, 'pending', NULL)"
+            "INSERT IGNORE INTO bot_requests (vigile_id, data_richiesta, tipo_turno, stato, processed_at, ferie_estiva)
+             VALUES (?, ?, ?, 'pending', NULL, ?)"
         );
 
         $creati = 0; $duplicati = 0; $scartati = 0;
@@ -52,8 +56,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 if ($slotTurnoB($data) !== $tipo) { $scartati++; continue; }
 
+                $mese     = (int)date('n', strtotime($data));
+                $isEstiva = $estiva && in_array($mese, [6, 7, 8, 9], true) ? 1 : 0;
+
                 foreach ($vigili as $vid) {
-                    $insReq->execute([$vid, $data, $tipo]);
+                    $insReq->execute([$vid, $data, $tipo, $isEstiva]);
                     if ($insReq->rowCount() > 0) $creati++; else $duplicati++;
                     // assenza sul foglio giusto (crea il foglio se non esiste): pending
                     feriaSyncAssenza($pdo, $vid, $data, $tipo, 'pending');
@@ -120,6 +127,9 @@ $vigili = $pdo->query(
   .fs-cell.sel::after { content:'✓'; position:absolute; top:2px; right:5px; color:var(--rosso); font-weight:800; font-size:.8rem; }
   .fs-foot { margin-top:14px; display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
   .fs-count { font-size:.85rem; color:var(--grigio-md); font-weight:600; }
+  .fs-estiva { display:flex; align-items:center; gap:6px; font-size:.85rem; font-weight:600;
+               color:var(--grigio-sc); cursor:pointer; margin-left:auto; }
+  .fs-estiva input { width:16px; height:16px; cursor:pointer; }
   .fs-go { background:#1e7e34; color:#fff; border:none; border-radius:8px; padding:10px 22px; font-size:.95rem; font-weight:700; cursor:pointer; }
   .fs-go:disabled { opacity:.5; cursor:not-allowed; }
   .fs-msg { margin-top:12px; padding:10px 14px; border-radius:8px; font-size:.9rem; display:none; }
@@ -196,6 +206,9 @@ $vigili = $pdo->query(
       <div class="fs-foot">
         <button type="button" class="fs-go" id="btnCrea" onclick="creaVoci()">Crea voci ferie</button>
         <span class="fs-count" id="contatori">0 vigili · 0 giorni</span>
+        <label class="fs-estiva" title="Contrassegna come ferie estive (solo giugno–settembre)">
+          <input type="checkbox" id="chkEstiva"> 🏖️ Ferie estiva
+        </label>
       </div>
       <div class="fs-msg" id="msg"></div>
     </div>
@@ -312,6 +325,7 @@ async function creaVoci() {
   fd.append('azione', 'crea_voci');
   fd.append('vigili', JSON.stringify(vigili));
   fd.append('voci',   JSON.stringify(voci));
+  fd.append('estiva', document.getElementById('chkEstiva').checked ? '1' : '');
   const msg = document.getElementById('msg');
   try {
     const res = await fetch('', { method: 'POST', body: fd }).then(r => r.json());
@@ -322,7 +336,10 @@ async function creaVoci() {
         + (res.scartati ? ` · ${res.scartati} scartate` : '') + '.';
       selezione.clear();
       renderCal();
-      aggiornaContatori();
+      // #141: reset dei visti dopo la creazione, per non dimenticarne uno attivo
+      // e ricrearci ferie non richieste al giro successivo.
+      document.querySelectorAll('.vchk').forEach(c => c.checked = false);
+      document.getElementById('chkEstiva').checked = false;
     } else {
       msg.className = 'fs-msg err';
       msg.textContent = '⚠️ ' + (res.errore || 'Errore.');
