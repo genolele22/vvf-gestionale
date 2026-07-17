@@ -926,22 +926,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
-    // ── AJAX: aggiungi assenza ────────────────────────────────
-    // ── AJAX: una FERIE oggi per questo vigile sarebbe "d'ufficio" (nessuna
-    // richiesta Telegram dietro)? Sola lettura, usata PRIMA di agire per
-    // decidere se chiedere "quanti turni" (#144) — stessa domanda sia da
-    // drag su Ferie sia da tasto destro, IMPORTANTE segnalato da Lele.
+    // ── AJAX: una FERIE oggi per questo vigile sarebbe "d'ufficio" (NESSUNA
+    // richiesta Telegram/forzata dietro, di NESSUNO stato)? Sola lettura,
+    // usata PRIMA di agire per decidere se chiedere "quanti turni" (#144) —
+    // stessa domanda sia da drag su Ferie sia da tasto destro.
+    // IMPORTANTE: qualunque stato conta (anche rejected/declined), non solo
+    // pending/approved — se esiste una richiesta respinta per questa data,
+    // NON è "d'ufficio da zero": deve passare dal percorso normale
+    // (azione 'assenza' più sotto) che la riapprova, non aprire un nuovo
+    // blocco multi-turno ignorando quella richiesta (bug segnalato da Lele).
     if ($azione === 'check_ferie_ufficio') {
         $vigileId = (int)($_POST['vigile_id'] ?? 0);
         $stU = $pdo->prepare(
-            "SELECT 1 FROM bot_requests
-             WHERE vigile_id=? AND data_richiesta=? AND stato IN ('pending','approved') LIMIT 1"
+            "SELECT 1 FROM bot_requests WHERE vigile_id=? AND data_richiesta=? LIMIT 1"
         );
         $stU->execute([$vigileId, $dataStr]);
         $ufficio = !(bool) $stU->fetchColumn();
         echo json_encode(['ok' => true, 'ufficio' => $ufficio]);
         exit;
     }
+
+    // ── AJAX: aggiungi assenza ────────────────────────────────
 
     if ($azione === 'assenza') {
         $vigileId      = (int)($_POST['vigile_id']       ?? 0);
