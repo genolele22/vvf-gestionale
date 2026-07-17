@@ -69,13 +69,30 @@
 }
 .fh-info-box .fh-main { font-size: 1.2rem; font-weight: 800; color: var(--grigio-sc); }
 .fh-info-box .fh-sub  { font-size: .72rem; color: var(--grigio-md); }
+/* #161: riquadro data centrato nello spazio libero della riga (tra frecce e salto) */
+.fh-data-box { margin-left: auto; margin-right: auto; }
+/* #161: riquadro "Copia dal diurno" — stessa forma degli altri, ma cliccabile */
+.fh-info-box.fh-info-btn { background: #eaf2f8; border-color: #aed6f1; cursor: pointer; }
+.fh-info-box.fh-info-btn:hover { background: #d4e6f1; }
+.fh-info-box.fh-info-btn button {
+    background: none;
+    border: none;
+    font: inherit;
+    font-size: .95rem;
+    font-weight: 700;
+    color: #1a5276;
+    cursor: pointer;
+    padding: 0;
+    white-space: nowrap;
+}
 .foglio-turno-badge {
     background: var(--grigio-sc);
     color: var(--bianco);
     border-radius: 8px;
     padding: 10px 20px;
     text-align: center;
-    min-width: 120px;
+    width: 150px;           /* #161: fissa, Giorno e Notte identici (min-width lasciava "Giorno" più largo) */
+    box-sizing: border-box;
 }
 .foglio-turno-badge .badge-tipo {
     font-size: 1.4rem;

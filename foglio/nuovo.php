@@ -1570,6 +1570,36 @@ foreach ($assenze as $ass) {
     $assenzePerTipo[$ass['tipo_codice']][] = $ass;
 }
 
+// #159: turni consecutivi anche per le ferie ORDINARIE (da richiesta bot) —
+// le ferie d'ufficio (#144) hanno già nr_turni scritto in assenze, qui si
+// calcola SOLO dove manca. Sola lettura, stesso metodo di
+// FoglioRenderer::arricchisciFerie() (blocchiContigui su assenze), nessuna
+// scrittura: non tocca il flusso di approvazione in Agenda.
+if (!empty($assenzePerTipo['FER'])) {
+    $stBlocco = $pdo->prepare(
+        "SELECT f.data_servizio AS data_richiesta, f.tipo_turno
+           FROM assenze a JOIN fogli_servizio f ON f.id = a.foglio_id
+          WHERE a.vigile_id=? AND a.tipo_assenza_id=1
+          ORDER BY f.data_servizio, f.tipo_turno"
+    );
+    foreach ($assenzePerTipo['FER'] as $i => $a) {
+        if (!empty($a['nr_turni'])) continue;   // già valorizzato (ferie d'ufficio)
+        $stBlocco->execute([(int)$a['vigile_id']]);
+        $righe = array_map(fn($r) => $r + ['stato' => 'approved'], $stBlocco->fetchAll());
+        $blocchi = blocchiContigui($righe);
+        foreach ($blocchi as $b) {
+            $da = $b[0]['data_richiesta'];
+            $aa = end($b)['data_richiesta'];
+            if ($dataStr >= $da && $dataStr <= $aa) {
+                $assenzePerTipo['FER'][$i]['nr_turni'] = turniLabel($b);
+                $assenzePerTipo['FER'][$i]['data_da']  = $da;
+                $assenzePerTipo['FER'][$i]['data_a']   = $aa;
+                break;
+            }
+        }
+    }
+}
+
 // Vigili assenti (set di id)
 $vigiliAssenti = array_unique(array_column($assenze, 'vigile_id'));
 
@@ -1859,19 +1889,28 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
           <?php endif; ?>
         </div>
 
-        <!-- Data -->
-        <div class="fh-info-box">
+        <!-- Data (#161: centrata nella riga) -->
+        <div class="fh-info-box fh-data-box">
           <a href="../ferie/index.php?anno=<?= date('Y', strtotime($dataStr)) ?>&mese=<?= date('n', strtotime($dataStr)) ?>&goto=<?= urlencode($dataStr) ?>"
              title="Apri l'agenda su questo giorno" class="fh-main" style="text-decoration:none">
             <?= $dataLabel ?>
           </a>
         </div>
 
-        <!-- Salto -->
+        <!-- Salto (#161: via "In servizio", riquadro standard) -->
         <div class="fh-info-box">
-          <span class="fh-sub">In servizio</span>
           <span class="fh-main"><?= htmlspecialchars($turnoAttivo['turno'].$turnoAttivo['salto']) ?></span>
         </div>
+
+        <!-- Copia dal diurno (#161: riquadro proprio accanto al salto, solo sul notturno) -->
+        <?php if ($tipoParam === 'N'): ?>
+        <div class="fh-info-box fh-info-btn">
+          <button type="button" onclick="apriModalCopiaDiurno()"
+                  title="Importa le squadre dal diurno dello stesso salto (il giorno prima) come base per il notturno">
+            📋 Copia dal diurno
+          </button>
+        </div>
+        <?php endif; ?>
       </div>
 
         <!-- Pulsanti, allineati a destra -->
@@ -1898,12 +1937,6 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
              class="btn btn-grigio btn-sm"
              data-nferie="<?= (int)$nFerieDaApprovare ?>"
              onclick="return scaricaOdt(this)">📄 Scarica .odt</a>
-          <?php if ($tipoParam === 'N'): ?>
-          <button onclick="apriModalCopiaDiurno()"
-                  class="btn btn-sm" style="background:#1a5276;color:#fff"
-                  title="Importa le squadre dal diurno dello stesso salto (il giorno prima) come base per il notturno">
-            📋 Copia dal diurno</button>
-          <?php endif; ?>
           <button onclick="apriModalReset()"
                   class="btn btn-sm" style="background:#c0392b;color:#fff">↺ Reset servizio</button>
         </div>
@@ -2712,11 +2745,12 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
                 </span>
             <?php endif; ?>
         </span>
-        <span class="assente-info">
-            <?= $a['nr_turni'] ? $a['nr_turni'].'T' : '' ?>
-            <?= $a['data_da'] ? date('d/m', strtotime($a['data_da'])) : '' ?>
-            <?= $a['data_a']  ? '→'.date('d/m', strtotime($a['data_a'])) : '' ?>
-        </span>
+        <?php if ($a['nr_turni']): ?>
+            <span class="assente-info"
+                  title="<?= $a['data_da'] ? date('d/m', strtotime($a['data_da'])) . '→' . date('d/m', strtotime($a['data_a'])) : '' ?>">
+                <?= (int)$a['nr_turni'] ?>T
+            </span>
+        <?php endif; ?>
         <button class="assente-del"
                 onclick="rimuoviDaAssenza(<?= $a['vigile_id'] ?>)"
                 title="Rimuovi">✕</button>
