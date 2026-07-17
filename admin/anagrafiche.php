@@ -13,7 +13,8 @@ $TABELLE = [
     'sedi'         => ['label' => 'Sedi', 'icona' => '🏠',
         'cols' => ['codice' => ['Codice','text'], 'nome' => ['Nome','text'], 'ordine' => ['Ordine','int']]],
     'posizioni'    => ['label' => 'Mezzi / Posizioni', 'icona' => '🚒',
-        'cols' => ['sede_id' => ['Sede','fk_sedi'], 'codice' => ['Codice','text'], 'nome' => ['Nome','text'], 'ordine' => ['Ordine','int']]],
+        'cols' => ['sede_id' => ['Sede','fk_sedi'], 'codice' => ['Codice','text'], 'nome' => ['Nome','text'],
+                   'n_richiesti' => ['N. richiesti','int'], 'ordine' => ['Ordine','int']]],
     'qualifiche'   => ['label' => 'Qualifiche', 'icona' => '🎖️',
         'cols' => ['codice' => ['Codice','text'], 'nome' => ['Nome','text']]],
     'salti_turno'  => ['label' => 'Salti turno', 'icona' => '😴',
@@ -23,7 +24,7 @@ $TABELLE = [
     'patenti'      => ['label' => 'Patenti', 'icona' => '🪪',
         'cols' => ['tipo' => ['Tipo','text'], 'nome' => ['Nome','text']]],
     'abilitazioni' => ['label' => 'Abilitazioni', 'icona' => '✅',
-        'cols' => ['codice' => ['Codice','text'], 'nome' => ['Nome','text']]],
+        'cols' => ['codice' => ['Sigla','text'], 'ordine' => ['Ordine','int']]],
     'funzionari'   => ['label' => 'Funzionari', 'icona' => '👔',
         'cols' => ['nome' => ['Nome','text']]],
 ];
