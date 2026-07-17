@@ -537,6 +537,12 @@ body.cruscotto-bloccato .foglio-layout {
     background: repeating-linear-gradient(
         45deg, #fcfcfd, #fcfcfd 6px, #f6f7f8 6px, #f6f7f8 12px);
 }
+/* #148: casella vuota tra le prime n_richiesti della squadra — manca personale */
+.slot-empty.slot-mancante {
+    border: 1px dashed var(--rosso);
+    background: repeating-linear-gradient(
+        45deg, #fdecea, #fdecea 6px, #fbdcd9 6px, #fbdcd9 12px);
+}
 
 /* Persona assegnata dentro una posizione */
 .ass-card {

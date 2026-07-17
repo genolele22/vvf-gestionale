@@ -84,10 +84,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $up = $pdo->prepare("UPDATE bot_requests SET stato=?, processed_at=? WHERE id=?");
 
-        // ACCETTA = 'pending' (deciso ma NON ancora comunicato). L'approvazione vera
-        // avviene solo all'invio della mail (finalizeFerie promuove pending→approved).
-        // Se una notifica ferie:<id> è accodata ma non ancora partita, la togliamo
-        // (torna "da inviare"); se è già 'sent' non si può disinviare.
+        // ACCETTA = 'pending', RESPINGI = 'declined': entrambe "deciso ma NON ancora
+        // comunicato" — simmetriche. La comunicazione vera (mail) avviene solo
+        // all'invio (finalizeFerie promuove pending→approved e declined→rejected).
+        // Se una notifica è già accodata ma non ancora partita, la togliamo (si
+        // riallinea alla nuova decisione); se è già 'sent' non si può disinviare.
         $obSel = $pdo->prepare("SELECT id, stato FROM bot_outbox WHERE ctx=?");
         $obDel = $pdo->prepare("DELETE FROM bot_outbox WHERE id=?");
         $giaNotificati = 0;
@@ -96,20 +97,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pdo->beginTransaction();
         try {
             foreach ($rows as $r) {
-                // Accettare NON deve retrocedere una ferie già 'approved' (= già
-                // comunicata via mail): resta approved. Gli altri casi vanno al target.
-                $target = ($stato === 'pending' && $r['stato'] === 'approved')
-                    ? 'approved' : $stato;
+                if ($stato === 'pending') {
+                    // Accettare NON deve retrocedere una ferie già 'approved' (=
+                    // già comunicata via mail): resta approved.
+                    $target = ($r['stato'] === 'approved') ? 'approved' : 'pending';
+                } elseif ($stato === 'rejected') {
+                    // Respingere NON deve retrocedere una ferie già 'rejected' (=
+                    // già comunicata via mail): resta rejected. Altrimenti 'declined'
+                    // (deciso, non ancora comunicato — mirror di 'pending' sopra).
+                    $target = ($r['stato'] === 'rejected') ? 'rejected' : 'declined';
+                } else {
+                    $target = $stato;
+                }
                 $esiti[(int)$r['id']] = $target;
 
-                $processedAt = $target === 'pending' ? null : date('Y-m-d H:i:s');
+                $nonComunicato = in_array($target, ['pending', 'declined'], true);
+                $processedAt = $nonComunicato ? null : date('Y-m-d H:i:s');
                 $up->execute([$target, $processedAt, $r['id']]);
                 feriaSyncAssenza($pdo, (int)$r['vigile_id'], $r['data_richiesta'], $r['tipo_turno'], $target);
 
-                if ($target === 'pending') {
-                    $obSel->execute(['ferie:' . (int)$r['id']]);
-                    $ob = $obSel->fetch();
-                    if ($ob) {
+                if ($nonComunicato) {
+                    // Il furiere può aver cambiato idea prima che partisse la mail:
+                    // ripulisce una notifica in coda (non ancora inviata) nella
+                    // direzione opposta a quella appena scelta.
+                    foreach (['ferie:' . (int)$r['id'], 'ferie_neg:' . (int)$r['id']] as $ctxKey) {
+                        $obSel->execute([$ctxKey]);
+                        $ob = $obSel->fetch();
+                        if (!$ob) continue;
                         if ($ob['stato'] === 'sent') {
                             $giaNotificati++;          // vigile già avvisato: non si può disinviare
                         } else {
@@ -292,9 +306,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 require_once __DIR__ . '/../includes/format.php';
 require_once __DIR__ . '/../includes/ferie_blocchi.php';
 
-// #129: etichette italiane per gli stati (pending/approved/rejected/misto), stessa
-// mappa usata dal JS (STATO_LABEL) — prima il badge mostrava lo stato grezzo in inglese.
-$STATO_LABEL_IT = ['pending' => 'attesa', 'approved' => 'accettata', 'rejected' => 'rifiutata', 'misto' => 'misto'];
+// #129: etichette italiane per gli stati, stessa mappa usata dal JS (STATO_LABEL).
+// declined/misto non compaiono mai qui: statoBlock() li assorbe già in 'pending'
+// (una comunicazione da inviare pesa più di una già inviata, richiesta di Moli).
+$STATO_LABEL_IT = ['pending' => '⏳ in attesa', 'approved' => '✉️ approvato', 'rejected' => '✉️ rifiutato'];
 
 // ── Carica richieste del mese ────────────────────────────────
 $stmt = $pdo->prepare("
@@ -333,7 +348,7 @@ if ($reqIds) {
 }
 // Ritorna [classe, etichetta] del badge comunicazione di un turno.
 function comunicazioneTurno(array $r, array $outboxReq): array {
-    $kind = $r['stato'] === 'rejected' ? 'neg' : 'ok';
+    $kind = in_array($r['stato'], ['rejected', 'declined'], true) ? 'neg' : 'ok';
     if (($outboxReq[(int)$r['id']][$kind] ?? null) === 'sent') return ['comunicata', '✉️ comunicata'];
     return ['dainviare', '📨 da inviare'];
 }
@@ -570,7 +585,6 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
 }
 .stato-pending  { background: #fef9e7; color: #b7950b; border: 1px solid #f9e79f; }
 .stato-approved { background: var(--verde-bg); color: var(--verde); border: 1px solid #a9dfbf; }
-.stato-misto    { background: #eaf4fb; color: var(--blu); border: 1px solid #aed6f1; }
 .stato-rejected { background: #fdf2f2; color: var(--rosso); border: 1px solid #f5b7b1; }
 
 /* ── Azioni rapide sul blocco ── */
@@ -981,11 +995,11 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
         <?php if ($editabile): ?>
         <div class="scelta">
           <label class="lbl-si">
-            <input type="checkbox" class="chk-si" <?= $r['stato'] !== 'rejected' ? 'checked' : '' ?>
+            <input type="checkbox" class="chk-si" <?= !in_array($r['stato'], ['rejected', 'declined'], true) ? 'checked' : '' ?>
                    onchange="onScelta(this, 'pending')">accetto
           </label>
           <label class="lbl-no">
-            <input type="checkbox" class="chk-no" <?= $r['stato'] === 'rejected' ? 'checked' : '' ?>
+            <input type="checkbox" class="chk-no" <?= in_array($r['stato'], ['rejected', 'declined'], true) ? 'checked' : '' ?>
                    onchange="onScelta(this, 'rejected')">respingo
           </label>
         </div>
@@ -1006,7 +1020,10 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
 </div><!-- /.ferie-page -->
 
 <script>
-const STATO_LABEL = { pending: 'attesa', approved: 'accettata', rejected: 'rifiutata', misto: 'misto' };
+// declined incluso qui (per il toast di setStato, che mostra l'esito reale
+// riga per riga) anche se il badge di blocco non lo usa mai (statoBlock lo
+// assorbe già in 'pending' lato server).
+const STATO_LABEL = { pending: '⏳ in attesa', declined: '⏳ in attesa', approved: '✉️ approvato', rejected: '✉️ rifiutato' };
 
 // ── Accordion ────────────────────────────────────────────────
 function toggleDetail(id) {
@@ -1062,10 +1079,13 @@ async function setStato(ids, stato) {
         if (riga) riga.dataset.stato = esiti[id] || stato;
     });
     sincronizzaDOM();
-    const extra = (stato === 'pending' && res.gia_notificati > 0)
+    const extra = (res.gia_notificati > 0)
         ? ` — ⚠️ ${res.gia_notificati} già notificato/i: avvisa il vigile a voce`
         : '';
-    showMsg(`✅ ${res.aggiornati} turno/i → ${STATO_LABEL[stato]}${extra}`, 'ok');
+    // Etichetta dall'esito REALE della prima riga (accetta/respingi può non
+    // muoversi per via del no-demote su una richiesta già comunicata).
+    const repEsito = (ids.length && esiti[ids[0]]) ? esiti[ids[0]] : stato;
+    showMsg(`✅ ${res.aggiornati} turno/i → ${STATO_LABEL[repEsito] || repEsito}${extra}`, 'ok');
     sessionStorage.setItem('agendaScrollY', window.scrollY);
     setTimeout(() => location.reload(), 1300);
 }
@@ -1074,7 +1094,7 @@ async function setStato(ids, stato) {
 // (data-sok = 'ferie:<id>' inviata, data-sneg = 'ferie_neg:<id>' inviata).
 function comBadgeTurno(riga) {
     const st   = riga.dataset.stato;
-    const sent = st === 'rejected' ? riga.dataset.sneg === '1' : riga.dataset.sok === '1';
+    const sent = (st === 'rejected' || st === 'declined') ? riga.dataset.sneg === '1' : riga.dataset.sok === '1';
     if (sent) return ['comunicata', '✉️ comunicata'];
     return ['dainviare', '📨 da inviare'];
 }
@@ -1086,19 +1106,23 @@ function sincronizzaDOM() {
         const st = riga.dataset.stato;
         const si = riga.querySelector('.chk-si');
         const no = riga.querySelector('.chk-no');
-        if (si) si.checked = (st !== 'rejected');
-        if (no) no.checked = (st === 'rejected');
+        const respinto = (st === 'rejected' || st === 'declined');
+        if (si) si.checked = !respinto;
+        if (no) no.checked = respinto;
         // badge comunicazione per-turno
         const com = document.getElementById('com-' + riga.dataset.id);
         if (com) { const [cls, lbl] = comBadgeTurno(riga); com.className = 'com-badge com-' + cls; com.textContent = lbl; }
     });
 
-    // badge di blocco
+    // badge di blocco — declined si comporta come pending (in attesa di
+    // comunicazione); un blocco non uniforme mostra "in attesa" (#129, stessa
+    // regola di statoBlock() lato server).
     document.querySelectorAll('.turni-detail').forEach(det => {
         const bid    = det.dataset.block;
-        const stati  = [...det.querySelectorAll('.turno-riga')].map(r => r.dataset.stato);
+        const stati  = [...det.querySelectorAll('.turno-riga')].map(
+            r => r.dataset.stato === 'declined' ? 'pending' : r.dataset.stato);
         const unici  = [...new Set(stati)];
-        const stato  = unici.length === 1 ? unici[0] : 'misto';
+        const stato  = unici.length === 1 ? unici[0] : 'pending';
         const badge  = document.getElementById('badge-' + bid);
         if (badge) {
             badge.className = 'stato-badge stato-' + stato;

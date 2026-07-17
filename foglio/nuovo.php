@@ -452,7 +452,7 @@ function contaFerieDaNotificare(PDO $pdo, int $foglioId, string $dataStr, string
     $stFer->execute([$foglioId]);
     $findReq = $pdo->prepare(
         "SELECT id FROM bot_requests
-          WHERE vigile_id=? AND data_richiesta=? AND tipo_turno IN ($ph) AND stato<>'rejected'
+          WHERE vigile_id=? AND data_richiesta=? AND tipo_turno IN ($ph) AND stato NOT IN ('rejected','declined')
           ORDER BY id DESC LIMIT 1"
     );
     $approvaIds = [];
@@ -471,7 +471,7 @@ function contaFerieDaNotificare(PDO $pdo, int $foglioId, string $dataStr, string
           WHERE a.foglio_id=? AND a.tipo_assenza_id=1
             AND NOT EXISTS (SELECT 1 FROM bot_requests r
                             WHERE r.vigile_id=a.vigile_id AND r.data_richiesta=?
-                              AND r.tipo_turno IN ($ph) AND r.stato<>'rejected')"
+                              AND r.tipo_turno IN ($ph) AND r.stato NOT IN ('rejected','declined'))"
     );
     $stU->execute(array_merge([$foglioId, $dataStr], $tipi));
     $ufficioIds = [];
@@ -480,10 +480,11 @@ function contaFerieDaNotificare(PDO $pdo, int $foglioId, string $dataStr, string
         if (!$hasCtx->fetchColumn()) $ufficioIds[] = (int)$vid;
     }
 
-    // negate: richieste rejected per quella data/turno, per chi NON è in FER sul foglio
+    // negate: richieste declined (respinte non ancora comunicate) per quella
+    // data/turno, per chi NON è in FER sul foglio — stessa condizione di finalize_ferie.
     $stN = $pdo->prepare(
         "SELECT r.id, r.vigile_id FROM bot_requests r
-          WHERE r.data_richiesta=? AND r.stato='rejected' AND r.tipo_turno IN ($ph)
+          WHERE r.data_richiesta=? AND r.stato='declined' AND r.tipo_turno IN ($ph)
             AND NOT EXISTS (SELECT 1 FROM assenze a
                             WHERE a.foglio_id=? AND a.vigile_id=r.vigile_id AND a.tipo_assenza_id=1)"
     );
@@ -959,12 +960,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $sedeDist ?: null, $dataDa, $dataA, $nrTurni, $notaAss ?: null
         ]);
 
-        // Se è una FERIE (tipo=1) e c'era una richiesta respinta per questa data,
-        // riportala ad approved → sulla pagina ferie torna flaggata "accetto".
+        // Se è una FERIE (tipo=1) e c'era una richiesta respinta/decisa-negativamente
+        // per questa data, riportala ad approved → sulla pagina ferie torna flaggata "accetto".
         if ($tipoAssenzaId === 1) {
             $stReq = $pdo->prepare(
                 "SELECT tipo_turno FROM bot_requests
-                 WHERE vigile_id=? AND data_richiesta=? AND stato='rejected'
+                 WHERE vigile_id=? AND data_richiesta=? AND stato IN ('rejected','declined')
                  ORDER BY id DESC LIMIT 1"
             );
             $stReq->execute([$vigileId, $dataStr]);
@@ -973,7 +974,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($reqTipo !== false) {
                 $pdo->prepare(
                     "UPDATE bot_requests SET stato='approved', processed_at=NOW()
-                     WHERE vigile_id=? AND data_richiesta=? AND stato='rejected'"
+                     WHERE vigile_id=? AND data_richiesta=? AND stato IN ('rejected','declined')"
                 )->execute([$vigileId, $dataStr]);
 
                 // Richiesta DN → ripristina la ferie anche sull'altro turno del giorno
@@ -1108,8 +1109,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             "DELETE FROM assenze WHERE foglio_id=? AND vigile_id=?"
         )->execute([$foglioId, $vigileId]);
 
-        // Solo le ferie DA RICHIESTA vanno "respinte" (pulizia DN + stato rejected).
-        // Le ferie a mano si tolgono e basta: la persona torna disponibile.
+        // Solo le ferie DA RICHIESTA vanno "respinte" (pulizia DN + stato declined:
+        // decisa ma non ancora comunicata, come da Agenda — diventa rejected solo
+        // all'invio vero, finalizeFerie).
         if ($isFeria && $eraRichiesta) {
             $tipoPaired = ($tipoParam === 'D') ? 'N' : 'D';
             $pdo->prepare(
@@ -1119,7 +1121,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             )->execute([$vigileId, $dataStr, $tipoPaired]);
 
             $pdo->prepare(
-                "UPDATE bot_requests SET stato='rejected', processed_at=NOW()
+                "UPDATE bot_requests SET stato='declined', processed_at=NULL
                  WHERE vigile_id=? AND data_richiesta=? AND stato IN ('pending','approved')"
             )->execute([$vigileId, $dataStr]);
         }
@@ -1299,11 +1301,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $tipiTurno = ($tipoParam === 'D') ? ['D', 'DN'] : ['N', 'DN'];
         $phTt      = implode(',', array_fill(0, count($tipiTurno), '?'));
 
-        // 1. Le ferie RESPINTE su questo turno tornano richieste (annulla la
-        //    decisione manuale della fureria): rejected → pending.
+        // 1. Le ferie RESPINTE (comunicate o solo decise) su questo turno tornano
+        //    richieste (annulla la decisione manuale della fureria): → pending.
         $pdo->prepare(
             "UPDATE bot_requests SET stato='pending', processed_at=NULL
-             WHERE data_richiesta=? AND stato='rejected' AND tipo_turno IN ($phTt)"
+             WHERE data_richiesta=? AND stato IN ('rejected','declined') AND tipo_turno IN ($phTt)"
         )->execute(array_merge([$dataStr], $tipiTurno));
 
         // 2. Ferie bot attive (pending/approved) sul turno: chi non ha ancora
@@ -1619,12 +1621,13 @@ $stSaltoCanon = $pdo->prepare("SELECT id FROM salti_turno WHERE codice=?");
 $stSaltoCanon->execute([$codSaltoRip]);
 $idSaltoRiposo = (int)($stSaltoCanon->fetchColumn() ?: 0);
 
-// Vigili con ferie RESPINTA per questo turno → casella dedicata, fuori dall'organico
+// Vigili con ferie RESPINTA (comunicata o solo decisa) per questo turno →
+// casella dedicata, fuori dall'organico.
 $tipiRespinte = ($tipoParam === 'D') ? ['D', 'DN'] : ['N', 'DN'];
 $phResp = implode(',', array_fill(0, count($tipiRespinte), '?'));
 $stResp = $pdo->prepare(
     "SELECT DISTINCT vigile_id FROM bot_requests
-     WHERE data_richiesta=? AND stato='rejected' AND tipo_turno IN ($phResp)"
+     WHERE data_richiesta=? AND stato IN ('rejected','declined') AND tipo_turno IN ($phResp)"
 );
 $stResp->execute(array_merge([$dataStr], $tipiRespinte));
 $idFerieRespinte = array_map('intval', array_column($stResp->fetchAll(), 'vigile_id'));
@@ -2214,12 +2217,18 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
                   $righe[$posto] = $r;
               }
               $maxRiga = max($cap, $righe ? max(array_keys($righe)) : $cap);
+              // #148: le prime n_richiesti caselle vuote sono evidenziate in rosso
+              // (personale mancante); oltre n_richiesti è capienza extra, normale.
+              $nRichiesti = (int)($pos['n_richiesti'] ?? 0);
             ?>
-            <div class="pos-body" id="body-<?= $pos['id'] ?>" data-cap="<?= $cap ?>">
-              <?php for ($riga = 1; $riga <= $maxRiga; $riga++):
+            <div class="pos-body" id="body-<?= $pos['id'] ?>" data-cap="<?= $cap ?>" data-n-richiesti="<?= $nRichiesti ?>">
+              <?php
+              for ($riga = 1; $riga <= $maxRiga; $riga++):
                   $r = $righe[$riga] ?? null;
-                  if ($r === null): ?>
-                <div class="slot-empty" data-ordine="<?= $riga ?>"></div>
+                  if ($r === null):
+                      $mancante = $riga <= $nRichiesti; ?>
+                <div class="slot-empty<?= $mancante ? ' slot-mancante' : '' ?>" data-ordine="<?= $riga ?>"
+                     <?= $mancante ? 'title="Manca personale: previsti ' . $nRichiesti . ' in questa squadra"' : '' ?>></div>
               <?php elseif ($r['tipo'] === 'v'):
                   $ass = $r['d'];
                   $colore = colorePatentePHP($ass['patente_max'] ?? null);
@@ -2873,6 +2882,39 @@ function avvisaSeDisponibiliResidui(messaggioAzione, onProcedi) {
     });
 }
 
+// #149: squadre con caselle valorizzate diverse da n_richiesti (solo dove
+// configurato in amministrazione — 0 = nessun requisito, ignorata).
+function squadreIncomplete() {
+    const elenco = [];
+    document.querySelectorAll('.pos-body[data-n-richiesti]').forEach(body => {
+        const nRich = parseInt(body.dataset.nRichiesti || '0');
+        if (!nRich) return;
+        const occupate = body.querySelectorAll('.ass-card').length;
+        if (occupate !== nRich) {
+            const head = body.closest('.pos-card')?.querySelector('.pos-head');
+            const nome = head ? head.textContent.trim() : '?';
+            elenco.push(`${nome} (${occupate}/${nRich})`);
+        }
+    });
+    return elenco;
+}
+
+// Avvisa se qualche squadra non ha il numero di elementi previsto — non blocca,
+// l'operatore può procedere comunque o annullare e tornare al servizio.
+function avvisaSeSquadreIncomplete(messaggioAzione, onProcedi) {
+    const elenco = squadreIncomplete();
+    if (elenco.length === 0) { onProcedi(); return; }
+    chiediConferma({
+        titolo:  '⚠️ Squadre non complete',
+        testo:   `Queste squadre non hanno il numero di elementi previsto (occupate/richieste):<br><br>`
+               + `<b>${elenco.join(', ')}</b><br><br>`
+               + `Vuoi procedere comunque con ${messaggioAzione}?`,
+        okLabel: 'Procedi comunque',
+        okStyle: 'background:var(--rosso);color:#fff',
+        onOk:    onProcedi,
+    });
+}
+
 async function ajax(data) {
     const fd = new FormData();
     Object.entries(data).forEach(([k,v]) => fd.append(k, v));
@@ -3006,6 +3048,7 @@ function aggiornaSiglaSede(card, posId) {
 function sincronizzaSlot(body) {
     if (!body) return;
     const cap = parseInt(body.dataset.cap || '7');
+    const nRichiesti = parseInt(body.dataset.nRichiesti || '0');   // #148
     const cards = [...body.querySelectorAll('.ass-card')];
     const righe = new Map();
     const fuoriRange = [];
@@ -3029,8 +3072,9 @@ function sincronizzaSlot(body) {
         const c = righe.get(i);
         if (c) { body.appendChild(c); continue; }
         const s = document.createElement('div');
-        s.className = 'slot-empty';
+        s.className = 'slot-empty' + (i <= nRichiesti ? ' slot-mancante' : '');
         s.dataset.ordine = i;
+        if (i <= nRichiesti) s.title = 'Manca personale: previsti ' + nRichiesti + ' in questa squadra';
         body.appendChild(s);
     }
 }
@@ -4305,23 +4349,34 @@ async function annullaScambio(scambioId) {
 // l'avviso se resta personale in Disponibili (blocca la navigazione di
 // default finché non si conferma, poi riparte manualmente).
 function scaricaOdt(a) {
+    const via = () => { window.location.href = a.href; };
+    const conSquadre = () => avvisaSeSquadreIncomplete('lo scarico del .odt', via);
     if (contaDisponibili() > 0) {
-        avvisaSeDisponibiliResidui('lo scarico del .odt', () => { window.location.href = a.href; });
+        avvisaSeDisponibiliResidui('lo scarico del .odt', conSquadre);
+        return false;
+    }
+    if (squadreIncomplete().length > 0) {
+        avvisaSeSquadreIncomplete('lo scarico del .odt', via);
         return false;
     }
     return true;
 }
 
 // proponiFerie: solo il tasto "✉️ Invia" propone di approvare le ferie pending
-// (e qui avvisa se resta personale in Disponibili). Drag/svuota di capo/vice
-// salvano in silenzio (niente popup, né approva-ferie né disponibili-residui).
+// (e qui avvisa se resta personale in Disponibili o squadre incomplete, #149).
+// Drag/svuota di capo/vice salvano in silenzio (niente popup di alcun tipo).
 async function salvaIntestazioneAjax(proponiFerie = false) {
     if (BLOCCATO) { showMsg('🔒 Foglio bloccato.', 'err'); return; }
+    const esegui = () => _salvaIntestazioneEsegui(proponiFerie);
+    const conSquadre = () => {
+        if (proponiFerie && squadreIncomplete().length > 0) avvisaSeSquadreIncomplete('l\'invio delle comunicazioni', esegui);
+        else esegui();
+    };
     if (proponiFerie && contaDisponibili() > 0) {
-        avvisaSeDisponibiliResidui('l\'invio delle comunicazioni', () => _salvaIntestazioneEsegui(proponiFerie));
+        avvisaSeDisponibiliResidui('l\'invio delle comunicazioni', conSquadre);
         return;
     }
-    await _salvaIntestazioneEsegui(proponiFerie);
+    await conSquadre();
 }
 
 async function _salvaIntestazioneEsegui(proponiFerie) {

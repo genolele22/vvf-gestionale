@@ -23,8 +23,8 @@ function blocchiContigui(array $richieste): array {
         $currReq = $richieste[$i];
         $prev = new DateTime($prevReq['data_richiesta']);
         $curr = new DateTime($currReq['data_richiesta']);
-        $stessoGruppo = (($prevReq['stato'] ?? null) === 'rejected')
-                      === (($currReq['stato'] ?? null) === 'rejected');
+        $isNegativo = fn($r) => in_array($r['stato'] ?? null, ['rejected', 'declined'], true);
+        $stessoGruppo = $isNegativo($prevReq) === $isNegativo($currReq);
         $contiguo = (int)$curr->diff($prev)->days <= 3 && $stessoGruppo;
         if ($contiguo) {
             $current[] = $currReq;
@@ -54,10 +54,16 @@ function turniLabel(array $block): int {
     return $n;
 }
 
+// Stato "visuale" del blocco: pending/declined sono entrambi "in attesa di
+// comunicazione" e si equivalgono qui; un blocco non uniforme (anche se tutte
+// le righe sono decise ma diverse tra loro) mostra "pending" — una comunicazione
+// da inviare pesa più di una già inviata (voluto, vedi #129).
 function statoBlock(array $block): string {
-    $stati = array_unique(array_column($block, 'stato'));
-    if (count($stati) === 1) return $stati[0];
-    return 'misto';
+    $stati = array_unique(array_map(
+        fn($r) => ($r['stato'] ?? '') === 'declined' ? 'pending' : ($r['stato'] ?? ''),
+        $block
+    ));
+    return count($stati) === 1 ? $stati[0] : 'pending';
 }
 
 }

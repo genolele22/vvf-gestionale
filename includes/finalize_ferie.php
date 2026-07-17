@@ -35,6 +35,7 @@ function finalizeFerie(PDO $pdo, int $foglioId, string $dataStr, string $tipo): 
     $ph   = implode(',', array_fill(0, count($tipi), '?'));
 
     $approve = $pdo->prepare("UPDATE bot_requests SET stato='approved', processed_at=NOW() WHERE id=? AND stato='pending'");
+    $decline = $pdo->prepare("UPDATE bot_requests SET stato='rejected', processed_at=NOW() WHERE id=? AND stato='declined'");
     $hasCtx  = $pdo->prepare("SELECT 1 FROM bot_outbox WHERE ctx=? LIMIT 1");
     $insOut  = $pdo->prepare(
         "INSERT INTO bot_outbox (id, vigile_id, tipo, data, tipo_turno, ctx)
@@ -48,11 +49,12 @@ function finalizeFerie(PDO $pdo, int $foglioId, string $dataStr, string $tipo): 
     $st->execute([$foglioId]);
     $vigili = array_map('intval', array_column($st->fetchAll(), 'vigile_id'));
 
-    // Solo richieste non respinte: una FER sul foglio con richiesta 'rejected' è
-    // un override a mano dell'operatore → la trattiamo come d'ufficio (non negata).
+    // Solo richieste non respinte/decise-negativamente: una FER sul foglio con
+    // richiesta 'rejected'/'declined' è un override a mano dell'operatore →
+    // la trattiamo come d'ufficio (non negata).
     $findReq = $pdo->prepare(
         "SELECT id, stato, tipo_turno FROM bot_requests
-         WHERE vigile_id=? AND data_richiesta=? AND tipo_turno IN ($ph) AND stato<>'rejected'
+         WHERE vigile_id=? AND data_richiesta=? AND tipo_turno IN ($ph) AND stato NOT IN ('rejected','declined')
          ORDER BY id DESC LIMIT 1"
     );
 
@@ -77,11 +79,13 @@ function finalizeFerie(PDO $pdo, int $foglioId, string $dataStr, string $tipo): 
         }
     }
 
-    // ── 2) NEGATE: richieste 'rejected' per questa data/turno, per chi NON è
-    // (più) in FER sul foglio (chi è in FER è stato gestito sopra come d'ufficio) ──
+    // ── 2) NEGATE: richieste 'declined' (respinte ma non ancora comunicate) per
+    // questa data/turno, per chi NON è (più) in FER sul foglio (chi è in FER è
+    // gestito sopra come d'ufficio). 'declined' → 'rejected' solo qui, alla
+    // comunicazione vera (mirror di pending→approved sopra, vedi feedback Moli).
     $stNeg = $pdo->prepare(
         "SELECT r.id, r.vigile_id, r.tipo_turno FROM bot_requests r
-         WHERE r.data_richiesta=? AND r.stato='rejected' AND r.tipo_turno IN ($ph)
+         WHERE r.data_richiesta=? AND r.stato='declined' AND r.tipo_turno IN ($ph)
            AND NOT EXISTS (SELECT 1 FROM assenze a
                            WHERE a.foglio_id=? AND a.vigile_id=r.vigile_id AND a.tipo_assenza_id=1)"
     );
@@ -89,7 +93,8 @@ function finalizeFerie(PDO $pdo, int $foglioId, string $dataStr, string $tipo): 
     foreach ($stNeg->fetchAll() as $r) {
         $reqId = (int)$r['id'];
         $hasCtx->execute(['ferie_neg:' . $reqId]);
-        if ($hasCtx->fetchColumn()) continue;           // già notificato
+        if ($hasCtx->fetchColumn()) continue;            // già notificato
+        $decline->execute([$reqId]);
         $insOut->execute([nextId($pdo, 'bot_outbox'), (int)$r['vigile_id'], 'ferie_negata', $dataStr, $r['tipo_turno'], 'ferie_neg:' . $reqId]);
         $cnt['negate']++;
     }

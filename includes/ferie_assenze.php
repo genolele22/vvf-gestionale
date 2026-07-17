@@ -58,7 +58,7 @@ function feriaSyncAssenza(PDO $pdo, int $vigileId, string $data, string $tipoTur
     $turno = (string)$stT->fetchColumn();
     $tipi = ($tipoTurno === 'DN') ? ['D', 'N'] : [$tipoTurno];
     foreach ($tipi as $t) {
-        if ($stato === 'rejected') {
+        if ($stato === 'rejected' || $stato === 'declined') {
             feriaDeleteAssenza($pdo, $vigileId, $data, $t);
         } else { // approved | pending → vigile assente sul foglio DEL SUO TURNO
             $foglioId = feriaGetOrCreateFoglio($pdo, $data, $t, $turno);
