@@ -927,6 +927,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     // ── AJAX: aggiungi assenza ────────────────────────────────
+    // ── AJAX: una FERIE oggi per questo vigile sarebbe "d'ufficio" (nessuna
+    // richiesta Telegram dietro)? Sola lettura, usata PRIMA di agire per
+    // decidere se chiedere "quanti turni" (#144) — stessa domanda sia da
+    // drag su Ferie sia da tasto destro, IMPORTANTE segnalato da Lele.
+    if ($azione === 'check_ferie_ufficio') {
+        $vigileId = (int)($_POST['vigile_id'] ?? 0);
+        $stU = $pdo->prepare(
+            "SELECT 1 FROM bot_requests
+             WHERE vigile_id=? AND data_richiesta=? AND stato IN ('pending','approved') LIMIT 1"
+        );
+        $stU->execute([$vigileId, $dataStr]);
+        $ufficio = !(bool) $stU->fetchColumn();
+        echo json_encode(['ok' => true, 'ufficio' => $ufficio]);
+        exit;
+    }
+
     if ($azione === 'assenza') {
         $vigileId      = (int)($_POST['vigile_id']       ?? 0);
         $tipoAssenzaId = (int)($_POST['tipo_assenza_id'] ?? 0);
@@ -3422,6 +3438,14 @@ document.addEventListener('drop', async function(e) {
         return;
     }
 
+    // ── Drag-out da una posizione → rimetti tra i disponibili ──
+    // (mancava: era possibile solo dal menu tasto destro → "Centrale
+    // (disponibili)", IMPORTANTE segnalato da Lele — ora anche col drag.)
+    if (source === 'posizione' && target.id === 'organicoList') {
+        await mandaInCentraleDisponibili(vigileId);
+        return;
+    }
+
     // ── Drop su Capo Servizio / Vice Capo (barra intestazione) ─
     if (target.id === 'dropCapoServizio' || target.id === 'dropViceCapo') {
         const isCapo  = (target.id === 'dropCapoServizio');
@@ -3518,33 +3542,8 @@ document.addEventListener('drop', async function(e) {
     }
 
     // ── Drop su box Ferie d'ufficio ──────────────────────────
-    // #144: chiede quanti turni consecutivi assegnare (non solo questo foglio).
     if (target.id === 'colFerieUfficio') {
-        chiediConferma({
-            titolo:  "Ferie d'ufficio",
-            testo:   `Quanti turni consecutivi di ferie d'ufficio per <b>${p.nome}</b>?<br>` +
-                     `<input type="number" id="nTurniUfficio" min="1" max="60" value="1" ` +
-                     `style="width:80px;margin-top:8px;padding:6px 8px;border:1px solid #ccc;` +
-                     `border-radius:6px;font:inherit">`,
-            okLabel: 'Conferma',
-            onOk: async () => {
-                const nInput = document.getElementById('nTurniUfficio');
-                const n = Math.max(1, parseInt(nInput ? nInput.value : '1') || 1);
-                const res = await ajax({ azione: 'ferie_ufficio', vigile_id: vigileId, n_turni: n });
-                if (!res.ok) { showMsg(res.errore || '⚠️ Errore.', 'err'); return; }
-
-                rimuoviDOM(vigileId);
-                document.getElementById('ferieUfficioVuoto')?.remove();
-                target.insertAdjacentHTML('beforeend', buildUfficioRow(p, res.n_turni, res.data_da, res.data_a));
-                // Ridondanza: la ferie a mano si vede anche nella colonna Ferie
-                document.getElementById('colFerie')?.insertAdjacentHTML(
-                    'beforeend', buildAssenteRow(p, 'FER', res.n_turni, res.data_da, res.data_a));
-                if (!p.saltoCanon) setOccupato(vigileId, true, 'ferie ufficio');
-                updateUfficioCount();
-                const turniTxt = res.n_turni === 1 ? '1 turno' : (res.n_turni + ' turni');
-                showMsg('🏛️ ' + p.nome + ' → ferie d\'ufficio (' + turniTxt + ').');
-            },
-        });
+        azioneFerieUfficio(vigileId);
         return;
     }
 
@@ -3650,12 +3649,24 @@ async function rimuoviStraordinarioPos(vigileId, posId) {
     showMsg('↩️ ' + (p ? p.nome : 'Vigile') + ' torna in salto.');
 }
 
+// FER, senza richiesta Telegram dietro = "d'ufficio": chiede quanti turni
+// consecutivi (#144) PRIMA di scrivere, esattamente come il drop diretto sul
+// box "Ferie d'ufficio" — stesso comportamento sia da drag (colFerie) sia da
+// tasto destro (IMPORTANTE, segnalato da Lele: dovevano dare lo stesso risultato).
 async function azioneAssenza(vigileId, tipoCodice) {
     const p    = PERSONALE[vigileId];
     const tipo = TIPI_ASSENZA[tipoCodice];
     if (!p || !tipo) return;
-    const colId = tipo.colId;
 
+    if (tipoCodice === 'FER') {
+        const chk = await ajax({ azione: 'check_ferie_ufficio', vigile_id: vigileId });
+        if (chk.ok && chk.ufficio) {
+            azioneFerieUfficio(vigileId);
+            return;
+        }
+    }
+
+    const colId = tipo.colId;
     const res = await ajax({
         azione:          'assenza',
         vigile_id:       vigileId,
@@ -3694,20 +3705,45 @@ async function azioneAssenza(vigileId, tipoCodice) {
     document.getElementById(colId)
         ?.insertAdjacentHTML('beforeend', buildAssenteRow(p, tipoCodice));
 
-    // Ridondanza ferie a mano: se è una ferie senza richiesta Telegram,
-    // mostrala anche nel box "Ferie d'ufficio".
-    if (colId === 'colFerie' && res.ufficio) {
-        document.getElementById('ferieUfficioVuoto')?.remove();
-        document.getElementById('colFerieUfficio')
-            ?.insertAdjacentHTML('beforeend', buildUfficioRow(p));
-        updateUfficioCount();
-    }
-
     // Riapprovata una ferie respinta → esce dal box "Ferie respinte"
     if (colId === 'colFerie') rimuoviCardRespinta(vigileId);
 
     if (!p.saltoCanon) setOccupato(vigileId, true, 'assente');
     showMsg('📋 ' + p.nome + ' → ' + tipoCodice + '.');
+}
+
+// Ferie d'ufficio: popup "quanti turni consecutivi" poi scrive su tutti i
+// fogli del blocco (#144). Riusata dal drop diretto sul box "Ferie d'ufficio"
+// E da azioneAssenza quando FER risulta d'ufficio — stessa funzione, stesso
+// risultato indipendentemente da come si è arrivati qui.
+function azioneFerieUfficio(vigileId) {
+    const p = PERSONALE[vigileId];
+    if (!p) return;
+    chiediConferma({
+        titolo:  "Ferie d'ufficio",
+        testo:   `Quanti turni consecutivi di ferie d'ufficio per <b>${p.nome}</b>?<br>` +
+                 `<input type="number" id="nTurniUfficio" min="1" max="60" value="1" ` +
+                 `style="width:80px;margin-top:8px;padding:6px 8px;border:1px solid #ccc;` +
+                 `border-radius:6px;font:inherit">`,
+        okLabel: 'Conferma',
+        onOk: async () => {
+            const nInput = document.getElementById('nTurniUfficio');
+            const n = Math.max(1, parseInt(nInput ? nInput.value : '1') || 1);
+            const res = await ajax({ azione: 'ferie_ufficio', vigile_id: vigileId, n_turni: n });
+            if (!res.ok) { showMsg(res.errore || '⚠️ Errore.', 'err'); return; }
+
+            rimuoviDOM(vigileId);
+            document.getElementById('ferieUfficioVuoto')?.remove();
+            document.getElementById('colFerieUfficio')
+                ?.insertAdjacentHTML('beforeend', buildUfficioRow(p, res.n_turni, res.data_da, res.data_a));
+            document.getElementById('colFerie')?.insertAdjacentHTML(
+                'beforeend', buildAssenteRow(p, 'FER', res.n_turni, res.data_da, res.data_a));
+            if (!p.saltoCanon) setOccupato(vigileId, true, 'ferie ufficio');
+            updateUfficioCount();
+            const turniTxt = res.n_turni === 1 ? '1 turno' : (res.n_turni + ' turni');
+            showMsg('🏛️ ' + p.nome + ' → ferie d\'ufficio (' + turniTxt + ').');
+        },
+    });
 }
 
 // ════════════════════════════════════════════════════════════
@@ -3809,6 +3845,8 @@ async function mandaInCentraleDisponibili(vigileId) {
 // ════════════════════════════════════════════════════════════
 // MENU TASTO DESTRO — azioni rapide su un vigile: Ferie/Permesso/
 // Missione/Salto + "Manda a sede" (sottomenu distaccamenti/Centrale).
+// Lista invariata: le azioni condivise con il drag&drop (es. FER) devono
+// però comportarsi ESATTAMENTE come il drag — vedi azioneAssenza().
 // ════════════════════════════════════════════════════════════
 let _ctxVigileId = null;
 
