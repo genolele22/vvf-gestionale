@@ -89,21 +89,22 @@
     background: var(--grigio-sc);
     color: var(--bianco);
     border-radius: 8px;
-    padding: 10px 20px;
+    padding: 7px 16px;      /* più basso: simbolo e scritta stanno su una riga sola */
     text-align: center;
-    width: 150px;           /* #161: fissa, Giorno e Notte identici (min-width lasciava "Giorno" più largo) */
+    width: 170px;           /* #161: fissa, Giorno e Notte identici — abbastanza larga da non andare a capo */
     box-sizing: border-box;
 }
 .foglio-turno-badge .badge-tipo {
-    font-size: 1.4rem;
+    font-size: 1.25rem;
     font-weight: 800;
     display: block;
-    line-height: 1;
+    line-height: 1.2;
+    white-space: nowrap;    /* simbolo e scritta sulla stessa riga, mai a capo */
 }
 .foglio-turno-badge .badge-ora {
     font-size: .72rem;
     opacity: .8;
-    margin-top: 4px;
+    margin-top: 2px;
     display: block;
 }
 .foglio-turno-badge.diurno  { background: #7d5a00;       border: 2px solid var(--giallo); }
