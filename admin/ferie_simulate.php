@@ -155,8 +155,12 @@ $vigili = $pdo->query(
     <a href="../foglio/nuovo.php" class="nav-btn">📋 Nuovo Foglio</a>
     <a href="../vigili/lista.php" class="nav-btn">👥 Personale</a>
     <a href="../ferie/index.php"  class="nav-btn">🗓️ Agenda</a>
+    <a href="../report/index.php" class="nav-btn">📊 Reportistica</a>
     <a href="index.php"           class="nav-btn active">⚙️ Amministrazione</a>
-    <span style="margin-left:auto"><?= turnoComandoHtml() ?></span>
+    <a href="../logbook/index.php" class="nav-btn">📓 Logbook</a>
+    <a href="../cambia_password.php" class="nav-btn ml-auto">🔑 Password</a>
+    <?= turnoComandoHtml() ?>
+    <a href="../logout.php"       class="nav-btn">🚪 Esci</a>
   </div>
 </nav>
 <main class="main">

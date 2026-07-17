@@ -52,11 +52,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 </header>
 <nav class="navbar">
   <div class="navbar-inner">
-    <a href="index.php" class="nav-btn">🚒 Home</a>
+    <a href="index.php"           class="nav-btn">🚒 Home</a>
+    <a href="foglio/nuovo.php"    class="nav-btn">📋 Nuovo Foglio</a>
+    <a href="vigili/lista.php"    class="nav-btn">👥 Personale</a>
+    <a href="ferie/index.php"     class="nav-btn">🗓️ Agenda</a>
+    <a href="report/index.php"    class="nav-btn">📊 Reportistica</a>
+    <a href="admin/index.php"     class="nav-btn">⚙️ Amministrazione</a>
+    <a href="logbook/index.php"   class="nav-btn">📓 Logbook</a>
     <?php if (!isAdmin()): ?>
     <a href="admin/utenti.php" class="nav-btn">👤 Password profili user</a>
     <?php endif; ?>
-    <a href="logout.php" class="nav-btn ml-auto">🚪 Esci</a>
+    <a href="cambia_password.php" class="nav-btn active ml-auto">🔑 Password</a>
+    <?= turnoComandoHtml() ?>
+    <a href="logout.php"          class="nav-btn">🚪 Esci</a>
   </div>
 </nav>
 <main class="main">

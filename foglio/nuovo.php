@@ -1798,7 +1798,10 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
     <a href="../ferie/index.php"  class="nav-btn">🗓️ Agenda</a>
     <a href="../report/index.php" class="nav-btn">📊 Reportistica</a>
     <a href="../admin/index.php"  class="nav-btn">⚙️ Amministrazione</a>
-    <a href="../logout.php"       class="nav-btn ml-auto">🚪 Esci</a>
+    <a href="../logbook/index.php" class="nav-btn">📓 Logbook</a>
+    <a href="../cambia_password.php" class="nav-btn ml-auto">🔑 Password</a>
+    <?= turnoComandoHtml() ?>
+    <a href="../logout.php"       class="nav-btn">🚪 Esci</a>
   </div>
 </nav>
 
@@ -1808,51 +1811,47 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
   <div class="foglio-header">
 
     <div class="foglio-header-top">
-      <div class="foglio-titolo">
-        <h2>Foglio di Servizio del Soccorso</h2>
-        <p>Dipartimento VVF del Soccorso Pubblico e Difesa Civile</p>
-      </div>
-
-      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+      <!-- Giorno/Notte, frecce, data, salto: stessa altezza, allineati a sinistra (#128) -->
+      <div class="foglio-header-left">
         <!-- Badge turno -->
         <div class="foglio-turno-badge <?= $tipoParam==='D' ? 'diurno':'notturno' ?>">
           <span class="badge-tipo">
-            <?= $tipoParam==='D' ? '☀️ Diurno':'🌙 Notturno' ?>
+            <?= $tipoParam==='D' ? '☀️ Giorno':'🌙 Notte' ?>
           </span>
           <span class="badge-ora"><?= $oraLabel ?></span>
         </div>
 
-        <!-- Frecce navigazione servizio (#88) + Data -->
-        <div style="display:flex;align-items:stretch;gap:8px">
-          <div style="display:flex;gap:4px">
-            <?php if ($servPrec): ?>
-            <a href="nuovo.php?data=<?= $servPrec['data'] ?>&tipo=<?= $servPrec['tipo'] ?>"
-               class="btn btn-grigio"
-               style="display:flex;align-items:center;font-size:1.1rem;padding:0 12px;line-height:1"
-               title="Servizio precedente (<?= htmlspecialchars($navLabel($servPrec)) ?>)">◀</a>
-            <?php endif; ?>
-            <?php if ($servSucc): ?>
-            <a href="nuovo.php?data=<?= $servSucc['data'] ?>&tipo=<?= $servSucc['tipo'] ?>"
-               class="btn btn-grigio"
-               style="display:flex;align-items:center;font-size:1.1rem;padding:0 12px;line-height:1"
-               title="Servizio successivo (<?= htmlspecialchars($navLabel($servSucc)) ?>)">▶</a>
-            <?php endif; ?>
-          </div>
-          <div style="text-align:center">
-            <a href="../ferie/index.php?anno=<?= date('Y', strtotime($dataStr)) ?>&mese=<?= date('n', strtotime($dataStr)) ?>&goto=<?= urlencode($dataStr) ?>"
-               title="Apri l'agenda su questo giorno"
-               style="font-size:1.4rem;font-weight:800;color:var(--grigio-sc);text-decoration:none">
-              <?= $dataLabel ?>
-            </a>
-            <div style="font-size:.78rem;color:var(--grigio-md);margin-top:2px">
-              In servizio:
-              <strong><?= htmlspecialchars($turnoAttivo['turno'].$turnoAttivo['salto']) ?></strong>
-            </div>
-          </div>
+        <!-- Frecce navigazione servizio (#88) -->
+        <div class="fh-frecce">
+          <?php if ($servPrec): ?>
+          <a href="nuovo.php?data=<?= $servPrec['data'] ?>&tipo=<?= $servPrec['tipo'] ?>"
+             class="btn btn-grigio"
+             title="Servizio precedente (<?= htmlspecialchars($navLabel($servPrec)) ?>)">◀</a>
+          <?php endif; ?>
+          <?php if ($servSucc): ?>
+          <a href="nuovo.php?data=<?= $servSucc['data'] ?>&tipo=<?= $servSucc['tipo'] ?>"
+             class="btn btn-grigio"
+             title="Servizio successivo (<?= htmlspecialchars($navLabel($servSucc)) ?>)">▶</a>
+          <?php endif; ?>
         </div>
 
-        <!-- Pulsanti -->
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <!-- Data -->
+        <div class="fh-info-box">
+          <a href="../ferie/index.php?anno=<?= date('Y', strtotime($dataStr)) ?>&mese=<?= date('n', strtotime($dataStr)) ?>&goto=<?= urlencode($dataStr) ?>"
+             title="Apri l'agenda su questo giorno" class="fh-main" style="text-decoration:none">
+            <?= $dataLabel ?>
+          </a>
+        </div>
+
+        <!-- Salto -->
+        <div class="fh-info-box">
+          <span class="fh-sub">In servizio</span>
+          <span class="fh-main"><?= htmlspecialchars($turnoAttivo['turno'].$turnoAttivo['salto']) ?></span>
+        </div>
+      </div>
+
+        <!-- Pulsanti, allineati a destra -->
+        <div class="foglio-header-btns">
           <?php if (!soloLetturaAttivo()): ?>
           <button id="btnBlocco" onclick="toggleBlocco()" class="btn btn-sm"></button>
           <button onclick="salvaIntestazioneAjax(true)"
@@ -1927,7 +1926,6 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
           </div>
         </div>
         <?php endif; ?>
-      </div>
     </div><!-- /.foglio-header-top -->
 
   </div><!-- /.foglio-header -->

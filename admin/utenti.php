@@ -173,11 +173,18 @@ if (!isComando())
 <nav class="navbar">
   <div class="navbar-inner">
     <a href="../index.php"  class="nav-btn">🚒 Home</a>
+    <a href="../foglio/nuovo.php" class="nav-btn">📋 Nuovo Foglio</a>
+    <a href="../vigili/lista.php" class="nav-btn">👥 Personale</a>
+    <a href="../ferie/index.php"  class="nav-btn">🗓️ Agenda</a>
+    <a href="../report/index.php" class="nav-btn">📊 Reportistica</a>
     <?php if (isAdmin()): ?>
     <a href="index.php"     class="nav-btn">⚙️ Amministrazione</a>
     <?php endif; ?>
     <a href="utenti.php"    class="nav-btn active">👤 Utenti</a>
-    <a href="../logout.php" class="nav-btn ml-auto">🚪 Esci</a>
+    <a href="../logbook/index.php" class="nav-btn">📓 Logbook</a>
+    <a href="../cambia_password.php" class="nav-btn ml-auto">🔑 Password</a>
+    <?= turnoComandoHtml() ?>
+    <a href="../logout.php" class="nav-btn">🚪 Esci</a>
   </div>
 </nav>
 <main class="main">

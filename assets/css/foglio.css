@@ -29,18 +29,46 @@
     padding-bottom: 16px;
     border-bottom: 1px solid #e8e8e8;
 }
-.foglio-titolo h2 {
-    font-size: 1rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: .5px;
-    color: var(--rosso);
+/* #128: riquadri Giorno/Notte, frecce, data, salto — allineati a sinistra,
+   stessa altezza (stretch sulla riga), tasti funzione allineati a destra. */
+.foglio-header-left {
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+    flex-wrap: wrap;
 }
-.foglio-titolo p {
-    font-size: .82rem;
-    color: var(--grigio-md);
-    margin-top: 3px;
+.foglio-header-btns {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
 }
+.fh-frecce {
+    display: flex;
+    gap: 4px;
+    align-items: stretch;
+}
+.fh-frecce .btn {
+    display: flex;
+    align-items: center;
+    font-size: 1.1rem;
+    padding: 0 12px;
+    line-height: 1;
+}
+.fh-info-box {
+    background: #f8f9fa;
+    border: 1px solid #e3e6e9;
+    border-radius: 8px;
+    padding: 6px 18px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-width: 120px;
+    text-align: center;
+}
+.fh-info-box .fh-main { font-size: 1.2rem; font-weight: 800; color: var(--grigio-sc); }
+.fh-info-box .fh-sub  { font-size: .72rem; color: var(--grigio-md); }
 .foglio-turno-badge {
     background: var(--grigio-sc);
     color: var(--bianco);

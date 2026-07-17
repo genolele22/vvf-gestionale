@@ -287,7 +287,9 @@ if (!empty($vigili)) {
     <a href="../ferie/index.php"  class="nav-btn">🗓️ Agenda</a>
     <a href="../report/index.php" class="nav-btn">📊 Reportistica</a>
     <a href="../admin/index.php"  class="nav-btn">⚙️ Amministrazione</a>
-    <span style="margin-left:auto"><?= turnoComandoHtml() ?></span>
+    <a href="../logbook/index.php" class="nav-btn">📓 Logbook</a>
+    <a href="../cambia_password.php" class="nav-btn ml-auto">🔑 Password</a>
+    <?= turnoComandoHtml() ?>
     <a href="../logout.php"       class="nav-btn">🚪 Esci</a>
   </div>
 </nav>
@@ -684,19 +686,18 @@ if (!empty($vigili)) {
           <td data-sort="<?= !empty($v['patente_scadenza']) ? date('Ymd', strtotime($v['patente_scadenza'])) : '99999999' ?>">
             <?php if (!empty($v['patente_scadenza'])):
                 $ggMancanti = (int)((strtotime($v['patente_scadenza']) - strtotime(date('Y-m-d'))) / 86400);
-                if     ($ggMancanti < 0)   { $scadCol = '#c0392b'; $scadBg = '#fdecea'; $scadTitle = 'Patente SCADUTA'; }
-                elseif ($ggMancanti <= 90) { $scadCol = '#b9770e'; $scadBg = '#fef5e7'; $scadTitle = "Patente in scadenza tra $ggMancanti giorni"; }
-                else                       { $scadCol = 'var(--grigio-sc)'; $scadBg = 'transparent'; $scadTitle = 'Scadenza patente'; }
+                if     ($ggMancanti < 0)   { $scadCol = '#c0392b'; $scadTitle = 'Patente SCADUTA'; }
+                elseif ($ggMancanti <= 90) { $scadCol = '#b9770e'; $scadTitle = "Patente in scadenza tra $ggMancanti giorni"; }
+                else                       { $scadCol = 'var(--grigio-sc)'; $scadTitle = 'Scadenza patente'; }
             ?>
               <span title="<?= htmlspecialchars($scadTitle) ?>"
-                    style="font-size:.75rem;font-weight:700;color:<?= $scadCol ?>;background:<?= $scadBg ?>;
-                           border-radius:4px;padding:1px 6px;white-space:nowrap">
+                    style="color:<?= $scadCol ?>;white-space:nowrap">
                 🪪 <?= date('d/m/Y', strtotime($v['patente_scadenza'])) ?><?= $ggMancanti < 0 ? ' ⚠️' : ($ggMancanti <= 90 ? ' ⏳' : '') ?>
               </span><br>
             <?php endif; ?>
             <?php if (!empty($v['visita_ultima'])): ?>
               <span title="Ultima visita medica"
-                    style="font-size:.73rem;color:var(--grigio-md);white-space:nowrap">
+                    style="color:var(--grigio-md);white-space:nowrap">
                 🩺 <?= date('d/m/Y', strtotime($v['visita_ultima'])) ?>
               </span>
             <?php endif; ?>

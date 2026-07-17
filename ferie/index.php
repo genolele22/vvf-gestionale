@@ -292,6 +292,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 require_once __DIR__ . '/../includes/format.php';
 require_once __DIR__ . '/../includes/ferie_blocchi.php';
 
+// #129: etichette italiane per gli stati (pending/approved/rejected/misto), stessa
+// mappa usata dal JS (STATO_LABEL) — prima il badge mostrava lo stato grezzo in inglese.
+$STATO_LABEL_IT = ['pending' => 'attesa', 'approved' => 'accettata', 'rejected' => 'rifiutata', 'misto' => 'misto'];
+
 // ── Carica richieste del mese ────────────────────────────────
 $stmt = $pdo->prepare("
     SELECT r.id, r.vigile_id, r.data_richiesta, r.tipo_turno, r.stato, r.ferie_estiva,
@@ -679,7 +683,9 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
     <a href="index.php"             class="nav-btn active">🗓️ Agenda</a>
     <a href="../report/index.php"   class="nav-btn">📊 Reportistica</a>
     <a href="../admin/index.php"    class="nav-btn">⚙️ Amministrazione</a>
-    <span style="margin-left:auto"><?= turnoComandoHtml() ?></span>
+    <a href="../logbook/index.php"  class="nav-btn">📓 Logbook</a>
+    <a href="../cambia_password.php" class="nav-btn ml-auto">🔑 Password</a>
+    <?= turnoComandoHtml() ?>
     <a href="../logout.php"         class="nav-btn">🚪 Esci</a>
   </div>
 </nav>
@@ -922,7 +928,7 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
       <span class="blocco-periodo"><?= $periodo ?></span>
       <span class="blocco-turni"><?= $turni ?> turni</span>
       <span class="blocco-spacer"></span>
-      <span class="stato-badge stato-<?= $stato ?>" id="badge-<?= $detailId ?>"><?= $stato ?></span>
+      <span class="stato-badge stato-<?= $stato ?>" id="badge-<?= $detailId ?>"><?= $STATO_LABEL_IT[$stato] ?? $stato ?></span>
       <?php if ($editabile): ?>
       <div class="blocco-azioni" onclick="event.stopPropagation()">
         <button class="btn-mini accetta"
@@ -1096,7 +1102,7 @@ function sincronizzaDOM() {
         const badge  = document.getElementById('badge-' + bid);
         if (badge) {
             badge.className = 'stato-badge stato-' + stato;
-            badge.textContent = stato;
+            badge.textContent = STATO_LABEL[stato] || stato;
         }
     });
 
