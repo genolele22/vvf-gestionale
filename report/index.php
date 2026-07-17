@@ -20,9 +20,10 @@ $conSpec = isset($_GET['spec']);   // includi specialisti (default: esclusi dai 
 
 // ── Base: vigili attivi del turno (specialisti esclusi salvo richiesta) ──────
 $sqlSpec = $conSpec ? '' : ' AND COALESCE(v.specialista,0) = 0';
+$patMax  = "(SELECT MAX(pt.tipo) FROM vigili_patenti vp JOIN patenti pt ON pt.id=vp.patente_id WHERE vp.vigile_id=v.id)";
 $stV = $pdo->prepare(
     "SELECT v.id, v.cognome, v.disambiguatore, v.sede_id, q.codice AS qcodice,
-            s.codice AS sede_codice, st.codice AS salto_codice
+            s.codice AS sede_codice, st.codice AS salto_codice, $patMax AS patente_max
      FROM vigili v
      JOIN qualifiche q   ON q.id  = v.qualifica_id
      JOIN sedi s         ON s.id  = v.sede_id
@@ -33,6 +34,17 @@ $stV = $pdo->prepare(
 $stV->execute([$TURNO]);
 $vigili = [];
 foreach ($stV->fetchAll() as $v) $vigili[(int)$v['id']] = $v;
+
+// Ruolo per i filtri #138/#139: Capo (Cr/Cs) · Autista (Vp, patente 3/4) · Vigile (Vp, resto)
+$ruoloVigile = function (array $v): string {
+    if (in_array($v['qcodice'], ['Cr', 'Cs'], true)) return 'capo';
+    if ($v['qcodice'] === 'Vp' && in_array($v['patente_max'], ['3', '4'], true)) return 'autista';
+    return 'vigile';
+};
+
+// Sede Centrale (default filtri #138/#139 e pivot #17) + elenco sedi alfabetico
+$sedeCentraleId = (int)$pdo->query("SELECT id FROM sedi WHERE codice='C'")->fetchColumn();
+$sediAlfa = $pdo->query("SELECT codice, nome FROM sedi ORDER BY nome")->fetchAll();
 
 // Quanti servizi (fogli) esistono nel periodo: se zero, i numeri sotto sono vuoti.
 $stF = $pdo->prepare(
@@ -100,6 +112,21 @@ $stS->execute([$TURNO, $da, $a]);
 $strPerVigile = [];
 foreach ($stS->fetchAll() as $r) $strPerVigile[(int)$r['vigile_id']] = $r;
 
+// ── 4) Squadre Centrale: turni per posizione (solo sede Centrale) ────────────
+$posizioniCentrale = ['CENTR-OP', '1A', '2A', '3A', '4A', '5A', '1B', '2B-NBCR', '3B', '4B', '1FUN-AUTORADIO', '1SOP-AUTORIM'];
+$stSq = $pdo->prepare(
+    "SELECT a.vigile_id, p.codice AS pos_codice, COUNT(*) AS n
+     FROM assegnazioni a
+     JOIN fogli_servizio f ON f.id = a.foglio_id
+     JOIN posizioni p      ON p.id = a.posizione_id
+     JOIN vigili v         ON v.id = a.vigile_id
+     WHERE f.turno=? AND f.data_servizio BETWEEN ? AND ? AND v.sede_id=? AND p.sede_id=?
+     GROUP BY a.vigile_id, p.codice"
+);
+$stSq->execute([$TURNO, $da, $a, $sedeCentraleId, $sedeCentraleId]);
+$squadrePerVigile = [];
+foreach ($stSq->fetchAll() as $r) $squadrePerVigile[(int)$r['vigile_id']][$r['pos_codice']] = (int)$r['n'];
+
 // ── Helper display ────────────────────────────────────────────────────────────
 $ggFa = function (?string $data): string {
     if (!$data) return '—';
@@ -139,6 +166,11 @@ $ggFaNum = fn(?string $data) => $data
   .badge-dest { display:inline-block; background:#eef1f4; border:1px solid #d5d8dc; color:var(--grigio-sc);
                 font-size:.68rem; font-weight:700; border-radius:3px; padding:1px 6px; margin:1px 2px 1px 0; white-space:nowrap; }
   .n-zero { color:#bbb; }
+  .rep-subfiltri { display:flex; gap:6px; align-items:center; margin-bottom:10px; flex-wrap:wrap; }
+  .rep-subfiltri-label { font-size:.78rem; font-weight:700; color:var(--grigio-md); margin-right:2px; }
+  .rep-subfiltri .rep-tab { padding:5px 12px; font-size:.8rem; }
+  .rep-subfiltri select { padding:6px 8px; border:1px solid #d5d8dc; border-radius:5px; font:inherit; font-size:.82rem; }
+  .rep-scroll { overflow-x:auto; }
 </style>
 </head>
 <body>
@@ -200,10 +232,23 @@ $ggFaNum = fn(?string $data) => $data
     <button type="button" class="rep-tab attivo" data-sez="fuori">🏠 Fuori sede</button>
     <button type="button" class="rep-tab" data-sez="prima">🚨 Prima partenza</button>
     <button type="button" class="rep-tab" data-sez="str">⏱️ Straordinari</button>
+    <button type="button" class="rep-tab" data-sez="squadre">📍 Squadre Centrale</button>
   </div>
 
   <!-- ══ 1. FUORI SEDE ══════════════════════════════════════════ -->
   <div class="rep-sezione attiva" id="sez-fuori">
+    <div class="rep-subfiltri" id="filtriFuori">
+      <span class="rep-subfiltri-label">Filtra:</span>
+      <button type="button" class="rep-tab attivo" data-qual="tutti">Tutti</button>
+      <button type="button" class="rep-tab" data-qual="capo">Capi</button>
+      <button type="button" class="rep-tab" data-qual="vigile">Vigili</button>
+      <select id="filtroSedeFuori">
+        <option value="">— Tutte le sedi —</option>
+        <?php foreach ($sediAlfa as $s): ?>
+          <option value="<?= htmlspecialchars($s['codice']) ?>" <?= $s['codice'] === 'C' ? 'selected' : '' ?>><?= htmlspecialchars(ucfirst(strtolower($s['nome']))) ?></option>
+        <?php endforeach; ?>
+      </select>
+    </div>
     <div class="tabella-wrap">
       <div class="tabella-head"><span>🏠 Turni fuori sede — chi e dove</span></div>
       <table class="rep" id="tabFuori">
@@ -225,8 +270,9 @@ $ggFaNum = fn(?string $data) => $data
             $ult  = $t['ultimo_fuori'] ?? null;
             $dest = $destPerVigile[$vid] ?? [];
             ksort($dest);
+            $qualFiltro = $ruoloVigile($v) === 'capo' ? 'capo' : 'vigile';
         ?>
-          <tr>
+          <tr data-qual="<?= $qualFiltro ?>" data-sede="<?= htmlspecialchars($v['sede_codice']) ?>">
             <td data-sort="<?= htmlspecialchars(strtolower($v['cognome']) . sprintf('%03d', (int)$v['disambiguatore'])) ?>">
               <span class="badge-qual badge-<?= htmlspecialchars($v['qcodice']) ?>"><?= htmlspecialchars(ucfirst(strtolower($v['qcodice']))) ?></span>
               <strong><?= htmlspecialchars(ucfirst(strtolower($v['cognome']))) ?></strong>
@@ -252,24 +298,33 @@ $ggFaNum = fn(?string $data) => $data
 
   <!-- ══ 2. PRIMA PARTENZA ══════════════════════════════════════ -->
   <div class="rep-sezione" id="sez-prima">
+    <div class="rep-subfiltri" id="filtriPrima">
+      <span class="rep-subfiltri-label">Ruolo:</span>
+      <button type="button" class="rep-tab attivo" data-ruolo="tutti">Tutti</button>
+      <button type="button" class="rep-tab" data-ruolo="capo">Capo</button>
+      <button type="button" class="rep-tab" data-ruolo="autista">Autista</button>
+      <button type="button" class="rep-tab" data-ruolo="vigile">Vigile</button>
+    </div>
     <div class="tabella-wrap">
-      <div class="tabella-head"><span>🚨 Prima partenza (squadra 1A)</span></div>
+      <div class="tabella-head"><span>🚨 Prima partenza (squadra 1A) — sede Centrale, con almeno una presenza</span></div>
       <table class="rep" id="tabPrima">
         <thead>
           <tr>
             <th class="sortable" data-col="0">Vigile</th>
             <th class="sortable" data-col="1">Sede</th>
-            <th class="sortable" data-col="2" aria-sort="descending">Volte in 1A</th>
+            <th class="sortable" data-col="2">Volte in 1A</th>
             <th class="sortable" data-col="3">di cui capopartenza</th>
-            <th class="sortable" data-col="4">Ultima volta</th>
+            <th class="sortable" data-col="4" aria-sort="descending">Ultima volta</th>
           </tr>
         </thead>
         <tbody>
         <?php foreach ($vigili as $vid => $v):
+            if ((int)$v['sede_id'] !== $sedeCentraleId) continue;
             $p = $primaPerVigile[$vid] ?? null;
+            if (!$p) continue;   // #139: solo chi ha almeno una presenza in 1A
             $n = (int)($p['n'] ?? 0);
         ?>
-          <tr>
+          <tr data-ruolo="<?= $ruoloVigile($v) ?>">
             <td data-sort="<?= htmlspecialchars(strtolower($v['cognome']) . sprintf('%03d', (int)$v['disambiguatore'])) ?>">
               <span class="badge-qual badge-<?= htmlspecialchars($v['qcodice']) ?>"><?= htmlspecialchars(ucfirst(strtolower($v['qcodice']))) ?></span>
               <strong><?= htmlspecialchars(ucfirst(strtolower($v['cognome']))) ?></strong>
@@ -283,7 +338,7 @@ $ggFaNum = fn(?string $data) => $data
         <?php endforeach; ?>
         </tbody>
       </table>
-      <div class="pag-info">Capopartenza = prima casella della 1A. Il conteggio parte dai fogli compilati nel gestionale.</div>
+      <div class="pag-info">Capopartenza = prima casella della 1A. Autista = vigile (no capi) con patente 3ª o 4ª. Il conteggio parte dai fogli compilati nel gestionale.</div>
     </div>
   </div>
 
@@ -331,6 +386,46 @@ $ggFaNum = fn(?string $data) => $data
     </div>
   </div>
 
+  <!-- ══ 4. SQUADRE CENTRALE ═══════════════════════════════════ -->
+  <div class="rep-sezione" id="sez-squadre">
+    <div class="tabella-wrap">
+      <div class="tabella-head"><span>📍 Turni per posizione — sede Centrale</span></div>
+      <div class="rep-scroll">
+      <table class="rep" id="tabSquadre">
+        <thead>
+          <tr>
+            <th class="sortable" data-col="0">Vigile</th>
+            <?php foreach ($posizioniCentrale as $i => $pc): ?>
+              <th class="sortable" data-col="<?= $i + 1 ?>"><?= htmlspecialchars($pc) ?></th>
+            <?php endforeach; ?>
+            <th class="sortable" data-col="<?= count($posizioniCentrale) + 1 ?>" aria-sort="descending">Totale</th>
+          </tr>
+        </thead>
+        <tbody>
+        <?php foreach ($vigili as $vid => $v):
+            if ((int)$v['sede_id'] !== $sedeCentraleId) continue;
+            $riga = $squadrePerVigile[$vid] ?? [];
+            $tot  = array_sum($riga);
+        ?>
+          <tr>
+            <td data-sort="<?= htmlspecialchars(strtolower($v['cognome']) . sprintf('%03d', (int)$v['disambiguatore'])) ?>">
+              <span class="badge-qual badge-<?= htmlspecialchars($v['qcodice']) ?>"><?= htmlspecialchars(ucfirst(strtolower($v['qcodice']))) ?></span>
+              <strong><?= htmlspecialchars(ucfirst(strtolower($v['cognome']))) ?></strong>
+              <?= $v['disambiguatore'] ? ' ' . (int)$v['disambiguatore'] : '' ?>
+            </td>
+            <?php foreach ($posizioniCentrale as $pc): $n = (int)($riga[$pc] ?? 0); ?>
+              <td data-sort="<?= $n ?>" class="<?= $n ? '' : 'n-zero' ?>"><?= $n ?: '·' ?></td>
+            <?php endforeach; ?>
+            <td data-sort="<?= $tot ?>" class="<?= $tot ? '' : 'n-zero' ?>"><strong><?= $tot ?></strong></td>
+          </tr>
+        <?php endforeach; ?>
+        </tbody>
+      </table>
+      </div>
+      <div class="pag-info">Turni lavorati in ciascuna posizione della sede Centrale nel periodo selezionato. "Totale" + i turni fuori sede (tab "Fuori sede") danno il totale dei turni lavorati.</div>
+    </div>
+  </div>
+
 </main>
 
 <script>
@@ -343,6 +438,43 @@ document.querySelectorAll('.rep-tab').forEach(t => {
         document.getElementById('sez-' + t.dataset.sez).classList.add('attiva');
     });
 });
+
+// ── Filtro Fuori sede: qualifica + sede (#138) ──────────────────
+(function () {
+    const bar = document.getElementById('filtriFuori');
+    const selSede = document.getElementById('filtroSedeFuori');
+    if (!bar || !selSede) return;
+    const applica = () => {
+        const q = bar.querySelector('.rep-tab.attivo').dataset.qual;
+        const s = selSede.value;
+        document.querySelectorAll('#tabFuori tbody tr').forEach(tr => {
+            const okQ = q === 'tutti' || tr.dataset.qual === q;
+            const okS = !s || tr.dataset.sede === s;
+            tr.style.display = (okQ && okS) ? '' : 'none';
+        });
+    };
+    bar.querySelectorAll('.rep-tab').forEach(b => b.addEventListener('click', () => {
+        bar.querySelectorAll('.rep-tab').forEach(x => x.classList.remove('attivo'));
+        b.classList.add('attivo');
+        applica();
+    }));
+    selSede.addEventListener('change', applica);
+    applica();   // applica il default (sede Centrale) al caricamento
+})();
+
+// ── Filtro Prima partenza: ruolo Capo/Autista/Vigile (#139) ─────
+(function () {
+    const bar = document.getElementById('filtriPrima');
+    if (!bar) return;
+    bar.querySelectorAll('.rep-tab').forEach(b => b.addEventListener('click', () => {
+        bar.querySelectorAll('.rep-tab').forEach(x => x.classList.remove('attivo'));
+        b.classList.add('attivo');
+        const r = b.dataset.ruolo;
+        document.querySelectorAll('#tabPrima tbody tr').forEach(tr => {
+            tr.style.display = (r === 'tutti' || tr.dataset.ruolo === r) ? '' : 'none';
+        });
+    }));
+})();
 
 // ── Ordinamento client (stesso schema di Personale: data-sort numerico o testo) ──
 document.querySelectorAll('table.rep').forEach(tab => {
