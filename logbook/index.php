@@ -98,6 +98,7 @@ foreach ($voci as $v) { $v['fatto'] ? $nFatte++ : $nDaFare++; }
   .lb-meta   { font-size:.75rem; color:#aaa; margin-top:.15rem; }
   .lb-check  { width:1.25rem; height:1.25rem; margin-top:.15rem; cursor:pointer; }
   .lb-count  { color:#666; font-size:.9rem; margin-bottom:.8rem; }
+  .lb-num    { color:#999; font-weight:700; font-size:.8rem; margin-right:6px; }
   .lb-empty  { color:#999; text-align:center; padding:2rem; }
 </style>
 </head>
@@ -166,6 +167,7 @@ foreach ($voci as $v) { $v['fatto'] ? $nFatte++ : $nDaFare++; }
             </form>
 
             <div class="lb-testo">
+              <span class="lb-num">#<?= (int)$v['id'] ?></span>
               <?= nl2br(htmlspecialchars($v['testo'])) ?>
               <div class="lb-meta">
                 <?php if (!empty($v['autore'])): ?>
