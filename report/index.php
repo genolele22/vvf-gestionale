@@ -432,9 +432,11 @@ $ggFaNum = fn(?string $data) => $data
 
 <script>
 // ── Tab sezioni ──────────────────────────────────────────────
-document.querySelectorAll('.rep-tab').forEach(t => {
+// Solo i tab dentro .rep-tabs: i bottoni filtro delle sezioni (#138/#139)
+// riusano la classe .rep-tab ma hanno i loro gestori dedicati sotto.
+document.querySelectorAll('.rep-tabs .rep-tab').forEach(t => {
     t.addEventListener('click', () => {
-        document.querySelectorAll('.rep-tab').forEach(x => x.classList.remove('attivo'));
+        document.querySelectorAll('.rep-tabs .rep-tab').forEach(x => x.classList.remove('attivo'));
         document.querySelectorAll('.rep-sezione').forEach(x => x.classList.remove('attiva'));
         t.classList.add('attivo');
         document.getElementById('sez-' + t.dataset.sez).classList.add('attiva');
