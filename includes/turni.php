@@ -135,24 +135,26 @@ function getTurnoGiorno(string $data): array
 
 /**
  * ── Scambio salto turno: occorrenze di riposo generiche (A/B/C/D) ───────────
- * Il salto di un foglio segue saltoRiposoNum. L'occorrenza di riposo di uno
- * slot NON è sempre la coppia (D, N del giorno dopo): vale per i turni B e C;
- * per A e D è (N di un servizio, D del servizio successivo, 3 giorni dopo) —
- * verificato sui fogli reali (A6 in salto su 12/07 N e 15/07 D, D7 su 15/07 N).
- * Per questo le funzioni lavorano per scansione dei servizi del turno, senza
- * assumere coppie consecutive, e restituiscono occorrenze TIPIZZATE:
+ * Il salto di un foglio segue saltoRiposoNum: ciascun foglio prende il PROPRIO
+ * salto (quello del suo diurno o del suo notturno). L'occorrenza di riposo di
+ * uno slot è quindi sempre la coppia adiacente (Diurno gg X, Notturno gg X+1),
+ * uguale per tutti i turni — verificato sul turnario reale di luglio 2026
+ * (screenshot: 18/07 = D7-C7, 19/07 = A8-D7, quindi D7 copre 18/07 D e 19/07 N).
+ * Le funzioni lavorano comunque per scansione dei servizi del turno, senza
+ * assumere l'adiacenza a priori, e restituiscono occorrenze TIPIZZATE:
  *     [['Y-m-d', 'D'|'N'], ['Y-m-d', 'D'|'N']]   in ordine cronologico.
  * Un blocco = giro completo slot 1→8 (32 giorni), cadenza uguale per tutti.
  */
 
 /**
- * Slot (1..8) a riposo per un foglio (data,tipo). Stessa convenzione di
- * nuovo.php: foglio D → salto del NOTTURNO; foglio N → salto del DIURNO.
+ * Slot (1..8) a riposo per un foglio (data,tipo): il salto PROPRIO di quel
+ * turno/tipo (diurno per foglio D, notturno per foglio N) — non quello
+ * dell'altro tipo dello stesso giorno.
  */
 function saltoRiposoNum(string $data, string $tipo): int
 {
     $tg = getTurnoGiorno($data);
-    return (int)($tipo === 'D' ? $tg['notte']['salto'] : $tg['diurno']['salto']);
+    return (int)($tipo === 'D' ? $tg['diurno']['salto'] : $tg['notte']['salto']);
 }
 
 /** Fogli [data, tipo] in cui $turno è in servizio, in [$da, $a] inclusi. */

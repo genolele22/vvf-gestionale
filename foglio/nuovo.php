@@ -52,8 +52,7 @@ $oraLabel  = $tipoParam === 'D' ? '08:00 → 20:00' : '20:00 → 08:00';
 // ── Turno del giorno ─────────────────────────────────────────
 $turnoGiorno  = getTurnoGiorno($dataStr);
 $turnoAttivo  = $tipoParam === 'D' ? $turnoGiorno['diurno'] : $turnoGiorno['notte'];
-$turnoRiposo  = $tipoParam === 'D' ? $turnoGiorno['notte']  : $turnoGiorno['diurno'];
-$codSaltoRip  = $TURNO . $turnoRiposo['salto'];
+$codSaltoRip  = $TURNO . $turnoAttivo['salto'];
 
 // ── Helper: chi riposa davvero su questo foglio ──────────────
 // Default = vigili col salto_id del giorno. Poi applica gli scambi salto

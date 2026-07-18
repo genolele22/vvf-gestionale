@@ -61,9 +61,8 @@ class FoglioRenderer
         $this->dataLabel = $dt->format('d/m/Y');
         $this->giornoLbl = self::giornoSettimana($dt);
         require_once __DIR__ . '/turni.php';
-        $tg = getTurnoGiorno($this->dataStr);
-        $rip = $this->tipoParam === 'D' ? $tg['notte'] : $tg['diurno'];
-        $this->codSaltoRip = ($f['turno'] ?: 'B') . $rip['salto'];   // turno del foglio (multi-turno)
+        $this->codSaltoRip = ($f['turno'] ?: 'B')
+            . saltoRiposoNum($this->dataStr, $this->tipoParam);   // turno del foglio (multi-turno)
 
         // Intestazione: inizio/fine servizio. Diurno: 8→20 stesso giorno.
         // Notturno: 20 del giorno → 8 del giorno dopo.
