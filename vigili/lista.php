@@ -2,6 +2,7 @@
 session_start();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/auth.php';
+require_once __DIR__ . '/../includes/propaga_salto.php';
 richiediLogin();
 
 $pdo     = getDB();
@@ -67,10 +68,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $errore = 'Non puoi modificare un vigile di un altro turno.';
         } elseif ($azione === 'elimina') {
             $pdo->prepare("UPDATE vigili SET attivo=0 WHERE id=?")->execute([$id]);
-            $sucesso = 'Vigile disattivato.';
+            $nProp = propagaSaltoVigile($pdo, $id);
+            $sucesso = 'Vigile disattivato.' . ($nProp ? " Aggiornati $nProp fogli futuri." : '');
         } elseif ($azione === 'riattiva') {
             $pdo->prepare("UPDATE vigili SET attivo=1 WHERE id=?")->execute([$id]);
-            $sucesso = 'Vigile riattivato.';
+            $nProp = propagaSaltoVigile($pdo, $id);
+            $sucesso = 'Vigile riattivato.' . ($nProp ? " Aggiornati $nProp fogli futuri." : '');
         } else {
             // elimina_def: cancellazione DEFINITIVA dal DB. Prima tutte le righe
             // figlie con FK senza cascade, poi il vigile (patenti/abilitazioni
@@ -125,7 +128,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     "INSERT INTO vigili_abilitazioni (vigile_id,abilitazione_id) VALUES (?,?)"
                 )->execute([$vid,(int)$aid]);
             }
-            $sucesso = 'Vigile inserito correttamente.';
+            // Anagrafica = fonte di verità: riallinea i fogli futuri già popolati
+            $nProp = propagaSaltoVigile($pdo, $vid);
+            $sucesso = 'Vigile inserito correttamente.'
+                     . ($nProp ? " Aggiornati $nProp fogli futuri." : '');
 
         } elseif ($azione === 'modifica') {
             $id = (int)($_POST['id'] ?? 0);
@@ -161,7 +167,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         "INSERT INTO vigili_abilitazioni (vigile_id,abilitazione_id) VALUES (?,?)"
                     )->execute([$id,(int)$aid]);
                 }
-                $sucesso = 'Vigile aggiornato correttamente.';
+                // Anagrafica = fonte di verità: riallinea i fogli futuri già popolati
+                $nProp = propagaSaltoVigile($pdo, $id);
+                $sucesso = 'Vigile aggiornato correttamente.'
+                         . ($nProp ? " Aggiornati $nProp fogli futuri." : '');
             }
         }
     }
