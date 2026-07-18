@@ -28,8 +28,9 @@ require_once __DIR__ . '/turni.php';
 /**
  * Riallinea i fogli futuri allo stato anagrafico attuale del vigile.
  * Ritorna il numero di fogli modificati. $dryRun = true: conta senza scrivere.
+ * $daData: tocca solo fogli con data_servizio > $daData (default: oggi).
  */
-function propagaSaltoVigile(PDO $pdo, int $vigileId, bool $dryRun = false): int
+function propagaSaltoVigile(PDO $pdo, int $vigileId, bool $dryRun = false, ?string $daData = null): int
 {
     $st = $pdo->prepare(
         "SELECT v.id, v.attivo, v.turno, st.codice AS salto_cod
@@ -39,7 +40,7 @@ function propagaSaltoVigile(PDO $pdo, int $vigileId, bool $dryRun = false): int
     $v = $st->fetch();
     if (!$v) return 0;
 
-    $oggi = date('Y-m-d');
+    $oggi = $daData !== null && $daData >= date('Y-m-d') ? $daData : date('Y-m-d');
 
     // Fogli futuri che riguardano il vigile: quelli del suo turno, più quelli
     // di qualunque turno dove risulta già riposante o assegnato (serve per i
