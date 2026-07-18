@@ -1888,28 +1888,28 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
           <?php endif; ?>
         </div>
 
-        <!-- Data (#161: centrata nella riga) -->
-        <div class="fh-info-box fh-data-box">
-          <a href="../ferie/index.php?anno=<?= date('Y', strtotime($dataStr)) ?>&mese=<?= date('n', strtotime($dataStr)) ?>&goto=<?= urlencode($dataStr) ?>"
-             title="Apri l'agenda su questo giorno" class="fh-main" style="text-decoration:none">
-            <?= $dataLabel ?>
-          </a>
-        </div>
-
-        <!-- Salto (#161: via "In servizio", riquadro standard) -->
-        <div class="fh-info-box">
+        <!-- Salto (#166: riquadro quadrato) -->
+        <div class="fh-info-box fh-salto-box">
           <span class="fh-main"><?= htmlspecialchars($turnoAttivo['turno'].$turnoAttivo['salto']) ?></span>
         </div>
 
-        <!-- Copia dal diurno (#161: riquadro proprio accanto al salto, solo sul notturno) -->
+        <!-- Copia dal diurno (#161 accanto al salto, solo sul notturno; #166 su due righe) -->
         <?php if ($tipoParam === 'N'): ?>
         <div class="fh-info-box fh-info-btn">
           <button type="button" onclick="apriModalCopiaDiurno()"
                   title="Importa le squadre dal diurno dello stesso salto (il giorno prima) come base per il notturno">
-            📋 Copia dal diurno
+            📋 Copia<br>dal diurno
           </button>
         </div>
         <?php endif; ?>
+      </div>
+
+      <!-- Data (#166: colonna centrale della griglia = centro esatto della riga) -->
+      <div class="fh-info-box fh-data-box">
+        <a href="../ferie/index.php?anno=<?= date('Y', strtotime($dataStr)) ?>&mese=<?= date('n', strtotime($dataStr)) ?>&goto=<?= urlencode($dataStr) ?>"
+           title="Apri l'agenda su questo giorno" class="fh-main" style="text-decoration:none">
+          <?= $dataLabel ?>
+        </a>
       </div>
 
         <!-- Pulsanti, allineati a destra -->

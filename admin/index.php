@@ -93,7 +93,7 @@ $nRegole  = contaTab($pdo, "SELECT COUNT(*) FROM regole_squadra WHERE attiva=1 A
 <nav class="navbar">
   <div class="navbar-inner">
     <a href="../index.php"        class="nav-btn">🚒 Home</a>
-    <a href="../foglio/nuovo.php" class="nav-btn">📋 Nuovo Foglio</a>
+    <a href="../foglio/nuovo.php" class="nav-btn">📋 Foglio</a>
     <a href="../vigili/lista.php" class="nav-btn">👥 Personale</a>
     <a href="../ferie/index.php"  class="nav-btn">🗓️ Agenda</a>
     <a href="../report/index.php" class="nav-btn">📊 Reportistica</a>

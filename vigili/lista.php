@@ -282,7 +282,7 @@ if (!empty($vigili)) {
 <nav class="navbar">
   <div class="navbar-inner">
     <a href="../index.php"        class="nav-btn">🚒 Home</a>
-    <a href="../foglio/nuovo.php" class="nav-btn">📋 Nuovo Foglio</a>
+    <a href="../foglio/nuovo.php" class="nav-btn">📋 Foglio</a>
     <a href="lista.php"           class="nav-btn active">👥 Personale</a>
     <a href="../ferie/index.php"  class="nav-btn">🗓️ Agenda</a>
     <a href="../report/index.php" class="nav-btn">📊 Reportistica</a>

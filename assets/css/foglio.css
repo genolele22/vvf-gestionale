@@ -15,21 +15,19 @@
     background: var(--bianco);
     border-radius: var(--radius);
     box-shadow: var(--shadow);
-    padding: 20px 24px;
+    padding: 14px 24px 20px;   /* #166: niente bordo rosso in alto (come gli altri lati) */
     margin-bottom: 16px;
-    border-top: 5px solid var(--rosso);
 }
+/* #166: griglia a 3 zone — riquadri a sinistra, data ESATTAMENTE al centro
+   della riga, tasti a destra. Niente separatore sotto (spazio recuperato). */
 .foglio-header-top {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: stretch;
     gap: 12px;
-    margin-bottom: 16px;
-    padding-bottom: 16px;
-    border-bottom: 1px solid #e8e8e8;
+    margin-bottom: 10px;
 }
-/* #128: riquadri Giorno/Notte, frecce, data, salto — allineati a sinistra,
+/* #128: riquadri Giorno/Notte, frecce, salto — allineati a sinistra,
    stessa altezza (stretch sulla riga), tasti funzione allineati a destra. */
 .foglio-header-left {
     display: flex;
@@ -42,6 +40,8 @@
     gap: 8px;
     flex-wrap: wrap;
     align-items: center;
+    justify-self: end;
+    justify-content: flex-end;
 }
 .fh-frecce {
     display: flex;
@@ -69,21 +69,30 @@
 }
 .fh-info-box .fh-main { font-size: 1.2rem; font-weight: 800; color: var(--grigio-sc); }
 .fh-info-box .fh-sub  { font-size: .72rem; color: var(--grigio-md); }
-/* #161: riquadro data centrato nello spazio libero della riga (tra frecce e salto) */
-.fh-data-box { margin-left: auto; margin-right: auto; }
-/* #161: riquadro "Copia dal diurno" — stessa forma degli altri, ma cliccabile */
-.fh-info-box.fh-info-btn { background: #eaf2f8; border-color: #aed6f1; cursor: pointer; }
+/* #166: riquadro data al centro esatto della riga (colonna centrale della griglia) */
+.fh-data-box { justify-self: center; }
+/* #166: riquadro salto quadrato — larghezza = altezza della riga (che non cambia),
+   il font resta 1.2rem: i codici salto (A1..D8) ci stanno tutti. */
+.fh-salto-box {
+    aspect-ratio: 1 / 1;
+    min-width: 0;
+    padding: 6px;
+}
+/* #161/#166: riquadro "Copia dal diurno" — testo su due righe per ridurre la
+   larghezza; stessa altezza degli altri (stretch sulla riga). */
+.fh-info-box.fh-info-btn { background: #eaf2f8; border-color: #aed6f1; cursor: pointer; min-width: 0; padding: 6px 12px; }
 .fh-info-box.fh-info-btn:hover { background: #d4e6f1; }
 .fh-info-box.fh-info-btn button {
     background: none;
     border: none;
     font: inherit;
-    font-size: .95rem;
+    font-size: .88rem;
     font-weight: 700;
     color: #1a5276;
     cursor: pointer;
     padding: 0;
-    white-space: nowrap;
+    line-height: 1.2;
+    white-space: normal;
 }
 .foglio-turno-badge {
     background: var(--grigio-sc);
