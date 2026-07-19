@@ -8,6 +8,7 @@
  * Niente clonazione righe: capienza = righe del modulo (come da esempio B4).
  */
 require_once __DIR__ . '/ferie_blocchi.php';
+require_once __DIR__ . '/format.php';   // leggiParametri/validaStilePatente/suffissoGrado condivisi col web
 
 class FoglioRenderer
 {
@@ -45,11 +46,15 @@ class FoglioRenderer
     public array $overflow = [];   // mezzi con più nomi che slot
     public array $noslot = [];     // mezzi con nomi ma 0 slot
     private static string $formatoNome = 'standard';  // parametro admin (parametri.foglio_formato_nome)
+    // Stile patenti per turno (parametri admin): colore (storico), numero accanto
+    // al nome, o entrambi; tinte selezionabili ('' in tabella = tinta storica ODT).
+    private static string $stilePatente = 'colore';
+    private static string $rossoPat = '#C00000';
+    private static string $bluPat   = '#0000C0';
 
     public function __construct(PDO $pdo, int $foglioId)
     {
         $this->pdo = $pdo;
-        self::$formatoNome = self::caricaFormatoNome($pdo);
         $st = $pdo->prepare("SELECT * FROM fogli_servizio WHERE id=?");
         $st->execute([$foglioId]);
         $f = $st->fetch();
@@ -63,6 +68,7 @@ class FoglioRenderer
         require_once __DIR__ . '/turni.php';
         $this->codSaltoRip = ($f['turno'] ?: 'B')
             . saltoRiposoNum($this->dataStr, $this->tipoParam);   // turno del foglio (multi-turno)
+        self::caricaParametri($pdo, $f['turno'] ?: 'B');
 
         // Intestazione: inizio/fine servizio. Diurno: 8→20 stesso giorno.
         // Notturno: 20 del giorno → 8 del giorno dopo.
@@ -339,16 +345,27 @@ class FoglioRenderer
     }
 
     /** Legge il formato nome dai parametri (resiliente: default 'standard' se manca). */
-    private static function caricaFormatoNome(PDO $pdo): string
+    /** Parametri admin del foglio in un giro solo: formato nome + stile patenti
+     *  del turno (helper condivisi col web in includes/format.php). */
+    private static function caricaParametri(PDO $pdo, string $turno): void
     {
-        try {
-            $st = $pdo->query("SELECT valore FROM parametri WHERE chiave='foglio_formato_nome'");
-            $v = $st ? $st->fetchColumn() : false;
-            $v = is_string($v) ? trim($v) : '';
-            return in_array($v, ['standard', 'cognome_maiusc', 'tutto_maiusc'], true) ? $v : 'standard';
-        } catch (Throwable $e) {
-            return 'standard';
-        }
+        self::$formatoNome  = 'standard';
+        self::$stilePatente = 'colore';
+        self::$rossoPat = '#C00000';
+        self::$bluPat   = '#0000C0';
+        $p = leggiParametri($pdo, array_merge(['foglio_formato_nome'], chiaviStilePatente($turno)));
+        $fmt = $p['foglio_formato_nome'] ?? '';
+        if (in_array($fmt, ['standard', 'cognome_maiusc', 'tutto_maiusc'], true)) self::$formatoNome = $fmt;
+        $v = validaStilePatente($p, $turno);
+        if ($v['stile'] !== null) self::$stilePatente = $v['stile'];
+        if ($v['rosso'] !== null) self::$rossoPat = $v['rosso'];
+        if ($v['blu']   !== null) self::$bluPat   = $v['blu'];
+    }
+
+    /** " 3°" accanto al nome (stili numero/entrambi), '' altrimenti. */
+    private static function suffissoPat(?string $t): string
+    {
+        return suffissoGrado($t, self::$stilePatente);
     }
 
     /** Maiuscola la prima lettera di ogni parola (spazi/apostrofi/trattini fanno da separatore): "d'amato" -> "D'Amato". */
@@ -402,6 +419,7 @@ class FoglioRenderer
     private static function nameStyle(?string $t, bool $straord, bool $und = false): string
     {
         $col = ($t === '3' || $t === '4') ? 'Rosso' : ($t === '2' ? 'Blu' : '');
+        if (self::$stilePatente === 'numero') $col = '';   // il grado lo dice il suffisso
         return 'Nm' . ($straord ? 'S' : '') . ($und ? 'U' : '') . $col;  // es: Nm, NmRosso, NmS, NmSURosso…
     }
 
@@ -698,7 +716,7 @@ class FoglioRenderer
     /** scrive un nome (colore patente + giallo straord. + sottolineato se fuori sede) in una cella */
     private function writeName(DOMDocument $doc, DOMElement $cell, array $a, string $suffix = '', string $prefix = '', bool $underline = false): void
     {
-        $label = $prefix . self::etichetta($a) . $suffix;
+        $label = $prefix . self::etichetta($a) . self::suffissoPat($a['patente_max'] ?? null) . $suffix;
         $style = self::nameStyle($a['patente_max'] ?? null, !empty($a['in_straordinario']), $underline);
         $this->setText($doc, $cell, $label, $style);
     }
@@ -712,7 +730,8 @@ class FoglioRenderer
         }
         if ($p === null) { $p = $doc->createElementNS(self::TXT, 'text:p'); $cell->appendChild($p); }
         $p->appendChild($doc->createElementNS(self::TXT, 'text:line-break'));
-        $label = self::etichetta($a) . (!empty($a['sigla']) ? ' ' . $a['sigla'] : '');
+        $label = self::etichetta($a) . self::suffissoPat($a['patente_max'] ?? null)
+               . (!empty($a['sigla']) ? ' ' . $a['sigla'] : '');
         $style = self::nameStyle($a['patente_max'] ?? null, !empty($a['in_straordinario']), $underline);
         if ($style) {
             $span = $doc->createElementNS(self::TXT, 'text:span');
@@ -958,7 +977,7 @@ class FoglioRenderer
         // matrice: colore patente × straordinario (giallo) × sottolineato (fuori sede).
         // '' → nero esplicito (#000000), MAI lasciato senza stile: altrimenti il nome
         // eredita la formattazione della cella del modello.odt, che non è uniforme (#67).
-        $colors = ['' => '#000000', 'Rosso' => '#C00000', 'Blu' => '#0000C0'];
+        $colors = ['' => '#000000', 'Rosso' => self::$rossoPat, 'Blu' => self::$bluPat];
         foreach ([false, true] as $straord) {
             foreach ([false, true] as $und) {
                 foreach ($colors as $cName => $col) {

@@ -11,6 +11,7 @@ richiediLogin();
 $TURNO = turnoAttivo();   // turno su cui si lavora (A/B/C/D); default B. Multi-turno.
 
 $pdo = getDB();
+initStilePatente($pdo, $TURNO);   // colore/numero/entrambi + tinte (parametri admin)
 
 // Capienza per posizione = slot del modello.odt + override editor. La mappa
 // codice→slot vive in scambioCapPos() (includes/scambio_salto.php): qui solo
@@ -2335,7 +2336,7 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
                      draggable="true">
                   <span class="esterno-dot" title="Personale esterno al turno">★</span>
                   <span class="ass-nome" title="<?= htmlspecialchars($e['nome']) ?> (esterno)">
-                    <span class="ass-nome-txt" style="color:<?= colorePatentePHP($e['patente_forzata']) ?>"><?= htmlspecialchars($e['nome']) ?></span>
+                    <span class="ass-nome-txt" style="color:<?= colorePatentePHP($e['patente_forzata']) ?>"><?= htmlspecialchars($e['nome'] . suffissoPatente($e['patente_forzata'])) ?></span>
                     <?php if ((int)$e['in_straordinario']): ?>
                         <span style="font-size:.6rem;color:var(--giallo);font-weight:700">STR</span>
                     <?php endif; ?>
@@ -2826,6 +2827,8 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
 <script>
 const FOGLIO_ID  = <?= $foglioId ?>;
 const FOGLIO_URL = 'nuovo.php?data=<?= $dataStr ?>&tipo=<?= $tipoParam ?>';
+// Stile patenti del turno (parametri admin): colore/numero/entrambi + tinte.
+const STILE_PATENTE = <?= json_encode(stilePatenteCfg()) ?>;
 
 const PERSONALE = {
 <?php foreach ($tuttoPersonale as $_i => $v): ?>
@@ -3202,15 +3205,24 @@ function rimuoviDOM(id) {
 }
 
 
-// Restituisce il colore CSS in base alla patente massima
+// Restituisce il colore CSS in base alla patente massima (stessa regola di
+// colorePatentePHP: con stile 'numero' niente colore, lo dice il suffisso).
 function colorePatente(patente) {
+    if (STILE_PATENTE.stile === 'numero') return '#2c3e50';
     switch (patente) {
         case '4':
-        case '3': return '#c0392b';  // rosso
-        case '2': return '#2471a3';  // blu
+        case '3': return STILE_PATENTE.rosso;
+        case '2': return STILE_PATENTE.blu;
         case '1':
         default:  return '#2c3e50';  // nero/grigio scuro
     }
+}
+
+// Suffisso grado accanto al nome (" 3°") negli stili numero/entrambi — solo per
+// gli esterni: i vigili hanno già il suffisso dentro PERSONALE[x].nome (dal PHP).
+function suffissoPatente(patente) {
+    if (STILE_PATENTE.stile === 'colore') return '';
+    return ['2', '3', '4'].includes(patente) ? ` ${patente}°` : '';
 }
 
 
@@ -4067,7 +4079,7 @@ function aggiungiCardEsternoDisp(nome, str, pat) {
     card.setAttribute('draggable', 'true');
     card.innerHTML =
         '<span class="esterno-dot" title="Personale esterno al turno">★</span>' +
-        '<span class="persona-nome" style="color:' + colorePatente(pat) + '">' + escHtml(nome) +
+        '<span class="persona-nome" style="color:' + colorePatente(pat) + '">' + escHtml(nome + suffissoPatente(pat)) +
             (str ? ' <small style="color:var(--giallo);font-weight:700">STR</small>' : '') +
         '</span>' +
         '<button class="remove-btn" title="Elimina" ' +
@@ -4090,7 +4102,7 @@ function cardEsternoPos(extId, nome, str, pat, posId, ordine) {
     card.innerHTML =
         '<span class="esterno-dot" title="Personale esterno al turno">★</span>' +
         '<span class="ass-nome" title="' + escHtml(nome) + ' (esterno)">' +
-            '<span class="ass-nome-txt" style="color:' + colorePatente(pat) + '">' + escHtml(nome) + '</span>' +
+            '<span class="ass-nome-txt" style="color:' + colorePatente(pat) + '">' + escHtml(nome + suffissoPatente(pat)) + '</span>' +
             (str ? '<span style="font-size:.6rem;color:var(--giallo);font-weight:700">STR</span>' : '') +
         '</span>' +
         '<button class="remove-btn" title="Rimuovi" ' +

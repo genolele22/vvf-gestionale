@@ -177,6 +177,13 @@ $nRegole  = contaTab($pdo, "SELECT COUNT(*) FROM regole_squadra WHERE attiva=1 A
       <div class="ac-meta"><?= $nCapi ?> nel pool · <?= $nFur ?> furieri</div>
     </a>
 
+    <a href="stile_patenti.php" class="admin-card">
+      <div class="ac-ico">🎨</div>
+      <h3>Stile patenti</h3>
+      <p>Come indicare la patente sul foglio e sull'ODT del tuo turno: colore, numero accanto al nome, o entrambi.</p>
+      <div class="ac-meta">per turno</div>
+    </a>
+
     <?php if (isComando()): ?>
     <a href="parametri.php" class="admin-card">
       <div class="ac-ico">⚙️</div>

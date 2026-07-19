@@ -2,41 +2,16 @@
 session_start();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/auth.php';
+require_once __DIR__ . '/../includes/parametri_lib.php';
 richiediComando();   // config di sistema: mail del bot + formato foglio (tutti i turni)
 $pdo     = getDB();
 $errore  = '';
 $sucesso = '';
+assicuraTabellaParametri($pdo);
 
-// Tabella parametri (chiave/valore). Creata al volo se manca (no AUTO_INCREMENT su TiDB).
-$pdo->exec("CREATE TABLE IF NOT EXISTS parametri (
-    id          INT UNSIGNED NOT NULL,
-    chiave      VARCHAR(60)  NOT NULL,
-    valore      TEXT,
-    descrizione VARCHAR(160) DEFAULT NULL,
-    PRIMARY KEY (id),
-    UNIQUE KEY uq_chiave (chiave)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
-
-/** Upsert di un parametro per chiave (crea l'id se nuovo — no AUTO_INCREMENT su TiDB). */
-function setParam(PDO $pdo, string $chiave, string $valore, ?string $descr = null): void {
-    $st = $pdo->prepare("SELECT id FROM parametri WHERE chiave=?");
-    $st->execute([$chiave]);
-    $id = $st->fetchColumn();
-    if ($id) {
-        $pdo->prepare("UPDATE parametri SET valore=?, descrizione=COALESCE(?, descrizione) WHERE id=?")
-            ->execute([$valore, $descr, $id]);
-    } else {
-        $newId = nextId($pdo, 'parametri');
-        $pdo->prepare("INSERT INTO parametri (id, chiave, valore, descrizione) VALUES (?,?,?,?)")
-            ->execute([$newId, $chiave, $valore, $descr]);
-    }
-}
-function getParam(PDO $pdo, string $chiave, string $default = ''): string {
-    $st = $pdo->prepare("SELECT valore FROM parametri WHERE chiave=?");
-    $st->execute([$chiave]);
-    $v = $st->fetchColumn();
-    return ($v === false || $v === null) ? $default : (string)$v;
-}
+// Lo stile patenti (colore/numero/entrambi + tinte) si imposta per turno in
+// admin/stile_patenti.php (accessibile anche agli admin di turno); qui le sue
+// chiavi restano solo nascoste dall'editor libero.
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $azione = $_POST['azione'] ?? '';
@@ -122,6 +97,9 @@ $chiaviStrutturate = ['mail_furiera_richieste','mail_furiera_risposte',
                       'mail_furiera_richieste_A','mail_furiera_richieste_B','mail_furiera_richieste_C','mail_furiera_richieste_D',
                       'mail_furiera_risposte_A','mail_furiera_risposte_B','mail_furiera_risposte_C','mail_furiera_risposte_D',
                       'smtp_host','smtp_port','imap_host','imap_port','foglio_formato_nome'];
+foreach (['A','B','C','D'] as $t) {
+    array_push($chiaviStrutturate, "foglio_stile_patente_$t", "foglio_rosso_patente_$t", "foglio_blu_patente_$t");
+}
 
 $rigaEdit = null;
 if (isset($_GET['modifica'])) {
