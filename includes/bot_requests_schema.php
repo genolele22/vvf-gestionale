@@ -45,6 +45,11 @@ function assicuraSchemaRichiesteAssenza(PDO $pdo): void
         'note'            => 'VARCHAR(200) DEFAULT NULL',
         'ora_da'          => 'TIME DEFAULT NULL',
         'ora_a'           => 'TIME DEFAULT NULL',
+        // Range di calendario COMUNICATO dal vigile (malattia/infortunio/missione),
+        // uguale su ogni turno decomposto: l'Agenda lo mostra invece di
+        // ricalcolarlo dai turni (vedi ferie/index.php, blocco vigile-card).
+        'range_da'        => 'DATE DEFAULT NULL',
+        'range_a'         => 'DATE DEFAULT NULL',
     ]);
     // tipo_turno (D/N): senza, il foglio non sa su quale dei due fogli del
     // giorno (diurno/notturno) mostrare il badge orario.

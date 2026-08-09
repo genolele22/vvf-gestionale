@@ -337,7 +337,7 @@ $TIPO_ASSENZA_LABEL_IT = [3 => 'Missione', 4 => 'Permesso', 5 => 'Malattia', 6 =
 // ── Carica richieste del mese ────────────────────────────────
 $stmt = $pdo->prepare("
     SELECT r.id, r.vigile_id, r.data_richiesta, r.tipo_turno, r.stato, r.ferie_estiva,
-           r.tipo_assenza_id, r.note, r.ora_da, r.ora_a, ta.codice AS tipo_assenza_codice,
+           r.tipo_assenza_id, r.note, r.ora_da, r.ora_a, r.range_da, r.range_a, ta.codice AS tipo_assenza_codice,
            v.nome, v.cognome, v.disambiguatore, v.email, v.turno,
            q.codice AS qcodice,
            s.nome   AS sede_nome,
@@ -385,6 +385,15 @@ if ($reqIds) {
         $outboxReq[(int)$rid][$neg ? 'neg' : 'ok'] = $o['stato'];
     }
 }
+// Etichetta "da–a" del range ORIGINALE comunicato (malattia/infortunio/missione),
+// non ricalcolato dai turni coperti.
+function periodLabelComunicato(string $rangeDa, string $rangeA): string {
+    $da = new DateTime($rangeDa);
+    $a  = new DateTime($rangeA);
+    if ($da->format('Y-m-d') === $a->format('Y-m-d')) return $da->format('d/m');
+    return $da->format('d') . '–' . $a->format('d/m');
+}
+
 // Ritorna [classe, etichetta] del badge comunicazione di un turno.
 function comunicazioneTurno(array $r, array $outboxReq): array {
     $kind = in_array($r['stato'], ['rejected', 'declined'], true) ? 'neg' : 'ok';
@@ -1059,7 +1068,13 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
       $block      = $item['block'];
       $label      = etichettaVigile($meta);
       $isCentrale = ($meta['sede_nome'] === 'CENTRALE');
-      $periodo    = periodLabel($block);
+      // Malattia/infortunio (e missione): il periodo mostrato è quello COMUNICATO
+      // dal vigile (range_da/range_a, uguale su ogni turno decomposto), non quello
+      // ricalcolato dai turni — può divergere per via dei salti tra un turno e
+      // l'altro, e la fureria deve vedere esattamente ciò che è stato dichiarato.
+      $periodo    = $block[0]['range_da']
+          ? periodLabelComunicato($block[0]['range_da'], $block[0]['range_a'])
+          : periodLabel($block);
       $turni      = turniLabel($block);
       $stato      = statoBlock($block);
       $detailId   = 'detail-' . $meta['vigile_id'] . '-' . md5($dataInizio);
