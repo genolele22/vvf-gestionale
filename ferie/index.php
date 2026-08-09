@@ -354,6 +354,27 @@ $stmt = $pdo->prepare("
 $stmt->execute(array_merge([$meseStr], $turniQuery));
 $tutteRichieste = $stmt->fetchAll();
 
+// ── Permesso ORARIO del mese: stessa riga/controlli delle ferie (accetto/
+// respingo/cestino + stato comunicazione), ma NON entra nei blocchi vigile
+// (blocchiContigui) — resta una linea a sé, posizionata tra scambi e ferie
+// del giorno (richiesta esplicita). Letto da bot_requests come le ferie
+// (TUTTI gli stati, non solo approvati): `permessi_orari` serve solo al
+// foglio (badge in squadra + box permessi), qui serve lo storico completo.
+$permessoOrarioPerData = [];
+$stPoM = $pdo->prepare("
+    SELECT r.id, r.vigile_id, r.data_richiesta, r.tipo_turno, r.stato, r.note,
+           r.ora_da, r.ora_a, r.tipo_assenza_id, v.cognome, v.disambiguatore, v.turno, q.codice AS qcodice
+    FROM bot_requests r
+    JOIN vigili v     ON v.id = r.vigile_id
+    JOIN qualifiche q ON q.id = v.qualifica_id
+    WHERE r.tipo_assenza_id = 4 AND r.ora_da IS NOT NULL
+      AND DATE_FORMAT(r.data_richiesta, '%Y-%m') = ? AND v.turno IN ($phTurni)
+    ORDER BY r.data_richiesta, v.cognome
+");
+$stPoM->execute(array_merge([$meseStr], $turniQuery));
+$tuttiPermessiOrari = $stPoM->fetchAll();
+foreach ($tuttiPermessiOrari as $po) $permessoOrarioPerData[$po['data_richiesta']][] = $po;
+
 // Tipi che restano approvabili a mano (FER/PERM); MISS/MAL/INF si registrano
 // da sole (vedi database.py:insert_request) — l'Agenda le mostra sola lettura.
 const TIPI_APPROVABILI = [1, 4];
@@ -362,16 +383,16 @@ const TIPI_APPROVABILI = [1, 4];
 // La "comunicazione" NON è lo stato della richiesta (pending/approved/rejected):
 // è se esiste una riga bot_outbox 'sent' per l'esito corrente del turno. Chiavi
 // ctx: '<prefisso>:<id>' (accettata), '<prefisso>_neg:<id>' (negata) — prefisso
-// 'ferie' per FER, 'permesso' per PERM. Così il segnale è indipendente dallo
-// stato, che viene riscritto a ogni modifica dell'assegnazione.
+// 'ferie' per FER, 'permesso' per PERM (incluso l'orario). Così il segnale è
+// indipendente dallo stato, che viene riscritto a ogni modifica dell'assegnazione.
 function ctxPrefixTipo(int $tipoAssenzaId): string {
     return $tipoAssenzaId === 4 ? 'permesso' : 'ferie';
 }
 $outboxReq = [];   // [reqId => ['ok'=>stato, 'neg'=>stato]]
-$reqIds = array_map('intval', array_column($tutteRichieste, 'id'));
-if ($reqIds) {
+$richiesteConCtx = array_merge($tutteRichieste, $tuttiPermessiOrari);
+if ($richiesteConCtx) {
     $ctxList = [];
-    foreach ($tutteRichieste as $r) {
+    foreach ($richiesteConCtx as $r) {
         $pref = ctxPrefixTipo((int)$r['tipo_assenza_id']);
         $ctxList[] = $pref . ':' . (int)$r['id'];
         $ctxList[] = $pref . '_neg:' . (int)$r['id'];
@@ -496,39 +517,6 @@ foreach ($stScP->fetchAll() as $s) {
     $scambiPending[] = $s;
 }
 
-// ── Permessi orari DA APPROVARE (nati dal bot: pending/declined) ──
-// Non filtrati per mese, come gli scambi salto: il furiere deve vederli a
-// prescindere dal mese in vista. Non compaiono in $tutteRichieste (escluso
-// dalla query principale con ora_da IS NULL) perché non vanno mai su `assenze`.
-$permessiOrariPending = $pdo->prepare("
-    SELECT r.id, r.vigile_id, r.data_richiesta, r.tipo_turno, r.stato, r.note,
-           r.ora_da, r.ora_a, v.cognome, v.disambiguatore, v.turno, q.codice AS qcodice
-    FROM bot_requests r
-    JOIN vigili v     ON v.id = r.vigile_id
-    JOIN qualifiche q ON q.id = v.qualifica_id
-    WHERE r.tipo_assenza_id = 4 AND r.ora_da IS NOT NULL AND r.stato IN ('pending','declined')
-      AND v.turno IN ($phTurni)
-    ORDER BY r.data_richiesta
-");
-$permessiOrariPending->execute($turniQuery);
-$permessiOrariPending = $permessiOrariPending->fetchAll();
-
-// ── Permessi orari APPROVATI del mese (sola lettura, badge sul giorno) ──
-$permessiOrariPerData = [];
-try {
-    $stPO = $pdo->prepare("
-        SELECT po.id, po.data, po.vigile_id, po.ora_da, po.ora_a, po.note,
-               v.cognome, v.disambiguatore, v.turno, q.codice AS qcodice
-        FROM permessi_orari po
-        JOIN vigili v     ON v.id = po.vigile_id
-        JOIN qualifiche q ON q.id = v.qualifica_id
-        WHERE DATE_FORMAT(po.data, '%Y-%m') = ? AND v.turno IN ($phTurni)
-        ORDER BY po.data, v.cognome
-    ");
-    $stPO->execute(array_merge([$meseStr], $turniQuery));
-    foreach ($stPO->fetchAll() as $po) $permessiOrariPerData[$po['data']][] = $po;
-} catch (Throwable $e) { /* tabella assente: nessun permesso orario */ }
-
 // ── Visite mediche del mese (#95) ──
 $visitePerData = [];
 try {
@@ -570,7 +558,7 @@ if (puoModificareTurno($TURNO)) {
 // Date da renderizzare = unione ferie + scambi + visite, in ordine cronologico
 $tutteLeDate = array_unique(array_merge(
     array_keys($perData), array_keys($scambiPerData), array_keys($visitePerData),
-    array_keys($permessiOrariPerData)));
+    array_keys($permessoOrarioPerData)));
 sort($tutteLeDate);
 
 // Statistiche solo sul turno PRIMARIO: quelle degli extra sono lì per consultazione,
@@ -912,43 +900,7 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
   </div>
   <?php endif; ?>
 
-  <?php if ($permessiOrariPending): ?>
-  <!-- Permessi orari in attesa di approvazione (da bot) -->
-  <div class="data-section" id="permessiOrariDaApprovare">
-    <div class="data-head" style="display:flex;align-items:baseline;gap:10px;padding:6px 4px 6px 0;margin-bottom:6px;border-bottom:2px solid #0a58ca;">
-      <span class="data-label" style="font-size:.95rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#0a58ca;">🕐 Permessi orari da approvare</span>
-      <span class="data-count" style="font-size:.72rem;color:var(--grigio-md);font-weight:600;"><?= count($permessiOrariPending) ?> in attesa</span>
-    </div>
-    <div class="vigile-card">
-      <?php foreach ($permessiOrariPending as $po):
-        $dPo = new DateTime($po['data_richiesta']); ?>
-      <div class="blocco-row" style="cursor:default;flex-wrap:wrap;">
-        <span class="toggle-icon">🕐</span>
-        <?php if ($turniExtra): ?><span class="turno-tag">Turno <?= htmlspecialchars($po['turno']) ?></span><?php endif; ?>
-        <span class="blocco-nome"><?= htmlspecialchars(etichettaVigile($po)) ?></span>
-        <span style="font-size:.8rem;color:var(--grigio-md);">
-          <?= $dPo->format('d/m/Y') ?> <?= htmlspecialchars(substr($po['ora_da'], 0, 5)) ?>–<?= htmlspecialchars(substr($po['ora_a'], 0, 5)) ?>
-          <?php if ($po['note']): ?> — <?= htmlspecialchars($po['note']) ?><?php endif; ?>
-        </span>
-        <span class="blocco-spacer"></span>
-        <span class="stato-badge stato-pending"><?= $po['stato'] === 'declined' ? 'da respingere' : 'in attesa' ?></span>
-        <?php if (puoModificareTurno($po['turno'])): ?>
-        <div class="blocco-azioni" onclick="event.stopPropagation()">
-          <button class="btn-mini accetta" onclick='setStato([<?= (int)$po['id'] ?>], "pending")'
-                  title="Accetta (resta in attesa fino all'invio della mail)">✓ accetta</button>
-          <button class="btn-mini respingi" onclick='setStato([<?= (int)$po['id'] ?>], "rejected")'
-                  title="Respingi">✗ respingi</button>
-        </div>
-        <?php else: ?>
-        <span class="ro-badge">👁 sola lettura</span>
-        <?php endif; ?>
-      </div>
-      <?php endforeach; ?>
-    </div>
-  </div>
-  <?php endif; ?>
-
-  <?php if (empty($tutteLeDate) && empty($scambiPending) && empty($permessiOrariPending)): ?>
+  <?php if (empty($tutteLeDate) && empty($scambiPending)): ?>
     <div class="alert alert-ok">Nessuna richiesta di ferie o scambio salto per <?= $mesiNomi[$meseP] ?> <?= $annoP ?>.</div>
   <?php endif; ?>
 
@@ -957,7 +909,7 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
     $gruppo     = $perData[$dataInizio] ?? [];
     $scambi     = $scambiPerData[$dataInizio] ?? [];
     $visite     = $visitePerData[$dataInizio] ?? [];
-    $permessiOr = $permessiOrariPerData[$dataInizio] ?? [];
+    $permessoOr = $permessoOrarioPerData[$dataInizio] ?? [];
     $dtInizio   = new DateTime($dataInizio);
     $dataHeader = $giorniNomi[(int)$dtInizio->format('N')] . ' '
                 . $dtInizio->format('d') . ' '
@@ -966,7 +918,7 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
     if ($visite) $conteggio[] = count($visite) . ' visit' . (count($visite) === 1 ? 'a' : 'e') . ' medic' . (count($visite) === 1 ? 'a' : 'he');
     if ($gruppo) $conteggio[] = count($gruppo) . ' vigil' . (count($gruppo) === 1 ? 'e' : 'i') . ' in ferie';
     if ($scambi) $conteggio[] = count($scambi) . (count($scambi) === 1 ? ' scambio' : ' scambi') . ' salto';
-    if ($permessiOr) $conteggio[] = count($permessiOr) . ' permess' . (count($permessiOr) === 1 ? 'o' : 'i') . ' orari';
+    if ($permessoOr) $conteggio[] = count($permessoOr) . ' permess' . (count($permessoOr) === 1 ? 'o' : 'i') . ' orari';
     // Quel giorno il turno PRIMARIO è in servizio diurno (☀️) o notturno (🌙):
     // mostro un'icona sola, col salto a riposo del foglio corrispondente (l'ancora
     // resta il turno primario anche in vista multi-turno).
@@ -1022,30 +974,6 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
     </div>
     <?php endif; ?>
 
-    <?php if ($permessiOr): ?>
-    <!-- Permessi orari approvati di questa data: resta assegnato, solo annotazione -->
-    <div class="vigile-card" style="margin-bottom:8px;">
-      <?php foreach ($permessiOr as $po): ?>
-      <div class="blocco-row" style="cursor:default;">
-        <span class="toggle-icon">🕐</span>
-        <?php if ($turniExtra): ?><span class="turno-tag">Turno <?= htmlspecialchars($po['turno']) ?></span><?php endif; ?>
-        <span class="blocco-nome"><?= htmlspecialchars(etichettaVigile($po)) ?>
-          — Permesso <?= htmlspecialchars(substr($po['ora_da'], 0, 5)) ?>–<?= htmlspecialchars(substr($po['ora_a'], 0, 5)) ?></span>
-        <?php if ($po['note']): ?>
-          <span style="font-size:.74rem;color:var(--grigio-md);">— <?= htmlspecialchars($po['note']) ?></span>
-        <?php endif; ?>
-        <span class="blocco-spacer"></span>
-        <?php if ($po['request_id'] && puoModificareTurno($po['turno'])): ?>
-        <div class="blocco-azioni" onclick="event.stopPropagation()">
-          <button class="btn-mini rimuovi" onclick='eliminaPermessoOrario(<?= (int)$po['request_id'] ?>, this)'
-                  title="Elimina il permesso orario">🗑️</button>
-        </div>
-        <?php endif; ?>
-      </div>
-      <?php endforeach; ?>
-    </div>
-    <?php endif; ?>
-
     <?php if ($scambi): ?>
     <!-- Scambi salto di questa data -->
     <div class="vigile-card" style="margin-bottom:8px;">
@@ -1056,6 +984,56 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
         <span class="blocco-nome" style="color:#0a58ca;"><?= htmlspecialchars($sc['resta']) ?> riposa</span>
         <span class="blocco-spacer"></span>
         <span style="font-size:.78rem;color:var(--grigio-md);">scambio salto con <?= htmlspecialchars($sc['altro']) ?> (<?= htmlspecialchars($sc['turno']) ?><?= $sc['slot_a'] ?>⇄<?= htmlspecialchars($sc['turno']) ?><?= $sc['slot_b'] ?>)</span>
+      </div>
+      <?php endforeach; ?>
+    </div>
+    <?php endif; ?>
+
+    <?php if ($permessoOr): ?>
+    <!-- Permesso orario di questa data: tra scambi e ferie, stessi identici
+         controlli delle ferie (accetto/respingo/cestino + stato comunicazione).
+         Nasce già "accettato" di default come le ferie (stato pending mostrato
+         come accetto flaggato) — il vigile resta assegnato al turno, questa è
+         solo la riga di approvazione/annotazione (vedi permessi_orari per il
+         badge in squadra/box permessi sul foglio). -->
+    <div class="vigile-card" style="margin-bottom:8px;">
+      <?php foreach ($permessoOr as $po):
+        $dPo = new DateTime($po['data_richiesta']);
+        [$comClsPo, $comLblPo] = comunicazioneTurno($po, $outboxReq);
+        $sokPo  = (($outboxReq[(int)$po['id']]['ok']  ?? null) === 'sent') ? 1 : 0;
+        $snegPo = (($outboxReq[(int)$po['id']]['neg'] ?? null) === 'sent') ? 1 : 0;
+        $editabilePo = ($po['turno'] === $TURNO);
+      ?>
+      <div class="turno-riga" style="padding:10px 16px;" data-id="<?= $po['id'] ?>" data-stato="<?= $po['stato'] ?>"
+           data-sok="<?= $sokPo ?>" data-sneg="<?= $snegPo ?>">
+        <span class="turno-data"><?= $dPo->format('d/m') ?></span>
+        <span class="turno-dow"><?= $giorniNomi[(int)$dPo->format('N')] ?></span>
+        <?php if ($turniExtra): ?><span class="turno-tag">Turno <?= htmlspecialchars($po['turno']) ?></span><?php endif; ?>
+        <span class="blocco-nome" style="min-width:150px;"><?= htmlspecialchars(etichettaVigile($po)) ?></span>
+        <span class="turno-tipo" style="color:#6c3483;">
+          🕐 <?= htmlspecialchars(substr($po['ora_da'], 0, 5)) ?>–<?= htmlspecialchars(substr($po['ora_a'], 0, 5)) ?>
+        </span>
+        <?php if ($po['note']): ?>
+          <span class="turno-nota" title="<?= htmlspecialchars($po['note']) ?>">📝</span>
+        <?php endif; ?>
+        <span class="turno-spacer"></span>
+        <span class="com-badge com-<?= $comClsPo ?>" id="com-<?= $po['id'] ?>"><?= $comLblPo ?></span>
+        <?php if ($editabilePo): ?>
+        <div class="scelta">
+          <label class="lbl-si">
+            <input type="checkbox" class="chk-si" <?= !in_array($po['stato'], ['rejected', 'declined'], true) ? 'checked' : '' ?>
+                   onchange="onScelta(this, 'pending')">accetto
+          </label>
+          <label class="lbl-no">
+            <input type="checkbox" class="chk-no" <?= in_array($po['stato'], ['rejected', 'declined'], true) ? 'checked' : '' ?>
+                   onchange="onScelta(this, 'rejected')">respingo
+          </label>
+        </div>
+        <button class="btn-elimina" title="Elimina definitivamente la richiesta"
+                onclick="eliminaTurno(<?= $po['id'] ?>, this)">🗑️</button>
+        <?php else: ?>
+        <span class="ro-badge">👁 sola lettura</span>
+        <?php endif; ?>
       </div>
       <?php endforeach; ?>
     </div>
@@ -1346,27 +1324,6 @@ async function eseguiEliminaTurno(id, btn) {
     }
     sincronizzaDOM();
     showMsg('🗑️ Richiesta eliminata.', 'ok');
-}
-
-// Elimina un permesso orario approvato (riga fuori da .turno-riga: rimuove
-// direttamente il .blocco-row che lo contiene, stessa AJAX 'elimina').
-async function eliminaPermessoOrario(id, btn) {
-    const fd = new FormData();
-    fd.append('azione', 'elimina');
-    fd.append('id', id);
-    let res;
-    try {
-        res = await fetch('', { method: 'POST', body: fd }).then(r => r.json());
-    } catch (e) {
-        showMsg('⚠️ Errore di rete', 'err');
-        return;
-    }
-    if (!res.ok) {
-        showMsg('⚠️ ' + (res.errore || 'Errore'), 'err');
-        return;
-    }
-    btn.closest('.blocco-row').remove();
-    showMsg('🗑️ Permesso orario eliminato.', 'ok');
 }
 
 // Visto "ferie estiva" (solo GIU-SET): annotazione fureria, niente ODT (#97).

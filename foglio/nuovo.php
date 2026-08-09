@@ -1737,8 +1737,13 @@ if ($tipoParam === 'D') {
 $permessoOrarioMap = [];
 try {
     $stPo = $pdo->prepare(
-        "SELECT po.vigile_id, po.ora_da, po.ora_a, po.note
-         FROM permessi_orari po JOIN vigili v ON v.id = po.vigile_id
+        "SELECT po.vigile_id, po.ora_da, po.ora_a, po.note,
+                v.cognome, v.disambiguatore, q.codice AS qcodice,
+                s.nome AS sede_nome, s.codice AS sede_codice
+         FROM permessi_orari po
+         JOIN vigili v     ON v.id = po.vigile_id
+         JOIN qualifiche q ON q.id = v.qualifica_id
+         JOIN sedi s       ON s.id = v.sede_id
          WHERE po.data = ? AND po.tipo_turno = ? AND v.turno = ?"
     );
     $stPo->execute([$dataStr, $tipoParam, $TURNO]);
@@ -2830,6 +2835,28 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
                       title="Rimuovi">✕</button>
             </div>
           <?php endforeach; ?>
+          <?php foreach ($permessoOrarioMap as $vigIdPo => $po): ?>
+            <!-- Permesso orario: compare QUI in aggiunta alla squadra (badge 🕐
+                 sulla card), non al posto — resta assegnato al turno. Niente
+                 tasto rimuovi: si gestisce dall'Agenda (accetto/respingo/cestino).
+                 data-permesso-orario: rimuoviDOM() lo esclude dallo sweep delle
+                 "altre rappresentazioni" quando il vigile viene riassegnato —
+                 lui resta sempre anche qui, non è un'assenza da spostare. -->
+            <div class="assente-row" data-vigile-id="<?= $vigIdPo ?>" data-permesso-orario="1">
+              <span class="qual-dot <?= htmlspecialchars($po['qcodice']) ?>"></span>
+              <span class="assente-nome">
+                <?= htmlspecialchars(etichettaVigile($po)) ?>
+                <?php if (!empty($po['sede_nome']) && $po['sede_nome'] !== 'CENTRALE'): ?>
+                    <span class="persona-salto">
+                        <?= htmlspecialchars(siglaSede($po['sede_codice'])) ?>
+                    </span>
+                <?php endif; ?>
+              </span>
+              <span class="assente-info">
+                🕐 <?= htmlspecialchars(substr($po['ora_da'], 0, 5)) ?>–<?= htmlspecialchars(substr($po['ora_a'], 0, 5)) ?>
+              </span>
+            </div>
+          <?php endforeach; ?>
         </div>
       </div>
 
@@ -3244,8 +3271,9 @@ function rimuoviDOM(id) {
         }
     }
 
-    // Da colonne assenze
-    document.querySelectorAll('.assente-row[data-vigile-id="' + id + '"]')
+    // Da colonne assenze (esclude le righe permesso orario: quello resta
+    // sempre visibile anche se il vigile viene riassegnato, non è un'assenza)
+    document.querySelectorAll('.assente-row[data-vigile-id="' + id + '"]:not([data-permesso-orario])')
         .forEach(r => {
             // Non rimuovere la riga del salto canonico
             if (r.id !== 'salto-' + id) r.remove();
