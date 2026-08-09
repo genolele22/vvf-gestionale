@@ -327,3 +327,39 @@ function scambioEnqueueOutbox(PDO $pdo, int $vigileId, string $tipo, string $ctx
     $pdo->prepare("INSERT INTO bot_outbox (id, vigile_id, tipo, ctx) VALUES (?,?,?,?)")
         ->execute([$nextId, $vigileId, $tipo, $ctx]);
 }
+
+/**
+ * #188 (logbook, Moli): un vigile in FERIE su questo foglio non dovrebbe mai
+ * essere anche coinvolto in uno scambio salto attivo per la stessa data/turno
+ * — i due meccanismi decidono la sua presenza in modo indipendente e possono
+ * andare in conflitto:
+ *   - è il vigile_out (cede il riposo, l'accordo dello scambio è che TORNI in
+ *     servizio) ma risulta anche in ferie → non si sa se aspettarlo o no;
+ *   - è il vigile_in (è già a riposo per lo scambio) e in più risulta in ferie
+ *     sullo stesso turno → ferie ridondante, probabilmente un errore a monte.
+ * Solo rilevazione: nessun blocco, la scelta resta alla fureria (vedi popup
+ * lato JS nei tre punti del ticket: generazione/reset foglio, ferie d'ufficio).
+ */
+function scambioConflittoFerie(PDO $pdo, int $foglioId, string $dataStr, string $tipoParam): array
+{
+    $st = $pdo->prepare(
+        "SELECT a.vigile_id, v.cognome, v.disambiguatore, so.vigile_out_id, so.vigile_in_id
+         FROM assenze a
+         JOIN vigili v ON v.id = a.vigile_id
+         JOIN salto_override so ON so.data = ? AND so.tipo = ? AND so.attivo = 1
+              AND (so.vigile_out_id = a.vigile_id OR so.vigile_in_id = a.vigile_id)
+         WHERE a.foglio_id = ? AND a.tipo_assenza_id = 1"
+    );
+    $st->execute([$dataStr, $tipoParam, $foglioId]);
+
+    $avvisi = [];
+    foreach ($st->fetchAll() as $r) {
+        $nome = ucfirst(strtolower($r['cognome'])) . ($r['disambiguatore'] ? ' ' . (int)$r['disambiguatore'] : '');
+        if ((int)$r['vigile_id'] === (int)$r['vigile_out_id']) {
+            $avvisi[] = "$nome è segnato in ferie, ma con lo scambio salto dovrebbe tornare in servizio in questo turno.";
+        } else {
+            $avvisi[] = "$nome è segnato in ferie ed è già a riposo per lo scambio salto in questo turno: la ferie è ridondante.";
+        }
+    }
+    return $avvisi;
+}

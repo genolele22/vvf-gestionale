@@ -1041,6 +1041,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Per le ferie: è "a mano" (d'ufficio) se non c'è una richiesta Telegram dietro.
         // Serve al client per mostrarla anche nel box "Ferie d'ufficio" (ridondanza).
         $isUfficio = false;
+        $avvisiScambioFerie = [];
         if ($tipoAssenzaId === 1) {
             $stU = $pdo->prepare(
                 "SELECT 1 FROM bot_requests
@@ -1049,9 +1050,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             );
             $stU->execute([$vigileId, $dataStr]);
             $isUfficio = !(bool) $stU->fetchColumn();
+            // #188: la ferie appena assegnata potrebbe riguardare un vigile
+            // coinvolto in uno scambio salto attivo su questo turno.
+            $avvisiScambioFerie = scambioConflittoFerie($pdo, $foglioId, $dataStr, $tipoParam);
         }
 
-        echo json_encode(['ok' => true, 'ufficio' => $isUfficio]);
+        echo json_encode(['ok' => true, 'ufficio' => $isUfficio, 'avvisi_scambio_ferie' => $avvisiScambioFerie]);
         exit;
     }
 
@@ -1084,6 +1088,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $dataDa = $slots[0]['data'];
         $dataA  = $slots[$nEff - 1]['data'];
 
+        $avvisiScambioFerie = [];
         foreach ($slots as $s) {
             $fid = ($s['data'] === $dataStr && $s['tipo'] === $tipoParam)
                 ? $foglioId
@@ -1103,9 +1108,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                      VALUES (?, ?, ?, 1, ?, ?, ?)"
                 )->execute([$nid, $fid, $vigileId, $nEff, $dataDa, $dataA]);
             }
+            // #188: ferie d'ufficio su un turno dove il vigile è anche coinvolto
+            // in uno scambio salto attivo — solo avviso, decide la fureria.
+            $avvisiScambioFerie = array_merge(
+                $avvisiScambioFerie, scambioConflittoFerie($pdo, (int)$fid, $s['data'], $s['tipo'])
+            );
         }
+        $avvisiScambioFerie = array_values(array_unique($avvisiScambioFerie));
 
-        echo json_encode(['ok' => true, 'n_turni' => $nEff, 'data_da' => $dataDa, 'data_a' => $dataA]);
+        echo json_encode(['ok' => true, 'n_turni' => $nEff, 'data_da' => $dataDa, 'data_a' => $dataA,
+                           'avvisi_scambio_ferie' => $avvisiScambioFerie]);
         exit;
     }
 
@@ -1383,6 +1395,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         prepopolaFoglio($pdo, $foglioId, $saltoRiposoId,
             resterEffettivi($pdo, $dataStr, $tipoParam, $saltoRiposoId), $dataStr, $tipoParam);
 
+        // #188: il ricarico dopo reset (location.reload()) rifà il controllo
+        // ferie/scambio salto da zero — vedi AVVISI_SCAMBIO_FERIE più sotto.
         echo json_encode(['ok' => true]);
         exit;
     }
@@ -2964,6 +2978,11 @@ const TIPI_ASSENZA = {
 
 const ID_SALTO_RIPOSO = <?= $idSaltoRiposo ?>;
 
+// #188 (logbook): vigili in ferie su questo foglio coinvolti anche in uno
+// scambio salto attivo per lo stesso turno — solo avviso, mai un blocco.
+<?php $avvisiScambioFerie = scambioConflittoFerie($pdo, $foglioId, $dataStr, $tipoParam); ?>
+const AVVISI_SCAMBIO_FERIE = <?= json_encode($avvisiScambioFerie) ?>;
+
 // ── Stato drag ───────────────────────────────────────────────
 let _dragId     = null;  // vigile_id corrente
 let _dragSource = null;  // 'organico' | 'posizione' | 'salto'
@@ -2974,6 +2993,23 @@ let _dragExt    = null;  // nome esterno trascinato: {extId, nome, str, source, 
 // ════════════════════════════════════════════════════════════
 function showMsg() {
     // Nessuno stato/toast a video: silenzioso anche sugli errori.
+}
+
+// #188 (logbook, Moli): popup di avviso — mai un blocco — quando un vigile in
+// ferie su questo foglio è anche coinvolto in uno scambio salto attivo per lo
+// stesso turno. Richiamata al caricamento pagina e dopo ogni azione che può
+// crearlo (assegna ferie/ferie d'ufficio, reset foglio → reload).
+function mostraAvvisiScambioFerie(avvisi) {
+    if (!avvisi || !avvisi.length) return;
+    chiediConferma({
+        titolo:  '⚠️ Ferie e scambio salto',
+        testo:   'Attenzione — questi vigili risultano in ferie ma anche in uno ' +
+                 'scambio salto attivo per lo stesso turno:<br><br>' +
+                 avvisi.map(a => '• ' + a).join('<br>') +
+                 '<br><br>Puoi modificare il servizio o lasciarlo così.',
+        okLabel: 'Ho capito',
+        okStyle: 'background:#b7950b;color:#fff',
+    });
 }
 
 // "Disponibile" = card in organico non occupata (.assente = occupato altrove).
@@ -3802,6 +3838,7 @@ async function azioneAssenza(vigileId, tipoCodice) {
         sede_distaccata: '', data_da: '', data_a: '', nr_turni: '', note: ''
     });
     if (!res.ok) { showMsg('⚠️ Errore.', 'err'); return; }
+    mostraAvvisiScambioFerie(res.avvisi_scambio_ferie);
 
     rimuoviDOM(vigileId);
 
@@ -3859,6 +3896,7 @@ function azioneFerieUfficio(vigileId) {
             const n = Math.max(1, parseInt(nInput ? nInput.value : '1') || 1);
             const res = await ajax({ azione: 'ferie_ufficio', vigile_id: vigileId, n_turni: n });
             if (!res.ok) { showMsg(res.errore || '⚠️ Errore.', 'err'); return; }
+            mostraAvvisiScambioFerie(res.avvisi_scambio_ferie);
 
             rimuoviDOM(vigileId);
             document.getElementById('ferieUfficioVuoto')?.remove();
@@ -4379,6 +4417,7 @@ async function salvaAssenza() {
     });
 
     if (res.ok) {
+        mostraAvvisiScambioFerie(res.avvisi_scambio_ferie);
         rimuoviDOM(vigileId);
         const p = PERSONALE[vigileId];
         if (p) {
@@ -4675,6 +4714,7 @@ document.head.appendChild(styleEl);
 document.addEventListener('DOMContentLoaded', function() {
     aggiornaContatore();
     applicaStatoBlocco();
+    mostraAvvisiScambioFerie(AVVISI_SCAMBIO_FERIE);   // #188: copre apertura/generazione e reset (reload)
 
     // Rimuovi tutti gli handler inline dalle pos-card
     // (ora gestiti dal listener delegato sul documento)
