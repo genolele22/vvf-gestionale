@@ -998,7 +998,6 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
          badge in squadra/box permessi sul foglio). -->
     <div class="vigile-card" style="margin-bottom:8px;">
       <?php foreach ($permessoOr as $po):
-        $dPo = new DateTime($po['data_richiesta']);
         [$comClsPo, $comLblPo] = comunicazioneTurno($po, $outboxReq);
         $sokPo  = (($outboxReq[(int)$po['id']]['ok']  ?? null) === 'sent') ? 1 : 0;
         $snegPo = (($outboxReq[(int)$po['id']]['neg'] ?? null) === 'sent') ? 1 : 0;
@@ -1006,8 +1005,6 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
       ?>
       <div class="turno-riga" style="padding:10px 16px;" data-id="<?= $po['id'] ?>" data-stato="<?= $po['stato'] ?>"
            data-sok="<?= $sokPo ?>" data-sneg="<?= $snegPo ?>">
-        <span class="turno-data"><?= $dPo->format('d/m') ?></span>
-        <span class="turno-dow"><?= $giorniNomi[(int)$dPo->format('N')] ?></span>
         <?php if ($turniExtra): ?><span class="turno-tag">Turno <?= htmlspecialchars($po['turno']) ?></span><?php endif; ?>
         <span class="blocco-nome" style="min-width:150px;"><?= htmlspecialchars(etichettaVigile($po)) ?></span>
         <span class="turno-tipo" style="color:#6c3483;">
