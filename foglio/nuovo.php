@@ -426,7 +426,7 @@ function contaFeriePending(PDO $pdo, int $foglioId, string $dataStr, string $tip
         "SELECT COUNT(DISTINCT a.vigile_id)
            FROM assenze a
            JOIN bot_requests r ON r.vigile_id = a.vigile_id AND r.data_richiesta = ?
-                AND r.stato = 'pending' AND r.tipo_turno IN ($ph)
+                AND r.stato = 'pending' AND r.tipo_turno IN ($ph) AND r.tipo_assenza_id = 1
           WHERE a.foglio_id = ? AND a.tipo_assenza_id = 1"
     );
     $st->execute(array_merge([$dataStr], $tipi, [$foglioId]));
@@ -454,7 +454,8 @@ function contaFerieDaNotificare(PDO $pdo, int $foglioId, string $dataStr, string
     $stFer->execute([$foglioId]);
     $findReq = $pdo->prepare(
         "SELECT id FROM bot_requests
-          WHERE vigile_id=? AND data_richiesta=? AND tipo_turno IN ($ph) AND stato NOT IN ('rejected','declined')
+          WHERE vigile_id=? AND data_richiesta=? AND tipo_turno IN ($ph) AND tipo_assenza_id=1
+            AND stato NOT IN ('rejected','declined')
           ORDER BY id DESC LIMIT 1"
     );
     $approvaIds = [];
@@ -473,7 +474,8 @@ function contaFerieDaNotificare(PDO $pdo, int $foglioId, string $dataStr, string
           WHERE a.foglio_id=? AND a.tipo_assenza_id=1
             AND NOT EXISTS (SELECT 1 FROM bot_requests r
                             WHERE r.vigile_id=a.vigile_id AND r.data_richiesta=?
-                              AND r.tipo_turno IN ($ph) AND r.stato NOT IN ('rejected','declined'))"
+                              AND r.tipo_turno IN ($ph) AND r.tipo_assenza_id=1
+                              AND r.stato NOT IN ('rejected','declined'))"
     );
     $stU->execute(array_merge([$foglioId, $dataStr], $tipi));
     $ufficioIds = [];
@@ -486,7 +488,7 @@ function contaFerieDaNotificare(PDO $pdo, int $foglioId, string $dataStr, string
     // data/turno, per chi NON è in FER sul foglio — stessa condizione di finalize_ferie.
     $stN = $pdo->prepare(
         "SELECT r.id, r.vigile_id FROM bot_requests r
-          WHERE r.data_richiesta=? AND r.stato='declined' AND r.tipo_turno IN ($ph)
+          WHERE r.data_richiesta=? AND r.stato='declined' AND r.tipo_turno IN ($ph) AND r.tipo_assenza_id=1
             AND NOT EXISTS (SELECT 1 FROM assenze a
                             WHERE a.foglio_id=? AND a.vigile_id=r.vigile_id AND a.tipo_assenza_id=1)"
     );
@@ -947,7 +949,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($azione === 'check_ferie_ufficio') {
         $vigileId = (int)($_POST['vigile_id'] ?? 0);
         $stU = $pdo->prepare(
-            "SELECT 1 FROM bot_requests WHERE vigile_id=? AND data_richiesta=? LIMIT 1"
+            "SELECT 1 FROM bot_requests WHERE vigile_id=? AND data_richiesta=? AND tipo_assenza_id=1 LIMIT 1"
         );
         $stU->execute([$vigileId, $dataStr]);
         $ufficio = !(bool) $stU->fetchColumn();
@@ -995,7 +997,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($tipoAssenzaId === 1) {
             $stReq = $pdo->prepare(
                 "SELECT tipo_turno FROM bot_requests
-                 WHERE vigile_id=? AND data_richiesta=? AND stato IN ('rejected','declined')
+                 WHERE vigile_id=? AND data_richiesta=? AND stato IN ('rejected','declined') AND tipo_assenza_id=1
                  ORDER BY id DESC LIMIT 1"
             );
             $stReq->execute([$vigileId, $dataStr]);
@@ -1004,7 +1006,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($reqTipo !== false) {
                 $pdo->prepare(
                     "UPDATE bot_requests SET stato='approved', processed_at=NOW()
-                     WHERE vigile_id=? AND data_richiesta=? AND stato IN ('rejected','declined')"
+                     WHERE vigile_id=? AND data_richiesta=? AND stato IN ('rejected','declined') AND tipo_assenza_id=1"
                 )->execute([$vigileId, $dataStr]);
 
                 // Richiesta DN → ripristina la ferie anche sull'altro turno del giorno
@@ -1042,7 +1044,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($tipoAssenzaId === 1) {
             $stU = $pdo->prepare(
                 "SELECT 1 FROM bot_requests
-                 WHERE vigile_id=? AND data_richiesta=? AND stato IN ('pending','approved') LIMIT 1"
+                 WHERE vigile_id=? AND data_richiesta=? AND stato IN ('pending','approved')
+                   AND tipo_assenza_id=1 LIMIT 1"
             );
             $stU->execute([$vigileId, $dataStr]);
             $isUfficio = !(bool) $stU->fetchColumn();
@@ -1127,10 +1130,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stCheck->execute([$foglioId, $vigileId]);
         $isFeria = (bool) $stCheck->fetchColumn();
 
-        // C'è una richiesta Telegram dietro? (ferie a mano = nessuna richiesta)
+        // C'è una richiesta Telegram di FERIE dietro? (ferie a mano = nessuna
+        // richiesta). Filtro tipo_assenza_id=1: senza, una richiesta pending di
+        // un ALTRO tipo (permesso/malattia) sulla stessa data faceva scattare per
+        // errore il ramo sotto e la respingeva (bug scoperto su un permesso
+        // orario respinto per errore mentre si toglieva una ferie d'ufficio).
         $stReq = $pdo->prepare(
             "SELECT 1 FROM bot_requests
-             WHERE vigile_id=? AND data_richiesta=? AND stato IN ('pending','approved') LIMIT 1"
+             WHERE vigile_id=? AND data_richiesta=? AND stato IN ('pending','approved')
+               AND tipo_assenza_id=1 LIMIT 1"
         );
         $stReq->execute([$vigileId, $dataStr]);
         $eraRichiesta = (bool) $stReq->fetchColumn();
@@ -1152,7 +1160,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $pdo->prepare(
                 "UPDATE bot_requests SET stato='declined', processed_at=NULL
-                 WHERE vigile_id=? AND data_richiesta=? AND stato IN ('pending','approved')"
+                 WHERE vigile_id=? AND data_richiesta=? AND stato IN ('pending','approved') AND tipo_assenza_id=1"
             )->execute([$vigileId, $dataStr]);
         }
 
@@ -1333,17 +1341,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         // 1. Le ferie RESPINTE (comunicate o solo decise) su questo turno tornano
         //    richieste (annulla la decisione manuale della fureria): → pending.
+        //    SOLO ferie (tipo_assenza_id=1): senza questo filtro, un permesso o una
+        //    malattia respinti su questa data/turno venivano riportati 'pending'
+        //    per errore (bug scoperto su un permesso orario respinto e "risorto").
         $pdo->prepare(
             "UPDATE bot_requests SET stato='pending', processed_at=NULL
-             WHERE data_richiesta=? AND stato IN ('rejected','declined') AND tipo_turno IN ($phTt)"
+             WHERE data_richiesta=? AND stato IN ('rejected','declined')
+               AND tipo_turno IN ($phTt) AND tipo_assenza_id=1"
         )->execute(array_merge([$dataStr], $tipiTurno));
 
         // 2. Ferie bot attive (pending/approved) sul turno: chi non ha ancora
         //    un'assenza su questo foglio (di qualunque tipo) riceve l'assenza
         //    ferie (tipo 1). Tutte le assenze esistenti restano com'erano.
+        //    SOLO ferie: senza il filtro, un permesso/malattia pending faceva
+        //    inserire per errore un'assenza FER (l'INSERT sotto è hardcoded tipo 1).
         $stReq = $pdo->prepare(
             "SELECT DISTINCT vigile_id FROM bot_requests
-             WHERE data_richiesta=? AND stato IN ('pending','approved') AND tipo_turno IN ($phTt)"
+             WHERE data_richiesta=? AND stato IN ('pending','approved')
+               AND tipo_turno IN ($phTt) AND tipo_assenza_id=1"
         );
         $stReq->execute(array_merge([$dataStr], $tipiTurno));
         $reqVigili = array_map('intval', $stReq->fetchAll(PDO::FETCH_COLUMN));
@@ -1687,7 +1702,7 @@ $tipiRespinte = ($tipoParam === 'D') ? ['D', 'DN'] : ['N', 'DN'];
 $phResp = implode(',', array_fill(0, count($tipiRespinte), '?'));
 $stResp = $pdo->prepare(
     "SELECT DISTINCT vigile_id FROM bot_requests
-     WHERE data_richiesta=? AND stato IN ('rejected','declined') AND tipo_turno IN ($phResp)"
+     WHERE data_richiesta=? AND stato IN ('rejected','declined') AND tipo_turno IN ($phResp) AND tipo_assenza_id=1"
 );
 $stResp->execute(array_merge([$dataStr], $tipiRespinte));
 $idFerieRespinte = array_map('intval', array_column($stResp->fetchAll(), 'vigile_id'));
@@ -1736,7 +1751,7 @@ try {
 // (la ridondanza nel box vale solo per le ferie a mano).
 $stApp = $pdo->prepare(
     "SELECT DISTINCT vigile_id FROM bot_requests
-     WHERE data_richiesta=? AND stato IN ('pending','approved') AND tipo_turno IN ($phResp)"
+     WHERE data_richiesta=? AND stato IN ('pending','approved') AND tipo_turno IN ($phResp) AND tipo_assenza_id=1"
 );
 $stApp->execute(array_merge([$dataStr], $tipiRespinte));
 $idFerieRichiesta = array_map('intval', array_column($stApp->fetchAll(), 'vigile_id'));
