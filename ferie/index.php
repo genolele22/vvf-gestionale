@@ -123,7 +123,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($r['ora_da'] !== null) {
                     // Permesso ORARIO: mai su `assenze` (resta assegnato al turno).
                     permessoOrarioSync($pdo, (int)$r['vigile_id'], (int)$r['id'], $r['data_richiesta'],
-                        $r['ora_da'], $r['ora_a'], $r['note'], $target);
+                        $r['tipo_turno'], $r['ora_da'], $r['ora_a'], $r['note'], $target);
                 } else {
                     feriaSyncAssenza($pdo, (int)$r['vigile_id'], $r['data_richiesta'], $r['tipo_turno'],
                         $target, (int)$r['tipo_assenza_id']);
@@ -182,7 +182,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // oraria se è un permesso orario (mai stato su `assenze`).
             if ($r['ora_da'] !== null) {
                 permessoOrarioSync($pdo, (int)$r['vigile_id'], $id, $r['data_richiesta'],
-                    $r['ora_da'], $r['ora_a'], $r['note'], 'rejected');
+                    $r['tipo_turno'], $r['ora_da'], $r['ora_a'], $r['note'], 'rejected');
             } else {
                 feriaSyncAssenza($pdo, (int)$r['vigile_id'], $r['data_richiesta'], $r['tipo_turno'],
                     'rejected', (int)$r['tipo_assenza_id']);

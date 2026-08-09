@@ -1715,6 +1715,21 @@ if ($tipoParam === 'D') {
     } catch (Throwable $e) { /* tabella assente: nessuna visita */ }
 }
 
+// ── Permessi orari del giorno: badge 🕐 sulla card, il vigile RESTA in squadra
+// (mai un'assenza — vedi permessoOrarioSync in ferie_assenze.php). A differenza
+// delle visite mediche vale sia su D che su N, filtrato per tipo_turno così un
+// permesso notturno non compare anche sul foglio diurno dello stesso giorno.
+$permessoOrarioMap = [];
+try {
+    $stPo = $pdo->prepare(
+        "SELECT po.vigile_id, po.ora_da, po.ora_a, po.note
+         FROM permessi_orari po JOIN vigili v ON v.id = po.vigile_id
+         WHERE po.data = ? AND po.tipo_turno = ? AND v.turno = ?"
+    );
+    $stPo->execute([$dataStr, $tipoParam, $TURNO]);
+    foreach ($stPo->fetchAll() as $po) $permessoOrarioMap[(int)$po['vigile_id']] = $po;
+} catch (Throwable $e) { /* tabella assente: nessun permesso orario */ }
+
 // Vigili con ferie DA RICHIESTA bot (pending O approved) per questo turno.
 // Solo le ferie SENZA richiesta attiva sono "d'ufficio" (a mano) → coerente con
 // $isUfficio. Una ferie da richiesta sta SOLO in colonna Ferie, mai nel box ufficio
@@ -2212,7 +2227,7 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
       }
       // Card-renderer condiviso (Centrale + Distaccamenti + Aeroporto).
       // $gridStyle = posizionamento esplicito su griglia (es. "grid-column:6;grid-row:2").
-      $renderPosCard = function (array $pos, string $gridStyle = '') use (&$assPerPosizione, &$esterniPerPosizione, $scambioOut, $visiteFoglio, $visitaIds) {
+      $renderPosCard = function (array $pos, string $gridStyle = '') use (&$assPerPosizione, &$esterniPerPosizione, $scambioOut, $visiteFoglio, $visitaIds, $permessoOrarioMap) {
           $assQui = $assPerPosizione[$pos['id']] ?? [];
           $extQui = $esterniPerPosizione[$pos['id']] ?? [];
           $codPos = strtolower($pos['codice']);
@@ -2324,6 +2339,11 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
                     <?php endif; ?>
                     <?php if (isset($visitaIds[(int)$ass['vigile_id']])): ?>
                         <span title="Visita medica" style="font-size:.7rem">🚑</span>
+                    <?php endif; ?>
+                    <?php if (isset($permessoOrarioMap[(int)$ass['vigile_id']])):
+                        $po = $permessoOrarioMap[(int)$ass['vigile_id']]; ?>
+                        <span title="Permesso <?= htmlspecialchars(substr($po['ora_da'],0,5)) ?>–<?= htmlspecialchars(substr($po['ora_a'],0,5)) ?><?= $po['note'] ? ' — '.htmlspecialchars($po['note']) : '' ?>"
+                              style="font-size:.7rem">🕐</span>
                     <?php endif; ?>
                   </span>
                   <?php if ($ass['in_straordinario']): ?>
@@ -2855,6 +2875,10 @@ const PERSONALE = {
     sedeCentrale:<?= ($v['sede_nome'] === 'CENTRALE') ? 'true':'false' ?>,
     patente:     <?= json_encode($v['patente_max'] ?? '') ?>,
     visita:      <?= isset($visitaIds[(int)$v['id']]) ? 'true':'false' ?>,
+    permesso:    <?= isset($permessoOrarioMap[(int)$v['id']])
+                      ? json_encode(substr($permessoOrarioMap[(int)$v['id']]['ora_da'],0,5)
+                          . '–' . substr($permessoOrarioMap[(int)$v['id']]['ora_a'],0,5))
+                      : 'null' ?>,
     // Posizione nell'ordinamento standard (qualifica, poi cognome) di
     // $tuttoPersonale: serve per reinserire una card nel punto giusto
     // quando si ricrea da JS invece che dal render server (#122).
@@ -3253,6 +3277,8 @@ function buildAssCard(p, posId, straord, ordine) {
                         font-weight:700;margin-left:3px">STR</span>` : '';
     const visitaBadge = p.visita
         ? `<span title="Visita medica" style="font-size:.7rem">🚑</span>` : '';
+    const permessoBadge = p.permesso
+        ? `<span title="Permesso ${p.permesso}" style="font-size:.7rem">🕐</span>` : '';
     const colore = colorePatente(p.patente);
     const removeBtn = straord
         ? `<button class="remove-btn" onclick="rimuoviStraordinarioPos(${p.id}, ${posId})"
@@ -3267,7 +3293,7 @@ function buildAssCard(p, posId, straord, ordine) {
                  draggable="true">
               <span class="qual-dot ${p.qcodice}"></span>
               <span class="ass-nome" style="color:${colore}" title="${p.nome}">
-                <span class="ass-nome-txt">${p.nome}</span>${sedeBadge}${strBadge}${visitaBadge}
+                <span class="ass-nome-txt">${p.nome}</span>${sedeBadge}${strBadge}${visitaBadge}${permessoBadge}
               </span>${removeBtn}
             </div>`;
 }

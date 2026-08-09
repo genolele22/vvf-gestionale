@@ -29,21 +29,28 @@ function assicuraSchemaRichiesteAssenza(PDO $pdo): void
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     ");
 
-    $colonne = [
+    $st = $pdo->prepare(
+        "SELECT 1 FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?"
+    );
+    $aggiungiSeManca = function (string $tabella, array $colonne) use ($pdo, $st) {
+        foreach ($colonne as $col => $ddl) {
+            $st->execute([$tabella, $col]);
+            if ($st->fetchColumn()) continue;
+            $pdo->exec("ALTER TABLE $tabella ADD COLUMN $col $ddl");
+        }
+    };
+    $aggiungiSeManca('bot_requests', [
         'tipo_assenza_id' => 'TINYINT UNSIGNED NOT NULL DEFAULT 1',
         'note'            => 'VARCHAR(200) DEFAULT NULL',
         'ora_da'          => 'TIME DEFAULT NULL',
         'ora_a'           => 'TIME DEFAULT NULL',
-    ];
-    $st = $pdo->prepare(
-        "SELECT 1 FROM information_schema.COLUMNS
-         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bot_requests' AND COLUMN_NAME = ?"
-    );
-    foreach ($colonne as $col => $ddl) {
-        $st->execute([$col]);
-        if ($st->fetchColumn()) continue;
-        $pdo->exec("ALTER TABLE bot_requests ADD COLUMN $col $ddl");
-    }
+    ]);
+    // tipo_turno (D/N): senza, il foglio non sa su quale dei due fogli del
+    // giorno (diurno/notturno) mostrare il badge orario.
+    $aggiungiSeManca('permessi_orari', [
+        'tipo_turno' => "ENUM('D','N') DEFAULT NULL",
+    ]);
 }
 
 }

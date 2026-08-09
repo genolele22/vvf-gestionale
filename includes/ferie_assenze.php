@@ -78,16 +78,16 @@ function feriaSyncAssenza(PDO $pdo, int $vigileId, string $data, string $tipoTur
 // `assenze`. Stesso pattern reversibile di feriaSyncAssenza ma su
 // permessi_orari (mirror di visite_mediche): approved → upsert, rejected/
 // declined → rimuove l'annotazione.
-function permessoOrarioSync(PDO $pdo, int $vigileId, int $requestId, string $data,
+function permessoOrarioSync(PDO $pdo, int $vigileId, int $requestId, string $data, string $tipoTurno,
                              string $oraDa, string $oraA, ?string $note, string $stato): void {
     $del = $pdo->prepare("DELETE FROM permessi_orari WHERE request_id=?");
     $del->execute([$requestId]);
     if ($stato === 'rejected' || $stato === 'declined') return;
     $next = nextId($pdo, 'permessi_orari');
     $pdo->prepare(
-        "INSERT INTO permessi_orari (id, vigile_id, data, ora_da, ora_a, note, request_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?)"
-    )->execute([$next, $vigileId, $data, $oraDa, $oraA, $note, $requestId]);
+        "INSERT INTO permessi_orari (id, vigile_id, data, tipo_turno, ora_da, ora_a, note, request_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    )->execute([$next, $vigileId, $data, $tipoTurno, $oraDa, $oraA, $note, $requestId]);
 }
 
 }
