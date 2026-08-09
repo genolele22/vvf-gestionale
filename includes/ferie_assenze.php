@@ -1,11 +1,17 @@
 <?php
-// Helper assenze ferie (sync foglio/cruscotto) — condivisi tra l'Agenda
+// Helper assenze (sync foglio/cruscotto) — condivisi tra l'Agenda
 // (ferie/index.php) e lo strumento di caricamento ferie simulate
 // (admin/ferie_simulate.php). Mirror della logica del bot (database.py):
-// l'assenza tipo_assenza_id=1 marca il vigile assente sul foglio.
+// un'assenza (tipo_assenza_id=1 FER di default, ma generalizzato a
+// PERM/MAL/INF/MISS) marca il vigile assente sul foglio.
 // accepted/pending → assenza presente, rejected → assenza rimossa.
 // Tutto reversibile: l'assenza si ricrea dai dati della richiesta
-// (vigile + data + turno).
+// (vigile + data + turno + tipo).
+//
+// ECCEZIONE: il permesso ORARIO (bot_requests.ora_da/ora_a valorizzati) non
+// passa da qui — non deve togliere il vigile dal servizio, vedi
+// permessoOrarioSync() più sotto (stessa idea di visite_mediche: annotazione,
+// non assenza).
 
 require_once __DIR__ . '/turni.php';
 
@@ -32,39 +38,56 @@ function feriaGetOrCreateFoglio(PDO $pdo, string $data, string $tipo, string $tu
     return $next;
 }
 
-function feriaInsertAssenza(PDO $pdo, int $vigileId, int $foglioId): void {
+function feriaInsertAssenza(PDO $pdo, int $vigileId, int $foglioId, int $tipoAssenzaId = 1): void {
     $st = $pdo->prepare(
-        "SELECT id FROM assenze WHERE foglio_id=? AND vigile_id=? AND tipo_assenza_id=1"
+        "SELECT id FROM assenze WHERE foglio_id=? AND vigile_id=? AND tipo_assenza_id=?"
     );
-    $st->execute([$foglioId, $vigileId]);
+    $st->execute([$foglioId, $vigileId, $tipoAssenzaId]);
     if ($st->fetchColumn()) return;
     $next = nextId($pdo, 'assenze');
     $pdo->prepare(
-        "INSERT INTO assenze (id, foglio_id, vigile_id, tipo_assenza_id) VALUES (?, ?, ?, 1)"
-    )->execute([$next, $foglioId, $vigileId]);
+        "INSERT INTO assenze (id, foglio_id, vigile_id, tipo_assenza_id) VALUES (?, ?, ?, ?)"
+    )->execute([$next, $foglioId, $vigileId, $tipoAssenzaId]);
 }
 
-function feriaDeleteAssenza(PDO $pdo, int $vigileId, string $data, string $tipo): void {
+function feriaDeleteAssenza(PDO $pdo, int $vigileId, string $data, string $tipo, int $tipoAssenzaId = 1): void {
     $pdo->prepare(
         "DELETE a FROM assenze a
          JOIN fogli_servizio f ON f.id = a.foglio_id
-         WHERE a.vigile_id=? AND f.data_servizio=? AND f.tipo_turno=? AND a.tipo_assenza_id=1"
-    )->execute([$vigileId, $data, $tipo]);
+         WHERE a.vigile_id=? AND f.data_servizio=? AND f.tipo_turno=? AND a.tipo_assenza_id=?"
+    )->execute([$vigileId, $data, $tipo, $tipoAssenzaId]);
 }
 
-function feriaSyncAssenza(PDO $pdo, int $vigileId, string $data, string $tipoTurno, string $stato): void {
+function feriaSyncAssenza(PDO $pdo, int $vigileId, string $data, string $tipoTurno, string $stato,
+                           int $tipoAssenzaId = 1): void {
     $stT = $pdo->prepare("SELECT turno FROM vigili WHERE id=?");
     $stT->execute([$vigileId]);
     $turno = (string)$stT->fetchColumn();
     $tipi = ($tipoTurno === 'DN') ? ['D', 'N'] : [$tipoTurno];
     foreach ($tipi as $t) {
         if ($stato === 'rejected' || $stato === 'declined') {
-            feriaDeleteAssenza($pdo, $vigileId, $data, $t);
+            feriaDeleteAssenza($pdo, $vigileId, $data, $t, $tipoAssenzaId);
         } else { // approved | pending → vigile assente sul foglio DEL SUO TURNO
             $foglioId = feriaGetOrCreateFoglio($pdo, $data, $t, $turno);
-            feriaInsertAssenza($pdo, $vigileId, $foglioId);
+            feriaInsertAssenza($pdo, $vigileId, $foglioId, $tipoAssenzaId);
         }
     }
+}
+
+// Permesso ORARIO: il vigile resta assegnato al turno, nessun tocco su
+// `assenze`. Stesso pattern reversibile di feriaSyncAssenza ma su
+// permessi_orari (mirror di visite_mediche): approved → upsert, rejected/
+// declined → rimuove l'annotazione.
+function permessoOrarioSync(PDO $pdo, int $vigileId, int $requestId, string $data,
+                             string $oraDa, string $oraA, ?string $note, string $stato): void {
+    $del = $pdo->prepare("DELETE FROM permessi_orari WHERE request_id=?");
+    $del->execute([$requestId]);
+    if ($stato === 'rejected' || $stato === 'declined') return;
+    $next = nextId($pdo, 'permessi_orari');
+    $pdo->prepare(
+        "INSERT INTO permessi_orari (id, vigile_id, data, ora_da, ora_a, note, request_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)"
+    )->execute([$next, $vigileId, $data, $oraDa, $oraA, $note, $requestId]);
 }
 
 }

@@ -25,7 +25,11 @@ function blocchiContigui(array $richieste): array {
         $curr = new DateTime($currReq['data_richiesta']);
         $isNegativo = fn($r) => in_array($r['stato'] ?? null, ['rejected', 'declined'], true);
         $stessoGruppo = $isNegativo($prevReq) === $isNegativo($currReq);
-        $contiguo = (int)$curr->diff($prev)->days <= 3 && $stessoGruppo;
+        // Tipo diverso (es. ferie seguite da un permesso) non deve fondersi in
+        // un blocco solo. Assente su entrambe (righe FoglioRenderer, sempre FER)
+        // → default 1, confronto sempre vero, comportamento invariato.
+        $stessoTipo = (int)($prevReq['tipo_assenza_id'] ?? 1) === (int)($currReq['tipo_assenza_id'] ?? 1);
+        $contiguo = (int)$curr->diff($prev)->days <= 3 && $stessoGruppo && $stessoTipo;
         if ($contiguo) {
             $current[] = $currReq;
         } else {

@@ -12,6 +12,8 @@ $TURNO = turnoAttivo();   // turno su cui si lavora (A/B/C/D); default B. Multi-
 
 $pdo = getDB();
 initStilePatente($pdo, $TURNO);   // colore/numero/entrambi + tinte (parametri admin)
+require_once __DIR__ . '/../includes/bot_requests_schema.php';
+assicuraSchemaRichiesteAssenza($pdo);
 
 // Capienza per posizione = slot del modello.odt + override editor. La mappa
 // codice→slot vive in scambioCapPos() (includes/scambio_salto.php): qui solo
@@ -702,16 +704,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($azione === 'finalizza_ferie') {
         require_once __DIR__ . '/../includes/finalize_ferie.php';
         try {
-            $cnt = finalizeFerie($pdo, $foglioId, $dataStr, $tipoParam);
+            $cnt    = finalizeFerie($pdo, $foglioId, $dataStr, $tipoParam);
+            $cntP   = finalizePermesso($pdo, $foglioId, $dataStr, $tipoParam);
+            $cntPO  = finalizePermessoOrario($pdo, $dataStr, $tipoParam);
         } catch (Throwable $e) {
             echo json_encode(['ok' => false, 'errore' => 'Errore comunicazioni ferie: ' . $e->getMessage()]);
             exit;
         }
+        // I contatori del popup restano quelli di FER (comportamento invariato);
+        // permesso/permesso orario vengono comunicati con lo stesso gesto ma non
+        // hanno ancora un riepilogo dedicato nel popup di conferma.
         echo json_encode(['ok' => true,
-            'approvate' => $cnt['approvate'],
-            'ufficio'   => $cnt['ufficio'],
-            'negate'    => $cnt['negate'],
-            'tot'       => $cnt['approvate'] + $cnt['ufficio'] + $cnt['negate']]);
+            'approvate' => $cnt['approvate'] + $cntP['approvate'] + $cntPO['approvate'],
+            'ufficio'   => $cnt['ufficio']   + $cntP['ufficio'],
+            'negate'    => $cnt['negate']    + $cntP['negate']    + $cntPO['negate'],
+            'tot'       => $cnt['approvate'] + $cnt['ufficio'] + $cnt['negate']
+                          + $cntP['approvate'] + $cntP['ufficio'] + $cntP['negate']
+                          + $cntPO['approvate'] + $cntPO['negate']]);
         exit;
     }
 
