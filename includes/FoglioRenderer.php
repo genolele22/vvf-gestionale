@@ -790,7 +790,6 @@ class FoglioRenderer
         $doc = $this->buildFilledDoc();
         $tab = $this->tableToHtml($doc);
         $titolo = htmlspecialchars($this->giornoLbl . ' ' . $this->dataLabel . ' ' . $this->tipoParam);
-        $back = 'nuovo.php?data=' . urlencode($this->dataStr) . '&tipo=' . $this->tipoParam;
         return '<!DOCTYPE html><html lang="it"><head><meta charset="UTF-8">'
             . '<title>Foglio di Servizio — ' . $titolo . '</title><style>'
             . 'body{margin:0;background:#e9eaed;font-family:Arial,"Liberation Sans",sans-serif}'
@@ -806,7 +805,13 @@ class FoglioRenderer
             . '<span class="meta">— ' . $titolo . ' · salto ' . htmlspecialchars($this->codSaltoRip) . '</span>'
             . '<span class="sp"></span>'
             . '<button class="tb-print" onclick="window.print()">🖨️ Stampa</button>'
-            . '<a class="tb-close" href="' . htmlspecialchars($back) . '">← Torna al foglio</a></div>'
+            // #169: prima era un link "Torna al foglio" che navigava DENTRO
+            // questa stessa scheda (aperta con target=_blank) verso il
+            // gestionale, lasciandone due identiche aperte nel browser.
+            // window.close() chiude davvero la scheda — funziona perché ora
+            // viene aperta via window.open() (vedi foglio/nuovo.php), non più
+            // con un link semplice target=_blank.
+            . '<button class="tb-close" onclick="window.close()">✖️ Chiudi anteprima</button></div>'
             . '<div class="sheet">' . $tab . '</div></body></html>';
     }
 

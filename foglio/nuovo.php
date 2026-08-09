@@ -1512,7 +1512,7 @@ $tuttoPersonale = $pdo->query(
      JOIN salti_turno st ON st.id = v.salto_id
      JOIN sedi s         ON s.id  = v.sede_id
      WHERE v.attivo = 1 AND v.turno = '" . $TURNO . "'
-     ORDER BY q.id DESC, v.cognome ASC, v.disambiguatore ASC"
+     ORDER BY v.cognome ASC, v.disambiguatore ASC"
 )->fetchAll();
 
 
@@ -1629,7 +1629,20 @@ if (!empty($assenzePerTipo['FER'])) {
             $da = $b[0]['data_richiesta'];
             $aa = end($b)['data_richiesta'];
             if ($dataStr >= $da && $dataStr <= $aa) {
-                $assenzePerTipo['FER'][$i]['nr_turni'] = turniLabel($b);
+                // #171: turni RESTANTI da questo foglio in poi (incluso), non
+                // il totale fisso del blocco — così il numero scende foglio
+                // dopo foglio invece di restare identico su tutta la ferie.
+                // Nessun numero sull'ultimo foglio del blocco (resterebbe 1).
+                $idxCorrente = null;
+                foreach ($b as $bi => $br) {
+                    if ($br['data_richiesta'] === $dataStr
+                        && ($br['tipo_turno'] === $tipoParam || $br['tipo_turno'] === 'DN')) {
+                        $idxCorrente = $bi;
+                        break;
+                    }
+                }
+                $restanti = turniLabel($idxCorrente !== null ? array_slice($b, $idxCorrente) : $b);
+                $assenzePerTipo['FER'][$i]['nr_turni'] = $restanti > 1 ? $restanti : null;
                 $assenzePerTipo['FER'][$i]['data_da']  = $da;
                 $assenzePerTipo['FER'][$i]['data_a']   = $aa;
                 break;
@@ -1971,32 +1984,35 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
         </a>
       </div>
 
-        <!-- Pulsanti, allineati a destra -->
+        <!-- Pulsanti, allineati a destra. Ordine (#170): Invia, Scarica .odt,
+             Stampa, Precedente, Blocca/Sblocca, Reset. -->
         <div class="foglio-header-btns">
           <?php if (!soloLetturaAttivo()): ?>
-          <button id="btnBlocco" onclick="toggleBlocco()" class="btn btn-sm"></button>
           <button onclick="salvaIntestazioneAjax(true)"
                   class="btn btn-verde btn-sm">✉️ Invia</button>
           <?php else: ?>
           <span class="btn btn-sm" style="background:#5b6b7b;color:#fff;cursor:default">👁️ Sola lettura</span>
           <?php endif; ?>
-          <a href="stampa.php?id=<?= $foglioId ?>" target="_blank"
-             class="btn btn-grigio btn-sm">🖨️ Stampa</a>
+          <a href="scarica_odt.php?data=<?= $dataStr ?>&tipo=<?= $tipoParam ?>&turno=<?= $TURNO ?>"
+             class="btn btn-grigio btn-sm"
+             data-nferie="<?= (int)$nFerieDaApprovare ?>"
+             onclick="return scaricaOdt(this)">📄 Scarica .odt</a>
+          <button type="button" onclick="window.open('stampa.php?id=<?= $foglioId ?>','_blank')"
+                  class="btn btn-grigio btn-sm">🖨️ Stampa</button>
           <?php if ($foglioPrec):
               $precLabel = date('d/m/Y', strtotime($foglioPrec['data_servizio']))
                          . ' ' . ($foglioPrec['tipo_turno'] === 'N' ? 'Notturno' : 'Diurno'); ?>
           <button type="button" class="btn btn-grigio btn-sm"
                   onclick="window.open('stampa.php?id=<?= (int)$foglioPrec['id'] ?>','servPrec','width=1000,height=1000,scrollbars=yes,resizable=yes')"
                   title="Apre la stampa del servizio precedente (<?= htmlspecialchars($precLabel) ?>)">
-            🕑 Servizio precedente
+            🕑 Precedente
           </button>
           <?php endif; ?>
-          <a href="scarica_odt.php?data=<?= $dataStr ?>&tipo=<?= $tipoParam ?>&turno=<?= $TURNO ?>"
-             class="btn btn-grigio btn-sm"
-             data-nferie="<?= (int)$nFerieDaApprovare ?>"
-             onclick="return scaricaOdt(this)">📄 Scarica .odt</a>
+          <?php if (!soloLetturaAttivo()): ?>
+          <button id="btnBlocco" onclick="toggleBlocco()" class="btn btn-sm"></button>
+          <?php endif; ?>
           <button onclick="apriModalReset()"
-                  class="btn btn-sm" style="background:#c0392b;color:#fff">↺ Reset servizio</button>
+                  class="btn btn-sm" style="background:#c0392b;color:#fff">↺ Reset</button>
         </div>
 
         <!-- Modale reset -->
@@ -2215,7 +2231,7 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
         <?php foreach ($ferieUfficio as $a):
           $colore = colorePatentePHP($a['patente_max'] ?? null);
         ?>
-        <div class="assente-row" data-vigile-id="<?= $a['vigile_id'] ?>"
+        <div class="assente-row" data-vigile-id="<?= $a['vigile_id'] ?>" data-cognome="<?= htmlspecialchars($a['cognome']) ?>"
              draggable="true" style="cursor:grab">
             <span class="qual-dot <?= htmlspecialchars($a['qcodice']) ?>"></span>
             <span class="assente-nome" style="color:<?= $colore ?>">
@@ -2346,8 +2362,13 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
                   $colore = colorePatentePHP($ass['patente_max'] ?? null);
                   // Sigla sede SOLO se il vigile è fuori dalla propria sede (come ODT).
                   $mostraSede = (!empty($ass['sede_codice']) && $ass['sede_codice'] !== ($pos['sede_codice'] ?? null));
-                  $nomeCompleto = ucfirst(strtolower($ass['qcodice'])).' '.ucfirst(strtolower($ass['cognome'])).
-                                  ($ass['disambiguatore'] ? ' '.$ass['disambiguatore'] : '');
+                  // #178: prima mancava il suffisso col numero patente (stile
+                  // "numero"/"entrambi") sui nomi già assegnati alla generazione/
+                  // reset del foglio — compariva solo dopo un drag manuale (che
+                  // passa dal rebuild JS, l'unico posto che lo aggiungeva).
+                  // etichettaVigile() è la stessa funzione già usata per il
+                  // personale disponibile: stesso formato ovunque.
+                  $nomeCompleto = etichettaVigile($ass);
               ?>
                 <div class="ass-card"
                      id="ass-<?= $ass['vigile_id'] ?>"
@@ -2795,7 +2816,7 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
           <?php foreach ($ferieTutte as $a):
     $colore = colorePatentePHP($a['patente_max'] ?? null);
 ?>
-    <div class="assente-row" data-vigile-id="<?= $a['vigile_id'] ?>">
+    <div class="assente-row" data-vigile-id="<?= $a['vigile_id'] ?>" data-cognome="<?= htmlspecialchars($a['cognome']) ?>">
         <span class="qual-dot <?= htmlspecialchars($a['qcodice']) ?>"></span>
         <span class="assente-nome" style="color:<?= $colore ?>">
             <?= htmlspecialchars(etichettaVigile($a)) ?>
@@ -3385,7 +3406,7 @@ function buildAssenteRow(p, tipoCodice, nTurni, dataDa, dataA) {
     const turniInfo = nTurni ? `${nTurni}T` : tipoCodice;
 
     return `<div class="assente-row"
-                 data-vigile-id="${p.id}">
+                 data-vigile-id="${p.id}" data-cognome="${escHtml(p.cognome)}">
               <span class="qual-dot ${p.qcodice}"></span>
               <span class="assente-nome"
                     style="color:${colore}">
@@ -3867,8 +3888,7 @@ async function azioneAssenza(vigileId, tipoCodice) {
         }
     }
 
-    document.getElementById(colId)
-        ?.insertAdjacentHTML('beforeend', buildAssenteRow(p, tipoCodice));
+    inserisciOrdinato(document.getElementById(colId), buildAssenteRow(p, tipoCodice), p.cognome);
 
     // Riapprovata una ferie respinta → esce dal box "Ferie respinte"
     if (colId === 'colFerie') rimuoviCardRespinta(vigileId);
@@ -3900,10 +3920,10 @@ function azioneFerieUfficio(vigileId) {
 
             rimuoviDOM(vigileId);
             document.getElementById('ferieUfficioVuoto')?.remove();
-            document.getElementById('colFerieUfficio')
-                ?.insertAdjacentHTML('beforeend', buildUfficioRow(p, res.n_turni, res.data_da, res.data_a));
-            document.getElementById('colFerie')?.insertAdjacentHTML(
-                'beforeend', buildAssenteRow(p, 'FER', res.n_turni, res.data_da, res.data_a));
+            inserisciOrdinato(document.getElementById('colFerieUfficio'),
+                buildUfficioRow(p, res.n_turni, res.data_da, res.data_a), p.cognome);
+            inserisciOrdinato(document.getElementById('colFerie'),
+                buildAssenteRow(p, 'FER', res.n_turni, res.data_da, res.data_a), p.cognome);
             if (!p.saltoCanon) setOccupato(vigileId, true, 'ferie ufficio');
             updateUfficioCount();
             const turniTxt = res.n_turni === 1 ? '1 turno' : (res.n_turni + ' turni');
@@ -4342,7 +4362,7 @@ function buildUfficioRow(p, nTurni, dataDa, dataA) {
     const turniBadge = nTurni
         ? `<span class="assente-info" style="font-size:.65rem;color:var(--grigio-md)"
                  title="${dataDa || ''}→${dataA || ''}">${nTurni}T</span>` : '';
-    return `<div class="assente-row" data-vigile-id="${p.id}"
+    return `<div class="assente-row" data-vigile-id="${p.id}" data-cognome="${escHtml(p.cognome)}"
                  draggable="true" style="cursor:grab">
               <span class="qual-dot ${p.qcodice}"></span>
               <span class="assente-nome" style="color:${colore}">${p.nome}${sedeBadge}</span>
@@ -4350,6 +4370,23 @@ function buildUfficioRow(p, nTurni, dataDa, dataA) {
               <button class="assente-del" onclick="rimuoviFerieUfficio(${p.id})"
                       title="Togli ferie d'ufficio">✕</button>
             </div>`;
+}
+
+// #186: inserisce la riga HTML nella posizione alfabetica giusta (per cognome,
+// via data-cognome) invece che sempre in fondo — prima serviva un refresh
+// pagina per rivedere l'elenco in ordine.
+function inserisciOrdinato(container, html, cognome) {
+    if (!container) return;
+    const tmp = document.createElement('div');
+    tmp.innerHTML = html.trim();
+    const nuovo = tmp.firstElementChild;
+    if (!nuovo) return;
+    const righe = [...container.querySelectorAll(':scope > .assente-row')];
+    const target = righe.find(r =>
+        (r.dataset.cognome || '').localeCompare(cognome || '', 'it', { sensitivity: 'base' }) > 0
+    );
+    if (target) container.insertBefore(nuovo, target);
+    else container.appendChild(nuovo);
 }
 
 function updateUfficioCount() {
@@ -4426,14 +4463,12 @@ async function salvaAssenza() {
             const tipoCodice = tipoSel.options[tipoSel.selectedIndex]?.dataset?.codice || '';
             const colId = (TIPI_ASSENZA[tipoCodice] || {}).colId;
             if (colId) {
-                document.getElementById(colId)
-                    ?.insertAdjacentHTML('beforeend', buildAssenteRow(p, tipoCodice));
+                inserisciOrdinato(document.getElementById(colId), buildAssenteRow(p, tipoCodice), p.cognome);
             }
             // Ridondanza ferie a mano: anche nel box "Ferie d'ufficio"
             if (colId === 'colFerie' && res.ufficio) {
                 document.getElementById('ferieUfficioVuoto')?.remove();
-                document.getElementById('colFerieUfficio')
-                    ?.insertAdjacentHTML('beforeend', buildUfficioRow(p));
+                inserisciOrdinato(document.getElementById('colFerieUfficio'), buildUfficioRow(p), p.cognome);
                 updateUfficioCount();
             }
             if (!p.saltoCanon) setOccupato(vigileId, true, 'assente');

@@ -43,6 +43,10 @@
     justify-self: end;
     justify-content: flex-end;
 }
+/* #170: stessa larghezza per "🔒 Blocca" / "🔓 Sblocca" (JS riscrive
+   style.cssText ad ogni toggle, quindi qui e non inline: una regola in
+   foglio non viene toccata da quell'overwrite). */
+#btnBlocco { min-width: 104px; }
 .fh-frecce {
     display: flex;
     gap: 4px;
@@ -236,6 +240,11 @@ body.cruscotto-bloccato .foglio-layout {
     border-radius: var(--radius);
     box-shadow: var(--shadow);
     overflow: hidden;
+    /* #179: senza questo, come figlio flex di .col-sinistra (anch'esso
+       scrollabile) il pannello si espande al contenuto invece di rispettare
+       il max-height di .organico-list — la sua barra di scorrimento interna
+       non si vedeva/funzionava con molti nomi (classico bug flex+overflow). */
+    min-height: 0;
 }
 .ferie-respinte-panel {
     background: var(--bianco);
