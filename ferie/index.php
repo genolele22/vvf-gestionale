@@ -375,9 +375,14 @@ $stPoM->execute(array_merge([$meseStr], $turniQuery));
 $tuttiPermessiOrari = $stPoM->fetchAll();
 foreach ($tuttiPermessiOrari as $po) $permessoOrarioPerData[$po['data_richiesta']][] = $po;
 
-// Tipi che restano approvabili a mano (FER/PERM); MISS/MAL/INF si registrano
-// da sole (vedi database.py:insert_request) — l'Agenda le mostra sola lettura.
-const TIPI_APPROVABILI = [1, 4];
+// Tipi negoziabili a mano dalla fureria: solo FER. Il permesso giornaliero
+// (#201) non è negoziabile — il vigile lo gestisce direttamente con l'ufficio
+// personale, niente accetta/respingi né stato di comunicazione email in
+// Agenda — stessa sola-lettura di MISS/MAL/INF (si registrano da sole, vedi
+// database.py:insert_request). Resta comunque cancellabile (🗑️, non gated
+// da questa costante). NB: il permesso ORARIO (stesso tipo_assenza_id=4, ma
+// ora_da valorizzato) è un blocco separato più sopra e non passa da qui.
+const TIPI_APPROVABILI = [1];
 
 // ── Stato COMUNICAZIONE per singola richiesta (badge per-turno, richiesta #93) ──
 // La "comunicazione" NON è lo stato della richiesta (pending/approved/rejected):
