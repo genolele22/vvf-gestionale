@@ -10,6 +10,25 @@
     padding: 0 20px 50px;
 }
 
+/* Barre di scorrimento visibili (Molinari, 10/08): `scrollbar-width: thin`
+   da solo lascia al browser il colore di default, quasi invisibile su
+   sfondo bianco — con liste lunghe (es. organico 50+ nomi) sembrava che il
+   contenuto in fondo (es. l'ultimo alfabetico) fosse tagliato via, non
+   scorribile. Applicata a ogni contenitore con `scrollbar-width: thin` di
+   questo file (.col-sinistra, .organico-list, .ferie-middle-slot). */
+.col-sinistra, .organico-list, .ferie-middle-slot {
+    scrollbar-color: var(--grigio-md) var(--grigio-ch);
+}
+.col-sinistra::-webkit-scrollbar,
+.organico-list::-webkit-scrollbar,
+.ferie-middle-slot::-webkit-scrollbar { width: 8px; }
+.col-sinistra::-webkit-scrollbar-track,
+.organico-list::-webkit-scrollbar-track,
+.ferie-middle-slot::-webkit-scrollbar-track { background: var(--grigio-ch); }
+.col-sinistra::-webkit-scrollbar-thumb,
+.organico-list::-webkit-scrollbar-thumb,
+.ferie-middle-slot::-webkit-scrollbar-thumb { background: var(--grigio-md); border-radius: 4px; }
+
 /* ── Intestazione foglio ── */
 .foglio-header {
     background: var(--bianco);
