@@ -647,6 +647,8 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
 .blocco-periodo { font-size: .85rem; font-weight: 600; color: var(--grigio-sc);
                   min-width: 80px; }
 .blocco-turni { font-size: .75rem; color: var(--grigio-md); min-width: 55px; }
+.blocco-nota { font-size: .78rem; color: var(--grigio-md); font-style: italic;
+               flex: 1 1 160px; min-width: 0; }
 .blocco-spacer { flex: 1; }
 
 .stato-badge {
@@ -1074,6 +1076,9 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
       <?php endif; ?>
       <span class="blocco-periodo"><?= $periodo ?></span>
       <span class="blocco-turni"><?= $turni ?> turni</span>
+      <?php if ($tipoAssenzaId === 3 && $block[0]['note']): ?>
+        <span class="blocco-nota">📝 <?= htmlspecialchars($block[0]['note']) ?></span>
+      <?php endif; ?>
       <span class="blocco-spacer"></span>
       <?php if ($approvabile): ?>
       <span class="stato-badge stato-<?= $stato ?>" id="badge-<?= $detailId ?>"><?= $STATO_LABEL_IT[$stato] ?? $stato ?></span>
@@ -1127,7 +1132,7 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
             <span class="ferie-estiva-chk" title="Ferie estiva">🏖️</span>
           <?php endif; ?>
         <?php endif; ?>
-        <?php if ($r['note']): ?>
+        <?php if ($r['note'] && $tipoAssenzaId !== 3): ?>
           <span class="turno-nota" title="<?= htmlspecialchars($r['note']) ?>">📝</span>
         <?php endif; ?>
         <span class="turno-spacer"></span>
