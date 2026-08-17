@@ -1033,9 +1033,13 @@ class FoglioRenderer
                         $st->setAttributeNS(self::STY, 'style:family', 'text');
                         $tp = $doc->createElementNS(self::STY, 'style:text-properties');
                         if ($col)     $tp->setAttributeNS(self::FO, 'fo:color', $col);
+                        // peso SEMPRE esplicito (mai assente): senza, un nome normale può
+                        // ereditare il grassetto della cella del modello.odt se quella cella
+                        // lo porta (successo con GE-1A nel modello B0, #67-bis) — stesso
+                        // principio già usato per NmReg sulle righe data.
+                        $tp->setAttributeNS(self::FO, 'fo:font-weight', $straord ? 'bold' : 'normal');
                         if ($straord) {
                             $tp->setAttributeNS(self::FO, 'fo:background-color', $YEL);
-                            $tp->setAttributeNS(self::FO, 'fo:font-weight', 'bold');
                         } elseif ($evid) {
                             $tp->setAttributeNS(self::FO, 'fo:background-color', $EVI);
                         }
