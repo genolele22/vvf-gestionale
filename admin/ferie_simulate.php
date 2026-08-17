@@ -4,10 +4,13 @@ require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/auth.php';
 richiediAdmin();
 require_once __DIR__ . '/../includes/turni.php';          // getTurnoGiorno()
-require_once __DIR__ . '/../includes/ferie_assenze.php';  // feriaSyncAssenza()
+require_once __DIR__ . '/../includes/ferie_assenze.php';  // feriaSyncAssenza(), permessoOrarioSync()
+require_once __DIR__ . '/../includes/bot_requests_schema.php';
+require_once __DIR__ . '/../includes/scambio_salto.php';  // scambioConflittiRighe()
 $TURNO = turnoAmministrazione();   // fisso sul turno di casa (admin/user niente switch qui)
 
 $pdo = getDB();
+assicuraSchemaRichiesteAssenza($pdo);   // idempotente: garantisce tipo_assenza_id/ora_da/ora_a
 
 // ── AJAX: crea le voci ferie (come richieste BOT, stato pending) ──────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -21,10 +24,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $vigili = is_array($vigili)
             ? array_values(array_filter(array_map('intval', $vigili), fn($i) => $i > 0)) : [];
         $voci = is_array($voci) ? $voci : [];
+
+        // Tipo richiesta: 'ferie' (default, comportamento storico) o 'permesso'
+        // (giornaliero o orario). tipo_assenza_id: 1=FER, 4=PERM.
+        $tipoRichiesta = ($_POST['tipoRichiesta'] ?? 'ferie') === 'permesso' ? 'permesso' : 'ferie';
+        $tipoAssenzaId = $tipoRichiesta === 'permesso' ? 4 : 1;
+        $isOrario      = $tipoRichiesta === 'permesso' && ($_POST['modalita'] ?? '') === 'orario';
+
         // #141: visto "ferie estiva" applicato a tutte le voci create in questo giro
-        // (solo GIU-SET, stessa regola di toggle_estiva sopra — fuori stagione ignorato,
-        // non blocca il resto del batch).
-        $estiva = !empty($_POST['estiva']);
+        // (solo GIU-SET) — ha senso solo per le ferie vere, non per i permessi.
+        $estiva = $tipoRichiesta === 'ferie' && !empty($_POST['estiva']);
+
+        // Permesso orario: un solo orario per l'intero batch (l'UI, in modalità
+        // orario, limita comunque la selezione a un giorno solo per volta).
+        $oraDa = null; $oraA = null;
+        if ($isOrario) {
+            $oraDa = (string)($_POST['oraDa'] ?? '');
+            $oraA  = (string)($_POST['oraA']  ?? '');
+            if (!preg_match('/^([01]\d|2[0-3]):00$/', $oraDa) || !preg_match('/^([01]\d|2[0-3]):00$/', $oraA)) {
+                echo json_encode(['ok' => false, 'errore' => 'Orario non valido.']);
+                exit;
+            }
+        }
 
         if (!$vigili || !$voci) {
             echo json_encode(['ok' => false, 'errore' => 'Seleziona almeno un vigile e un giorno.']);
@@ -39,12 +60,64 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             return null;
         };
 
+        // #205 (logbook): il turno può essere in servizio quel giorno mentre il
+        // SINGOLO vigile è comunque sul proprio salto (riposo compensativo) —
+        // salto_id è a rotazione interna al turno, diverso da vigile a vigile.
+        // Ferie/permesso non hanno senso su un giorno in cui il vigile non
+        // sarebbe comunque in servizio: qui si blocca, niente solo avviso
+        // (diverso dallo scambio salto, che è un'eccezione negoziabile — questa
+        // è la rotazione di base). Missione/malattia/infortunio ne restano
+        // fuori: hanno precedenza sul salto per regola di dominio già esistente.
+        $saltoIdVigile = [];
+        if ($vigili) {
+            $ph = implode(',', array_fill(0, count($vigili), '?'));
+            $stV = $pdo->prepare("SELECT id, salto_id FROM vigili WHERE id IN ($ph)");
+            $stV->execute($vigili);
+            foreach ($stV->fetchAll() as $r) $saltoIdVigile[(int)$r['id']] = (int)$r['salto_id'];
+        }
+        $saltoIdGiornoCache = [];
+        $saltoIdGiorno = function (string $data, string $tipo) use ($pdo, $TURNO, &$saltoIdGiornoCache): ?int {
+            $key = "$data:$tipo";
+            if (array_key_exists($key, $saltoIdGiornoCache)) return $saltoIdGiornoCache[$key];
+            $num = saltoRiposoNum($data, $tipo);
+            $id  = (int)($pdo->query(
+                "SELECT id FROM salti_turno WHERE codice=" . $pdo->quote($TURNO . $num)
+            )->fetchColumn() ?: 0);
+            return $saltoIdGiornoCache[$key] = ($id ?: null);
+        };
+
+        // Finestra oraria valida per uno slot — mirror dei bottoni "a ore piene"
+        // del bot (08-20 diurno, 20-08 notturno). Sequenza ordinata per poter
+        // confrontare "prima/dopo" senza fare matematica sulle date (il
+        // notturno attraversa la mezzanotte).
+        $sequenzaOre = function (string $slot): array {
+            return $slot === 'D'
+                ? array_map(fn($h) => sprintf('%02d:00', $h), range(8, 20))
+                : array_merge(array_map(fn($h) => sprintf('%02d:00', $h), range(20, 23)),
+                              array_map(fn($h) => sprintf('%02d:00', $h), range(0, 8)));
+        };
+        $oraValidaPerSlot = function (string $slot) use ($oraDa, $oraA, $sequenzaOre): bool {
+            $seq = $sequenzaOre($slot);
+            $iDa = array_search($oraDa, $seq, true);
+            $iA  = array_search($oraA,  $seq, true);
+            return $iDa !== false && $iA !== false && $iA > $iDa;
+        };
+
         $insReq = $pdo->prepare(
-            "INSERT IGNORE INTO bot_requests (vigile_id, data_richiesta, tipo_turno, stato, processed_at, ferie_estiva)
-             VALUES (?, ?, ?, 'pending', NULL, ?)"
+            "INSERT IGNORE INTO bot_requests
+                (vigile_id, data_richiesta, tipo_turno, tipo_assenza_id, stato, processed_at, ferie_estiva, ora_da, ora_a)
+             VALUES (?, ?, ?, ?, 'pending', NULL, ?, ?, ?)"
+        );
+        // Riga già presente (uq_req su vigile+data+turno, indipendente dal tipo):
+        // serve a decidere se sincronizzare (stesso tipo) o limitarsi a contare il
+        // duplicato senza toccare un'assenza di un tipo diverso (es. quel giorno
+        // ha già una ferie e si prova a caricarci sopra un permesso).
+        $selEsistente = $pdo->prepare(
+            "SELECT id, tipo_assenza_id, ora_da FROM bot_requests WHERE vigile_id=? AND data_richiesta=? AND tipo_turno=?"
         );
 
-        $creati = 0; $duplicati = 0; $scartati = 0;
+        $creati = 0; $duplicati = 0; $scartati = 0; $scartatiSalto = 0;
+        $righeSincronizzate = [];   // [vigile_id, data, tipo] — per l'avviso scambio salto
         $pdo->beginTransaction();
         try {
             foreach ($voci as $v) {
@@ -55,15 +128,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $scartati++; continue;
                 }
                 if ($slotTurnoB($data) !== $tipo) { $scartati++; continue; }
+                if ($isOrario && !$oraValidaPerSlot($tipo)) { $scartati++; continue; }
 
                 $mese     = (int)date('n', strtotime($data));
                 $isEstiva = $estiva && in_array($mese, [6, 7, 8, 9], true) ? 1 : 0;
+                $saltoGiorno = $saltoIdGiorno($data, $tipo);
 
                 foreach ($vigili as $vid) {
-                    $insReq->execute([$vid, $data, $tipo, $isEstiva]);
-                    if ($insReq->rowCount() > 0) $creati++; else $duplicati++;
-                    // assenza sul foglio giusto (crea il foglio se non esiste): pending
-                    feriaSyncAssenza($pdo, $vid, $data, $tipo, 'pending');
+                    // #205: il turno lavora quel giorno, ma QUESTO vigile è sul
+                    // proprio salto (riposo compensativo) — non avrebbe comunque
+                    // servizio da coprire con la ferie/permesso. Blocco, non avviso.
+                    if ($saltoGiorno !== null && ($saltoIdVigile[$vid] ?? null) === $saltoGiorno) {
+                        $scartatiSalto++;
+                        continue;
+                    }
+
+                    $insReq->execute([$vid, $data, $tipo, $tipoAssenzaId, $isEstiva, $oraDa, $oraA]);
+                    $creatoOra = $insReq->rowCount() > 0;
+                    $creatoOra ? $creati++ : $duplicati++;
+
+                    $selEsistente->execute([$vid, $data, $tipo]);
+                    $esist = $selEsistente->fetch();
+                    if (!$esist) continue;   // difensivo, non dovrebbe succedere
+                    if (!$creatoOra) {
+                        if ((int)$esist['tipo_assenza_id'] !== $tipoAssenzaId) continue;
+                        // stesso tipo_assenza_id ma sottotipo diverso (orario vs
+                        // giornaliero): non confondere l'uno con l'altro.
+                        $eraOrario = $esist['ora_da'] !== null;
+                        if ($isOrario !== $eraOrario) continue;
+                    }
+                    $reqId = (int)$esist['id'];
+
+                    if ($isOrario) {
+                        // Permesso orario: mai su `assenze` (il vigile resta assegnato
+                        // al turno), solo annotazione in permessi_orari.
+                        permessoOrarioSync($pdo, $vid, $reqId, $data, $tipo, $oraDa, $oraA, null, 'pending');
+                    } else {
+                        // assenza sul foglio giusto (crea il foglio se non esiste): pending
+                        feriaSyncAssenza($pdo, $vid, $data, $tipo, 'pending', $tipoAssenzaId);
+                    }
+                    $righeSincronizzate[] = [$vid, $data, $tipo];
                 }
             }
             $pdo->commit();
@@ -73,9 +177,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
 
+        // Solo rilevazione (mai un blocco): ferie/permesso + scambio salto
+        // attivo sullo stesso turno, stesso principio già in uso nel foglio
+        // (#188) — anche per il permesso, su richiesta esplicita di Lele
+        // (niente più blocco duro, solo l'avviso).
+        $labelAvviso = $tipoRichiesta === 'ferie' ? 'ferie' : 'permesso';
+        $avvisi = $righeSincronizzate ? scambioConflittiRighe($pdo, $righeSincronizzate, $labelAvviso) : [];
+
         echo json_encode([
             'ok' => true,
             'creati' => $creati, 'duplicati' => $duplicati, 'scartati' => $scartati,
+            'scartatiSalto' => $scartatiSalto, 'avvisi' => $avvisi,
         ]);
         exit;
     }
@@ -96,8 +208,9 @@ $vigili = $pdo->query(
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>VVF – Ferie simulate (BETA)</title>
+<title>VVF – Ferie e permessi simulati (BETA)</title>
 <link rel="stylesheet" href="../assets/css/stile.css?v=<?= @filemtime(__DIR__.'/../assets/css/stile.css') ?>">
+<script src="../assets/js/conferma.js?v=<?= @filemtime(__DIR__.'/../assets/js/conferma.js') ?>"></script>
 <style>
   .fs-beta { display:inline-block; background:#b9770e; color:#fff; font-size:.66rem; font-weight:800;
              letter-spacing:.5px; padding:2px 8px; border-radius:6px; vertical-align:middle; margin-left:8px; }
@@ -136,6 +249,19 @@ $vigili = $pdo->query(
   .fs-msg.ok { background:#e6f4ea; color:#1e7e34; display:block; }
   .fs-msg.err { background:#fdecea; color:#c0392b; display:block; }
   .fs-hint { font-size:.78rem; color:var(--grigio-md); margin:0 0 10px; line-height:1.4; }
+  .fs-tipo { margin-bottom:18px; }
+  .fs-chips { display:flex; flex-wrap:wrap; gap:8px; }
+  .fs-chips.fs-sub { margin-top:10px; }
+  .fs-chip { border:1px solid #ccc; background:#fff; border-radius:20px; padding:6px 14px;
+             font-size:.85rem; font-weight:600; cursor:pointer; color:var(--grigio-sc); }
+  .fs-chip:hover { border-color:var(--rosso); }
+  .fs-chip.active { background:var(--rosso); border-color:var(--rosso); color:#fff; }
+  .fs-orario { margin-top:12px; }
+  .fs-ora-row { display:flex; align-items:center; gap:10px; margin-bottom:8px; flex-wrap:wrap; }
+  .fs-ora-lbl { font-size:.8rem; font-weight:700; color:var(--grigio-md); min-width:44px; }
+  .fs-chips .fs-chip.ora { padding:5px 10px; font-size:.8rem; border-radius:6px; }
+  .fs-chips .fs-chip.ora.active { background:#1e7e34; border-color:#1e7e34; }
+  .fs-chips .fs-chip.ora:disabled { opacity:.35; cursor:not-allowed; }
 </style>
 </head>
 <body>
@@ -165,15 +291,37 @@ $vigili = $pdo->query(
 </nav>
 <main class="main">
   <div class="page-title">
-    <h2>🏖️ Caricamento ferie <span class="fs-beta">BETA</span></h2>
+    <h2>🏖️ Ferie e permessi <span class="fs-beta">BETA</span></h2>
   </div>
   <p class="fs-hint">
-    Strumento interno per caricare le ferie (estive e dell'agenda cartacea) come se fossero
-    arrivate dal bot: crea la voce in <strong>Agenda</strong> (stato <em>pending</em>) e l'assenza
-    sul <strong>foglio del giorno giusto</strong>. Nessuna mail inviata.<br>
+    Strumento interno per caricare ferie e permessi (estivi/agenda cartacea) come se fossero
+    arrivati dal bot: crea la voce in <strong>Agenda</strong> (stato <em>pending</em>) e l'assenza
+    — o, per il permesso orario, l'annotazione — sul <strong>foglio del giorno giusto</strong>.
+    Nessuna mail inviata.<br>
     Ogni giorno mostra lo slot reale del turno <?= htmlspecialchars($TURNO) ?>: ☀️ diurno, 🌙 notturno.
-    I giorni in cui il turno non è in servizio non sono selezionabili.
+    I giorni in cui il turno non è in servizio non sono selezionabili. Un vigile può avere una
+    sola voce (ferie o permesso) per giorno/turno.
   </p>
+
+  <div class="fs-box fs-tipo">
+    <h3>Tipo</h3>
+    <div class="fs-chips" id="chipsTipo">
+      <button type="button" class="fs-chip active" data-tipo="ferie">🏖️ Ferie</button>
+      <button type="button" class="fs-chip" data-tipo="permesso">📝 Permesso</button>
+    </div>
+    <div class="fs-chips fs-sub" id="chipsModalita" style="display:none;">
+      <button type="button" class="fs-chip active" data-modalita="giornaliero">📅 Giornaliero</button>
+      <button type="button" class="fs-chip" data-modalita="orario">🕐 Orario</button>
+    </div>
+    <div class="fs-orario" id="orarioPicker" style="display:none;">
+      <p class="fs-hint" style="margin:8px 0 6px;">
+        Permesso orario: un giorno alla volta — selezionandone un altro nel calendario sostituisce
+        quello scelto.
+      </p>
+      <div class="fs-ora-row"><span class="fs-ora-lbl">Dalle</span><div class="fs-chips" id="chipsOraDa"></div></div>
+      <div class="fs-ora-row"><span class="fs-ora-lbl">Alle</span><div class="fs-chips" id="chipsOraA"></div></div>
+    </div>
+  </div>
 
   <div class="fs-wrap">
 
@@ -248,6 +396,94 @@ const DOW  = ['Lun','Mar','Mer','Gio','Ven','Sab','Dom'];
 let viewY, viewM;                       // mese visualizzato (m: 1-12)
 const selezione = new Set();            // "Y-m-d:tipo"
 
+let TIPO = 'ferie';                     // 'ferie' | 'permesso'
+let MODALITA = 'giornaliero';           // 'giornaliero' | 'orario' (solo se TIPO='permesso')
+let oraDaSel = null, oraASel = null;
+
+function isOrarioAttivo() { return TIPO === 'permesso' && MODALITA === 'orario'; }
+
+// Finestra oraria per slot — mirror dei bottoni "a ore piene" del bot:
+// 08-20 diurno, 20-08 notturno (attraversa la mezzanotte).
+function sequenzaOre(slot) {
+  if (slot === 'D') return Array.from({length:13}, (_,i) => String(8+i).padStart(2,'0') + ':00');
+  const seq = [];
+  for (let h = 20; h <= 23; h++) seq.push(String(h).padStart(2,'0') + ':00');
+  for (let h = 0;  h <= 8;  h++) seq.push(String(h).padStart(2,'0') + ':00');
+  return seq;
+}
+
+function renderOraChips(slot) {
+  const seq  = sequenzaOre(slot);
+  const daBox = document.getElementById('chipsOraDa');
+  const aBox  = document.getElementById('chipsOraA');
+  daBox.innerHTML = ''; aBox.innerHTML = '';
+  const iDa = seq.indexOf(oraDaSel);
+  seq.forEach(h => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'fs-chip ora' + (h === oraDaSel ? ' active' : '');
+    b.textContent = h;
+    b.onclick = () => { oraDaSel = h; oraASel = null; renderOraChips(slot); aggiornaContatori(); };
+    daBox.appendChild(b);
+  });
+  seq.forEach((h, idx) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'fs-chip ora' + (h === oraASel ? ' active' : '');
+    b.textContent = h;
+    b.disabled = iDa === -1 || idx <= iDa;
+    b.onclick = () => { oraASel = h; renderOraChips(slot); aggiornaContatori(); };
+    aBox.appendChild(b);
+  });
+}
+
+function svuotaOraChips() {
+  document.getElementById('chipsOraDa').innerHTML = '';
+  document.getElementById('chipsOraA').innerHTML = '';
+  oraDaSel = null; oraASel = null;
+}
+
+document.getElementById('chipsTipo').addEventListener('click', e => {
+  const btn = e.target.closest('.fs-chip'); if (!btn) return;
+  TIPO = btn.dataset.tipo;
+  document.querySelectorAll('#chipsTipo .fs-chip').forEach(c => c.classList.toggle('active', c === btn));
+  document.getElementById('chipsModalita').style.display = TIPO === 'permesso' ? 'flex' : 'none';
+  document.querySelector('.fs-estiva').style.display = TIPO === 'ferie' ? 'flex' : 'none';
+  if (TIPO === 'ferie') {
+    MODALITA = 'giornaliero';
+    document.querySelectorAll('#chipsModalita .fs-chip').forEach(c => c.classList.toggle('active', c.dataset.modalita === 'giornaliero'));
+  }
+  document.getElementById('orarioPicker').style.display = isOrarioAttivo() ? 'block' : 'none';
+  aggiornaEtichettaBtn();
+  selezione.clear(); svuotaOraChips(); renderCal(); aggiornaContatori();
+});
+document.getElementById('chipsModalita').addEventListener('click', e => {
+  const btn = e.target.closest('.fs-chip'); if (!btn) return;
+  MODALITA = btn.dataset.modalita;
+  document.querySelectorAll('#chipsModalita .fs-chip').forEach(c => c.classList.toggle('active', c === btn));
+  document.getElementById('orarioPicker').style.display = isOrarioAttivo() ? 'block' : 'none';
+  aggiornaEtichettaBtn();
+  selezione.clear(); svuotaOraChips(); renderCal(); aggiornaContatori();
+});
+
+// Stesso principio del foglio (#188): solo avviso, mai un blocco — vale sia
+// per ferie che per permesso.
+function mostraAvvisiScambioSalto(avvisi) {
+  if (!avvisi || !avvisi.length) return;
+  chiediConferma({
+    titolo:  '⚠️ Scambio salto attivo',
+    testo:   'Attenzione — questi vigili risultano assenti ma anche in uno ' +
+             'scambio salto attivo per lo stesso turno:<br><br>' +
+             avvisi.map(a => '• ' + a).join('<br>') +
+             '<br><br>Puoi sistemare il foglio o lasciarlo così.',
+    okLabel: 'Ho capito',
+    okStyle: 'background:#b7950b;color:#fff',
+  });
+}
+
+function aggiornaEtichettaBtn() {
+  document.getElementById('btnCrea').textContent =
+    TIPO === 'ferie' ? 'Crea voci ferie' : 'Crea voci permesso';
+}
+
 function pad(n){ return String(n).padStart(2,'0'); }
 
 function renderCal() {
@@ -274,6 +510,16 @@ function renderCal() {
       cell.innerHTML += '<span class="ico">' + (slot === 'D' ? '☀️' : '🌙') + '</span>';
       if (selezione.has(key)) cell.classList.add('sel');
       cell.onclick = () => {
+        if (isOrarioAttivo()) {
+          // Un giorno alla volta: click su un altro giorno sostituisce la selezione.
+          const giaSelezionato = selezione.has(key);
+          selezione.clear();
+          svuotaOraChips();
+          if (!giaSelezionato) { selezione.add(key); renderOraChips(slot); }
+          renderCal();
+          aggiornaContatori();
+          return;
+        }
         if (selezione.has(key)) { selezione.delete(key); cell.classList.remove('sel'); }
         else { selezione.add(key); cell.classList.add('sel'); }
         aggiornaContatori();
@@ -298,7 +544,8 @@ function aggiornaContatori() {
   const ng = selezione.size;
   document.getElementById('contatori').textContent =
     `${nv} vigil${nv===1?'e':'i'} · ${ng} giorn${ng===1?'o':'i'}`;
-  document.getElementById('btnCrea').disabled = (nv === 0 || ng === 0);
+  const oraOk = !isOrarioAttivo() || (oraDaSel && oraASel);
+  document.getElementById('btnCrea').disabled = (nv === 0 || ng === 0 || !oraOk);
 }
 
 function selVigili(on) {
@@ -329,7 +576,15 @@ async function creaVoci() {
   fd.append('azione', 'crea_voci');
   fd.append('vigili', JSON.stringify(vigili));
   fd.append('voci',   JSON.stringify(voci));
-  fd.append('estiva', document.getElementById('chkEstiva').checked ? '1' : '');
+  fd.append('tipoRichiesta', TIPO);
+  fd.append('modalita', MODALITA);
+  if (TIPO === 'ferie') {
+    fd.append('estiva', document.getElementById('chkEstiva').checked ? '1' : '');
+  }
+  if (isOrarioAttivo()) {
+    fd.append('oraDa', oraDaSel || '');
+    fd.append('oraA',  oraASel  || '');
+  }
   const msg = document.getElementById('msg');
   try {
     const res = await fetch('', { method: 'POST', body: fd }).then(r => r.json());
@@ -337,13 +592,16 @@ async function creaVoci() {
       msg.className = 'fs-msg ok';
       msg.textContent = `✅ Create ${res.creati} voci`
         + (res.duplicati ? ` · ${res.duplicati} già presenti` : '')
-        + (res.scartati ? ` · ${res.scartati} scartate` : '') + '.';
+        + (res.scartati ? ` · ${res.scartati} scartate` : '')
+        + (res.scartatiSalto ? ` · ${res.scartatiSalto} scartate (vigile sul proprio salto)` : '') + '.';
       selezione.clear();
+      svuotaOraChips();
       renderCal();
       // #141: reset dei visti dopo la creazione, per non dimenticarne uno attivo
       // e ricrearci ferie non richieste al giro successivo.
       document.querySelectorAll('.vchk').forEach(c => c.checked = false);
       document.getElementById('chkEstiva').checked = false;
+      mostraAvvisiScambioSalto(res.avvisi);
     } else {
       msg.className = 'fs-msg err';
       msg.textContent = '⚠️ ' + (res.errore || 'Errore.');
@@ -362,5 +620,6 @@ viewM = oggi.getMonth() + 1;
 renderCal();
 aggiornaContatori();
 </script>
+<?php require __DIR__ . '/../includes/logbook_widget.php'; ?>
 </body>
 </html>

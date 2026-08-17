@@ -363,3 +363,38 @@ function scambioConflittoFerie(PDO $pdo, int $foglioId, string $dataStr, string 
     }
     return $avvisi;
 }
+
+/**
+ * Come scambioConflittoFerie ma per righe (vigile_id, data, tipo) già note al
+ * chiamante, senza bisogno di un $foglioId (i tool di caricamento massivo —
+ * admin/ferie_simulate.php, admin/assenze_simulate.php — processano più
+ * vigili/giorni in batch, non un foglio alla volta). Stesso principio: solo
+ * rilevazione, mai un blocco. $labelTipo va nel testo dell'avviso ("ferie",
+ * "missione", "malattia", "infortunio").
+ */
+function scambioConflittiRighe(PDO $pdo, array $righe, string $labelTipo): array
+{
+    if (!$righe) return [];
+    $st = $pdo->prepare(
+        "SELECT vigile_out_id, vigile_in_id FROM salto_override
+         WHERE attivo=1 AND data=? AND tipo=? AND (vigile_out_id=? OR vigile_in_id=?)"
+    );
+    $stNome = $pdo->prepare("SELECT cognome, disambiguatore FROM vigili WHERE id=?");
+    $avvisi = [];
+    foreach ($righe as [$vigileId, $data, $tipo]) {
+        $st->execute([$data, $tipo, $vigileId, $vigileId]);
+        foreach ($st->fetchAll() as $r) {
+            $stNome->execute([$vigileId]);
+            $v = $stNome->fetch();
+            $nome = $v
+                ? ucfirst(strtolower($v['cognome'])) . ($v['disambiguatore'] ? ' ' . (int)$v['disambiguatore'] : '')
+                : "vigile #$vigileId";
+            if ((int)$vigileId === (int)$r['vigile_out_id']) {
+                $avvisi[] = "$nome è segnato in $labelTipo il $data, ma con lo scambio salto dovrebbe tornare in servizio in questo turno.";
+            } else {
+                $avvisi[] = "$nome è segnato in $labelTipo il $data ed è già a riposo per lo scambio salto in questo turno: la voce è ridondante.";
+            }
+        }
+    }
+    return $avvisi;
+}

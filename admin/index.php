@@ -195,12 +195,20 @@ $nRegole  = contaTab($pdo, "SELECT COUNT(*) FROM regole_squadra WHERE attiva=1 A
 
     <a href="ferie_simulate.php" class="admin-card">
       <div class="ac-ico">🏖️</div>
-      <h3>Caricamento ferie <span style="background:#b9770e;color:#fff;font-size:.6rem;font-weight:800;padding:1px 6px;border-radius:5px;vertical-align:middle;">BETA</span></h3>
-      <p>Carica ferie (estive / agenda cartacea) come richieste bot: voce in Agenda + assenza sul foglio giusto. Niente mail.</p>
+      <h3>Caricamento ferie e permessi <span style="background:#b9770e;color:#fff;font-size:.6rem;font-weight:800;padding:1px 6px;border-radius:5px;vertical-align:middle;">BETA</span></h3>
+      <p>Carica ferie (estive / agenda cartacea) e permessi (giornalieri o orari) come richieste bot: voce in Agenda + assenza/annotazione sul foglio giusto. Niente mail.</p>
+      <div class="ac-meta">strumento interno di test</div>
+    </a>
+
+    <a href="assenze_simulate.php" class="admin-card">
+      <div class="ac-ico">🚑</div>
+      <h3>Caricamento assenze <span style="background:#b9770e;color:#fff;font-size:.6rem;font-weight:800;padding:1px 6px;border-radius:5px;vertical-align:middle;">BETA</span></h3>
+      <p>Carica missione/malattia/infortunio come richieste bot: voce in Agenda (già approvata) + assenza sul foglio giusto. Niente mail.</p>
       <div class="ac-meta">strumento interno di test</div>
     </a>
 
   </div>
 </main>
+<?php require __DIR__ . '/../includes/logbook_widget.php'; ?>
 </body>
 </html>
