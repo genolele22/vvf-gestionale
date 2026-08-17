@@ -678,18 +678,24 @@ class FoglioRenderer
                     if (!empty($queue[$code])) {
                         $a = array_shift($queue[$code]);
                         // fuori sede: sigla nella colonna adiacente se il modello ne
-                        // prevede una per questo mezzo (cella stretta, subito dopo,
-                        // non assegnata ad alcun mezzo — non tutti i mezzi ce l'hanno:
+                        // prevede una per questo mezzo (cella subito dopo, vuota, non
+                        // assegnata ad alcun mezzo — non tutti i mezzi ce l'hanno:
                         // fallback in coda al nome, come prima, se manca) + nome SEMPRE
                         // sottolineato se fuori sede, sigla o no (mai per chi è di Centrale)
+                        // Nessun limite di larghezza sulla cella sigla: i mezzi con colonna
+                        // nome più stretta (es. GA-1NAU/ML-1NAU, nautici) hanno una sigla
+                        // proporzionalmente più larga per compensare — il vincolo "non
+                        // assegnata ad alcun mezzo" (colCode) basta già a garantire che sia
+                        // davvero la cella sigla e non l'inizio del prossimo mezzo (bug
+                        // segnalato da Lele: MN incollato al nome sotto GA-1NAU perché la
+                        // sua sigla era larga 3 e il vecchio limite <=2 la scartava).
                         $sfx = '';
                         $siglaCell = null;
                         if (!empty($a['sigla'])) {
                             $next = $cells[$j + 1] ?? null;
                             if ($next !== null) {
                                 [$ncol, $ncell] = $next;
-                                $span = max(1, (int)$ncell->getAttributeNS(self::TBL, 'number-columns-spanned') ?: 1);
-                                if (trim($ncell->textContent) === '' && !isset($colCode[$ncol]) && $span <= 2) {
+                                if (trim($ncell->textContent) === '' && !isset($colCode[$ncol])) {
                                     $siglaCell = $ncell;
                                 }
                             }
