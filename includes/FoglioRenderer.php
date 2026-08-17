@@ -31,7 +31,9 @@ class FoglioRenderer
     // FER_SIG/RC_SIG/ASSENTI_SIG = colonna sigla sede (a destra del nome, già centrata
     // in verticale nel modello; l'allineamento orizzontale lo forza setSigla()).
     const FER_COG=0, FER_SIG=4, FER_TUR=6, FER_DA=7, FER_A=9, RC_COG=12, RC_SIG=15, RC_VAR=17;
-    const ASSENTI_COG=0, ASSENTI_SIG=4;
+    const ASSENTI_COG=0, ASSENTI_SIG=4, ASSENTI_TUR=6, ASSENTI_DA=7, ASSENTI_A=9, ASSENTI_TXT=11;
+    // id/codice tipo_assenza usati fuori da FER/RC (#206: layout Missione/Permesso/Malattia/Infortunio)
+    const TIPO_ID = ['PERM' => 4, 'MISS' => 3, 'MAL' => 5, 'INF' => 6];
 
     private PDO $pdo;
     private array $foglio;
@@ -181,6 +183,7 @@ class FoglioRenderer
             $this->perTipo[$a['tipo_codice']][] = $a;
         }
         $this->arricchisciFerie();   // nr_turni + periodo da–a sulle righe FER
+        $this->arricchisciAssentiVarie();   // #206: idem per MISS/PERM/MAL/INF + colonna testo
         // capo / vice / furieri
         $this->capo = $this->vigById($this->foglio['capo_servizio_id'] ?? null);
         $this->vice = $this->vigById($this->foglio['vice_capo_id'] ?? null);
@@ -300,12 +303,7 @@ class FoglioRenderer
     private function arricchisciFerie(): void
     {
         if (empty($this->perTipo['FER'])) return;
-        $req = $this->pdo->prepare(
-            "SELECT f.data_servizio AS data_richiesta, f.tipo_turno
-               FROM assenze a JOIN fogli_servizio f ON f.id = a.foglio_id
-              WHERE a.vigile_id=? AND a.tipo_assenza_id=1
-              ORDER BY f.data_servizio, f.tipo_turno"
-        );
+        $this->arricchisciBlocco('FER', 1);
         // #183 (4°): evidenziatore ferie estive/d'ufficio sull'odt — 'estiva' viene
         // da bot_requests.ferie_estiva; 'ufficio' quando NON esiste nessuna richiesta
         // bot per questo vigile/giorno/turno (assenza creata solo sul foglio).
@@ -315,25 +313,83 @@ class FoglioRenderer
               ORDER BY id DESC LIMIT 1"
         );
         foreach ($this->perTipo['FER'] as $i => $a) {
-            $req->execute([(int)$a['vigile_id']]);
-            $righe = array_map(fn($r) => $r + ['stato' => 'approved'], $req->fetchAll());
-            $blocchi = blocchiContigui($righe);
-            foreach ($blocchi as $b) {
-                $da = $b[0]['data_richiesta'];
-                $aa = end($b)['data_richiesta'];
-                if ($this->dataStr >= $da && $this->dataStr <= $aa) {
-                    $this->perTipo['FER'][$i]['nr_turni'] = turniLabel($b);
-                    $this->perTipo['FER'][$i]['data_da']  = $da;
-                    $this->perTipo['FER'][$i]['data_a']   = $aa;
-                    break;
-                }
-            }
             $estUff->execute([(int)$a['vigile_id'], $this->dataStr, $this->tipoParam]);
             $estivaVal = $estUff->fetchColumn();
             if ($estivaVal === false) {
                 $this->perTipo['FER'][$i]['ferie_ufficio'] = true;
             } elseif ((int)$estivaVal === 1) {
                 $this->perTipo['FER'][$i]['ferie_estiva'] = true;
+            }
+        }
+    }
+
+    /**
+     * #206: layout completo Missione/Permesso/Malattia/Infortunio nell'elenco
+     * assenti — stesse colonne turni/da-a già in uso per FERIE, più una colonna
+     * testo (nota missione, o etichetta fissa per gli altri tre tipi):
+     *   MISSIONE → testo della nota della richiesta bot (vuoto se assente d'ufficio)
+     *   PERMESSO/MALATTIA/INFORTUNIO → scritta fissa col nome del tipo
+     * Ordine di stampa già corretto a monte (fill(): MISS poi PERM, MAL poi INF,
+     * ciascuno alfabetico per cognome — ordine di lettura della query in loadData()).
+     */
+    private function arricchisciAssentiVarie(): void
+    {
+        static $etichetteFisse = ['PERM' => 'Permesso', 'MAL' => 'Malattia', 'INF' => 'Infortunio'];
+        $noteMiss = $this->pdo->prepare(
+            "SELECT note FROM bot_requests
+              WHERE vigile_id=? AND data_richiesta=? AND tipo_turno IN (?,'DN') AND tipo_assenza_id=3
+              ORDER BY id DESC LIMIT 1"
+        );
+        foreach (self::TIPO_ID as $codice => $tipoId) {
+            if (empty($this->perTipo[$codice])) continue;
+            $this->arricchisciBlocco($codice, $tipoId);
+            foreach ($this->perTipo[$codice] as $i => $a) {
+                if ($codice === 'MISS') {
+                    $noteMiss->execute([(int)$a['vigile_id'], $this->dataStr, $this->tipoParam]);
+                    $this->perTipo[$codice][$i]['testo'] = (string)($noteMiss->fetchColumn() ?: '');
+                } else {
+                    $this->perTipo[$codice][$i]['testo'] = $etichetteFisse[$codice];
+                }
+            }
+        }
+    }
+
+    /**
+     * Per ogni riga di $this->perTipo[$codice] calcola nr turni + periodo (da–a)
+     * del blocco contiguo di quel tipo di assenza del vigile che contiene la data
+     * di questo foglio. Stessa logica dell'Agenda (includes/ferie_blocchi.php):
+     * un blocco = richieste con gap <= 3 giorni; DN vale 2 turni.
+     *
+     * Fonte: assenze+fogli_servizio (per tipo_assenza_id), non bot_requests — le
+     * assenze assegnate d'ufficio direttamente dal foglio (azione 'assenza' /
+     * 'ferie_ufficio' in nuovo.php) creano l'assenza ma NESSUNA riga in
+     * bot_requests, quindi restavano sempre senza turni/periodo. L'assenza copre
+     * sempre entrambe le origini (bot e d'ufficio) ed è sempre presente/coerente:
+     * una richiesta respinta non ha mai assenza (rimossa da feriaDeleteAssenza),
+     * quindi qui non serve isolare uno stato "respinto" come fa bot_requests.
+     */
+    private function arricchisciBlocco(string $codice, int $tipoAssenzaId): void
+    {
+        if (empty($this->perTipo[$codice])) return;
+        $req = $this->pdo->prepare(
+            "SELECT f.data_servizio AS data_richiesta, f.tipo_turno
+               FROM assenze a JOIN fogli_servizio f ON f.id = a.foglio_id
+              WHERE a.vigile_id=? AND a.tipo_assenza_id=?
+              ORDER BY f.data_servizio, f.tipo_turno"
+        );
+        foreach ($this->perTipo[$codice] as $i => $a) {
+            $req->execute([(int)$a['vigile_id'], $tipoAssenzaId]);
+            $righe = array_map(fn($r) => $r + ['stato' => 'approved'], $req->fetchAll());
+            $blocchi = blocchiContigui($righe);
+            foreach ($blocchi as $b) {
+                $da = $b[0]['data_richiesta'];
+                $aa = end($b)['data_richiesta'];
+                if ($this->dataStr >= $da && $this->dataStr <= $aa) {
+                    $this->perTipo[$codice][$i]['nr_turni'] = turniLabel($b);
+                    $this->perTipo[$codice][$i]['data_da']  = $da;
+                    $this->perTipo[$codice][$i]['data_a']   = $aa;
+                    break;
+                }
             }
         }
     }
@@ -679,6 +735,11 @@ class FoglioRenderer
                 // sigla sede nella colonna dedicata (a destra del nome, come in FERIE), non in coda al nome
                 $this->writeName($doc, $byCol[self::ASSENTI_COG], $it);
                 if (isset($byCol[self::ASSENTI_SIG])) $this->setSigla($doc, $byCol[self::ASSENTI_SIG], $it['sigla'] ?? '');
+                // #206: turni/periodo/testo — presenti solo per MISS/PERM/MAL/INF (non FER/RC, altre righe del foglio)
+                if (isset($byCol[self::ASSENTI_TUR])) $this->setText($doc, $byCol[self::ASSENTI_TUR], !empty($it['nr_turni']) ? (string)(int)$it['nr_turni'] : '');
+                if (isset($byCol[self::ASSENTI_DA]))  $this->setText($doc, $byCol[self::ASSENTI_DA], !empty($it['data_da']) ? date('j/n', strtotime($it['data_da'])) : '');
+                if (isset($byCol[self::ASSENTI_A]))   $this->setText($doc, $byCol[self::ASSENTI_A], !empty($it['data_a']) ? date('j/n', strtotime($it['data_a'])) : '');
+                if (isset($byCol[self::ASSENTI_TXT])) $this->setText($doc, $byCol[self::ASSENTI_TXT], $it['testo'] ?? '');
             }
         }
     }
