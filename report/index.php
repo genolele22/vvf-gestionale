@@ -516,5 +516,6 @@ document.querySelectorAll('table.rep').forEach(tab => {
 });
 </script>
 
+<?php require __DIR__ . '/../includes/logbook_widget.php'; ?>
 </body>
 </html>

@@ -241,5 +241,6 @@ $furRows = $pdo->query(
 
   </div>
 </main>
+<?php require __DIR__ . '/../includes/logbook_widget.php'; ?>
 </body>
 </html>

@@ -342,5 +342,6 @@ $saltoOggi = $turnoOggi['diurno']['turno'] . $turnoOggi['diurno']['salto']
   </div><!-- /.cal-wrapper -->
 
 </main>
+<?php require __DIR__ . '/includes/logbook_widget.php'; ?>
 </body>
 </html>

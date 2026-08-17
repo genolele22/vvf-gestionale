@@ -94,5 +94,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </div>
   </div>
 </main>
+<?php require __DIR__ . '/includes/logbook_widget.php'; ?>
 </body>
 </html>

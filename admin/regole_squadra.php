@@ -320,5 +320,6 @@ $etichettaCsv = function (array $ids, array $map): string {
     </table>
   </div>
 </main>
+<?php require __DIR__ . '/../includes/logbook_widget.php'; ?>
 </body>
 </html>

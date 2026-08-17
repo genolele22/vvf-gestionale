@@ -939,5 +939,6 @@ if (tog && lbl) {
   #tabellaVigili .azioni .btn-sm { padding: 4px 7px; font-size: .72rem; white-space: nowrap; }
 </style>
 
+<?php require __DIR__ . '/../includes/logbook_widget.php'; ?>
 </body>
 </html>

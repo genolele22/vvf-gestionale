@@ -8,22 +8,12 @@
 session_start();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/auth.php';
+require_once __DIR__ . '/../includes/logbook.php';
 richiediLogin();
 richiediLogbook();   // pagina di lavoro interna: solo Comando + beta-tester (lelemele, adminb)
 
 $pdo = getDB();
-
-// Tabella creata al volo (feature temporanea, niente migrazione separata)
-$pdo->exec("
-    CREATE TABLE IF NOT EXISTS bot_logbook (
-        id        BIGINT AUTO_INCREMENT PRIMARY KEY,
-        testo     TEXT NOT NULL,
-        autore    VARCHAR(60) DEFAULT NULL,
-        fatto     TINYINT(1) NOT NULL DEFAULT 0,
-        creato_il DATETIME DEFAULT CURRENT_TIMESTAMP,
-        fatto_il  DATETIME DEFAULT NULL
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-");
+assicuraSchemaLogbook($pdo);
 
 // ── Azioni (POST → redirect, pattern PRG per evitare doppio invio) ──────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') vietaSeSolaLettura();
@@ -33,12 +23,7 @@ if ($azione === 'add') {
     $testo  = trim($_POST['testo'] ?? '');
     $autore = trim($_POST['autore'] ?? '');
     if ($testo !== '') {
-        // id esplicito via MAX+1: TiDB non garantisce AUTO_INCREMENT affidabile
-        $pdo->beginTransaction();
-        $nextId = nextId($pdo, 'bot_logbook');
-        $st = $pdo->prepare("INSERT INTO bot_logbook (id, testo, autore) VALUES (?, ?, ?)");
-        $st->execute([$nextId, $testo, $autore !== '' ? $autore : null]);
-        $pdo->commit();
+        logbookAggiungi($pdo, $testo, $autore !== '' ? $autore : null, null);
     }
     header('Location: index.php'); exit;
 }
@@ -100,6 +85,10 @@ foreach ($voci as $v) { $v['fatto'] ? $nFatte++ : $nDaFare++; }
   .lb-count  { color:#666; font-size:.9rem; margin-bottom:.8rem; }
   .lb-num    { color:#999; font-weight:700; font-size:.8rem; margin-right:6px; }
   .lb-empty  { color:#999; text-align:center; padding:2rem; }
+  .lb-sezione { list-style:none; font-size:.78rem; font-weight:700; text-transform:uppercase;
+               letter-spacing:.5px; color:#888; padding:.9rem .4rem .3rem; }
+  .lb-pagina { color:#0a58ca; text-decoration:none; }
+  .lb-pagina:hover { text-decoration:underline; }
 </style>
 </head>
 <body>
@@ -155,8 +144,13 @@ foreach ($voci as $v) { $v['fatto'] ? $nFatte++ : $nDaFare++; }
     <?php if (!$voci): ?>
       <div class="lb-empty">Niente ancora. Aggiungi la prima voce.</div>
     <?php else: ?>
+      <?php $sezioneFatta = false; ?>
       <ul class="lb-list">
+        <?php if ($nDaFare): ?><li class="lb-sezione">📌 Da fare (<?= $nDaFare ?>)</li><?php endif; ?>
         <?php foreach ($voci as $v): ?>
+          <?php if ($v['fatto'] && !$sezioneFatta): $sezioneFatta = true; ?>
+            <li class="lb-sezione">✅ Fatte (<?= $nFatte ?>)</li>
+          <?php endif; ?>
           <li class="lb-item <?= $v['fatto'] ? 'done' : '' ?>">
 
             <form method="post">
@@ -174,6 +168,9 @@ foreach ($voci as $v) { $v['fatto'] ? $nFatte++ : $nDaFare++; }
                   <?= htmlspecialchars($v['autore']) ?> ·
                 <?php endif; ?>
                 <?= htmlspecialchars(substr((string)$v['creato_il'], 0, 16)) ?>
+                <?php if (!empty($v['pagina_url'])): ?>
+                  · <a class="lb-pagina" href="<?= htmlspecialchars($v['pagina_url']) ?>"><?= htmlspecialchars($v['pagina_url']) ?></a>
+                <?php endif; ?>
               </div>
             </div>
 
@@ -190,5 +187,6 @@ foreach ($voci as $v) { $v['fatto'] ? $nFatte++ : $nDaFare++; }
 
   </div>
 </main>
+<?php require __DIR__ . '/../includes/logbook_widget.php'; ?>
 </body>
 </html>

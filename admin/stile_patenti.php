@@ -136,5 +136,6 @@ $exRosso = $cfg['rosso'] !== '' ? $cfg['rosso'] : '#c0392b';
     </div>
   </div>
 </main>
+<?php require __DIR__ . '/../includes/logbook_widget.php'; ?>
 </body>
 </html>

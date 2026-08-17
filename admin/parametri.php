@@ -305,5 +305,6 @@ $righe = array_filter($righeTutte, fn($r) => !in_array($r['chiave'], $chiaviStru
     </table>
   </div>
 </main>
+<?php require __DIR__ . '/../includes/logbook_widget.php'; ?>
 </body>
 </html>
