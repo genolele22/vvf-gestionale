@@ -767,6 +767,7 @@ class FoglioRenderer
     {
         $furTxt = $this->furieri ? implode(', ', array_map([self::class, 'etichetta'], $this->furieri)) : '';
         $dateCells = [];
+        $furRow = null; $furCol = null;   // riga/colonna dell'etichetta "Furieri" (ancora per la cella data adiacente)
         for ($i = 0; $i < $pa; $i++) {
             $cells = $this->rowCells($rows[$i]);
             for ($j = 0; $j < count($cells); $j++) {
@@ -777,8 +778,9 @@ class FoglioRenderer
                 // esempio tipo "B4"/"A4" lasciato in una copia già compilata — in
                 // entrambi i casi va sostituito col salto vero del giorno (es. A7).
                 if (preg_match('/^(ST|[A-D]\s*\d+)$/i', $t)) { $this->setText($doc, $cell, $this->codSaltoRip); continue; }
-                if (stripos($t, 'ore') !== false) { $dateCells[] = [$i, $cell]; continue; }                     // riga data
+                if (stripos($t, 'ore') !== false) { $dateCells[] = [$i, $cell]; continue; }                     // riga data (testo d'esempio nel modello)
                 $tl = mb_strtolower($t);
+                if ($tl === 'furieri') { $furRow = $i; $furCol = $col; continue; }
                 // stile esplicito anche qui (mai ereditato dalla cella, #67): capo/vice
                 // in straordinario se richiamati dal salto a riposo di oggi (#92).
                 if (strpos($tl, 'vice') !== false && strpos($tl, 'capo') !== false && isset($cells[$j+1]))
@@ -792,15 +794,30 @@ class FoglioRenderer
                         self::nameStyle(null, false));
             }
         }
+        // Fallback geometrico se il modello non ha più il testo d'esempio ", ore 8.00"
+        // (successo col modello B0, celle svuotate ma stessa posizione): le due celle
+        // data sono le celle larghe vuote, non nella colonna dei furieri, sulla riga
+        // dell'etichetta "Furieri" e su quella subito sotto (dove vanno i nomi).
+        if (empty($dateCells) && $furRow !== null) {
+            foreach ([$furRow, $furRow + 1] as $ri) {
+                if (!isset($rows[$ri])) continue;
+                foreach ($this->rowCells($rows[$ri]) as [$col, $cell]) {
+                    if ($col === $furCol) continue;
+                    if (trim($cell->textContent) === '') { $dateCells[] = [$ri, $cell]; break; }
+                }
+            }
+        }
         // due righe data: la più in alto = inizio servizio, la sotto = fine
         usort($dateCells, fn($a, $b) => $a[0] <=> $b[0]);
         // peso normale esplicito: la 2ª cella data nel modello eredita il grassetto
         if (isset($dateCells[0])) $this->setText($doc, $dateCells[0][1], $this->rigaData1, 'NmReg');
         if (isset($dateCells[1])) $this->setText($doc, $dateCells[1][1], $this->rigaData2, 'NmReg');
-        // nomi furieri: riga 3, prima cella
-        if (isset($rows[3])) {
-            $bc = $this->rowCellsByCol($rows[3]);
-            if (isset($bc[0]) && trim($bc[0]->textContent) === '') $this->setText($doc, $bc[0], $furTxt);
+        // nomi furieri: riga subito sotto l'etichetta "Furieri", stessa colonna
+        $rFurNomi = $furRow !== null ? $furRow + 1 : 3;   // 3 = fallback storico se l'etichetta non si trova
+        if (isset($rows[$rFurNomi])) {
+            $bc = $this->rowCellsByCol($rows[$rFurNomi]);
+            $colFurNomi = $furCol ?? 0;
+            if (isset($bc[$colFurNomi]) && trim($bc[$colFurNomi]->textContent) === '') $this->setText($doc, $bc[$colFurNomi], $furTxt);
         }
     }
 
@@ -1122,11 +1139,13 @@ class FoglioRenderer
                         // lo porta (successo con GE-1A nel modello B0, #67-bis) — stesso
                         // principio già usato per NmReg sulle righe data.
                         $tp->setAttributeNS(self::FO, 'fo:font-weight', $straord ? 'bold' : 'normal');
-                        if ($straord) {
-                            if (self::$colStraord !== null) $tp->setAttributeNS(self::FO, 'fo:background-color', self::$colStraord);
-                        } elseif ($evidColors[$evidKind] !== null) {
-                            $tp->setAttributeNS(self::FO, 'fo:background-color', $evidColors[$evidKind]);
-                        }
+                        // sfondo SEMPRE esplicito quanto il peso, stesso motivo (#67-ter): la
+                        // cella GE-1A del modello B0 non porta solo grassetto residuo ma anche
+                        // uno sfondo giallo (fo:background-color) sul paragrafo — senza un
+                        // 'transparent' esplicito qui, un nome normale nella stessa cella
+                        // sembrava comunque "in straordinario" pur avendo font-weight corretto.
+                        $bgKind = $straord ? self::$colStraord : $evidColors[$evidKind];
+                        $tp->setAttributeNS(self::FO, 'fo:background-color', $bgKind ?? 'transparent');
                         if ($und) {
                             $tp->setAttributeNS(self::STY, 'style:text-underline-style', 'solid');
                             $tp->setAttributeNS(self::STY, 'style:text-underline-width', 'auto');
