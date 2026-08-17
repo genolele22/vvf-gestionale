@@ -1351,42 +1351,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $tipiTurno = ($tipoParam === 'D') ? ['D', 'DN'] : ['N', 'DN'];
         $phTt      = implode(',', array_fill(0, count($tipiTurno), '?'));
 
-        // 1. Le ferie RESPINTE (comunicate o solo decise) su questo turno tornano
-        //    richieste (annulla la decisione manuale della fureria): → pending.
-        //    SOLO ferie (tipo_assenza_id=1): senza questo filtro, un permesso o una
-        //    malattia respinti su questa data/turno venivano riportati 'pending'
-        //    per errore (bug scoperto su un permesso orario respinto e "risorto").
+        // 1. Le richieste RESPINTE (comunicate o solo decise) su questo turno
+        //    tornano richieste (annulla la decisione manuale della fureria): →
+        //    pending. Tutti i tipi (ferie/missione/permesso/malattia/infortunio)
+        //    — richiesta esplicita di Lele: il reset deve risincronizzare
+        //    l'Agenda per intero, non solo le ferie (comportamento storico,
+        //    limitato a tipo_assenza_id=1 per via di un bug ormai risolto: un
+        //    permesso orario respinto veniva riportato 'pending' per errore
+        //    perché all'epoca la query non filtrava affatto per tipo — qui il
+        //    filtro resta rimosso di proposito, non è la stessa svista).
         $pdo->prepare(
             "UPDATE bot_requests SET stato='pending', processed_at=NULL
              WHERE data_richiesta=? AND stato IN ('rejected','declined')
-               AND tipo_turno IN ($phTt) AND tipo_assenza_id=1"
+               AND tipo_turno IN ($phTt)"
         )->execute(array_merge([$dataStr], $tipiTurno));
 
-        // 2. Ferie bot attive (pending/approved) sul turno: chi non ha ancora
-        //    un'assenza su questo foglio (di qualunque tipo) riceve l'assenza
-        //    ferie (tipo 1). Tutte le assenze esistenti restano com'erano.
-        //    SOLO ferie: senza il filtro, un permesso/malattia pending faceva
-        //    inserire per errore un'assenza FER (l'INSERT sotto è hardcoded tipo 1).
+        // 2. Richieste bot attive (pending/approved) sul turno, di qualunque
+        //    tipo: chi non ha ancora un'assenza su questo foglio riceve
+        //    l'assenza del tipo della SUA richiesta (non più sempre FER
+        //    hardcoded). Le assenze esistenti restano com'erano.
+        //    ora_da IS NULL: il permesso ORARIO non tocca mai `assenze` (il
+        //    vigile resta assegnato al turno, vedi permessoOrarioSync) — qui
+        //    andrebbe escluso, altrimenti gli si crea un'assenza per un'intera
+        //    giornata che non ha mai chiesto.
         $stReq = $pdo->prepare(
-            "SELECT DISTINCT vigile_id FROM bot_requests
+            "SELECT DISTINCT vigile_id, tipo_assenza_id FROM bot_requests
              WHERE data_richiesta=? AND stato IN ('pending','approved')
-               AND tipo_turno IN ($phTt) AND tipo_assenza_id=1"
+               AND tipo_turno IN ($phTt) AND ora_da IS NULL"
         );
         $stReq->execute(array_merge([$dataStr], $tipiTurno));
-        $reqVigili = array_map('intval', $stReq->fetchAll(PDO::FETCH_COLUMN));
+        $richiesteAttive = $stReq->fetchAll();
 
         $stAss = $pdo->prepare("SELECT vigile_id FROM assenze WHERE foglio_id=?");
         $stAss->execute([$foglioId]);
         $giaAssenti = array_flip(array_map('intval', $stAss->fetchAll(PDO::FETCH_COLUMN)));
 
-        $mancanti = array_values(array_filter($reqVigili, fn($v) => !isset($giaAssenti[$v])));
+        $mancanti = array_values(array_filter($richiesteAttive,
+            fn($r) => !isset($giaAssenti[(int)$r['vigile_id']])));
         if ($mancanti) {
             $nid = nextId($pdo, 'assenze');
             $insAss = $pdo->prepare(
-                "INSERT INTO assenze (id, foglio_id, vigile_id, tipo_assenza_id) VALUES (?,?,?,1)"
+                "INSERT INTO assenze (id, foglio_id, vigile_id, tipo_assenza_id) VALUES (?,?,?,?)"
             );
-            foreach ($mancanti as $vid) {
-                $insAss->execute([$nid++, $foglioId, $vid]);
+            foreach ($mancanti as $r) {
+                $insAss->execute([$nid++, $foglioId, (int)$r['vigile_id'], (int)$r['tipo_assenza_id']]);
             }
         }
 
@@ -4797,5 +4805,6 @@ _applyFeriePos(localStorage.getItem('feriePos') === 'mezzo' ? 'mezzo' : 'basso')
 
 
 
+<?php require __DIR__ . '/../includes/logbook_widget.php'; ?>
 </body>
 </html>
