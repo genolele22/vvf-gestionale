@@ -116,7 +116,7 @@ class FoglioRenderer
         foreach ($this->pdo->query("SELECT id,codice FROM posizioni")->fetchAll() as $p) $idByCode[(int)$p['id']] = $p['codice'];
         $st = $this->pdo->prepare(
             "SELECT a.posizione_id, a.ordine, a.in_straordinario, a.vigile_id, v.cognome, v.disambiguatore, v.salto_id,
-                    q.codice AS qcodice, $pat AS patente_max,
+                    v.specialista, q.codice AS qcodice, $pat AS patente_max,
                     v.sede_id AS vig_sede, p.sede_id AS pos_sede, s.codice AS sede_cod
              FROM assegnazioni a JOIN vigili v ON v.id=a.vigile_id JOIN qualifiche q ON q.id=v.qualifica_id
              JOIN posizioni p ON p.id=a.posizione_id JOIN sedi s ON s.id=v.sede_id
@@ -146,7 +146,7 @@ class FoglioRenderer
         // Tabella creata da foglio/nuovo.php; potrebbe non esistere su DB vecchi.
         try {
             $stx = $this->pdo->prepare(
-                "SELECT posizione_id, ordine, nome, in_straordinario
+                "SELECT posizione_id, ordine, nome, in_straordinario, patente_forzata
                    FROM assegnazioni_esterni WHERE foglio_id=? ORDER BY posizione_id, ordine"
             );
             $stx->execute([$foglioId]);
@@ -157,7 +157,9 @@ class FoglioRenderer
                     'nome_libero'      => $e['nome'],
                     'ordine'           => (int)$e['ordine'],
                     'in_straordinario' => (int)$e['in_straordinario'],
-                    'patente_max'      => null,
+                    // #204: sul foglio web il colore forzato colora già questi nomi
+                    // (foglio/nuovo.php), qui mancava del tutto — sempre neri nell'odt.
+                    'patente_max'      => $e['patente_forzata'] ?: null,
                     'sigla'            => null,
                 ];
             }
@@ -168,7 +170,7 @@ class FoglioRenderer
         }
         // assenze per tipo
         $st = $this->pdo->prepare(
-            "SELECT a.*, v.cognome, v.disambiguatore, q.codice AS qcodice, ta.codice AS tipo_codice, $pat AS patente_max,
+            "SELECT a.*, v.cognome, v.disambiguatore, v.specialista, q.codice AS qcodice, ta.codice AS tipo_codice, $pat AS patente_max,
                     v.sede_id AS vig_sede, s.codice AS sede_cod
              FROM assenze a JOIN vigili v ON v.id=a.vigile_id JOIN qualifiche q ON q.id=v.qualifica_id
              JOIN tipo_assenza ta ON ta.id=a.tipo_assenza_id JOIN sedi s ON s.id=v.sede_id
@@ -191,7 +193,7 @@ class FoglioRenderer
         if ($this->tipoParam === 'D') {
             try {
                 $st = $this->pdo->prepare(
-                    "SELECT vm.vigile_id, v.cognome, v.disambiguatore, q.codice AS qcodice, $pat AS patente_max
+                    "SELECT vm.vigile_id, v.cognome, v.disambiguatore, v.specialista, q.codice AS qcodice, $pat AS patente_max
                      FROM visite_mediche vm
                      JOIN vigili v     ON v.id = vm.vigile_id
                      JOIN qualifiche q ON q.id = v.qualifica_id
@@ -213,7 +215,7 @@ class FoglioRenderer
 
         // base: vigili attivi col salto di riposo di oggi
         $st = $this->pdo->prepare(
-            "SELECT v.id, v.cognome, v.disambiguatore, q.codice AS qcodice, $pat AS patente_max,
+            "SELECT v.id, v.cognome, v.disambiguatore, v.specialista, q.codice AS qcodice, $pat AS patente_max,
                     v.sede_id AS vig_sede, s.codice AS sede_cod
              FROM vigili v JOIN qualifiche q ON q.id=v.qualifica_id JOIN sedi s ON s.id=v.sede_id
              WHERE v.attivo=1 AND v.salto_id=?");
@@ -272,7 +274,7 @@ class FoglioRenderer
     private function vigFull(int $id, string $pat): ?array
     {
         $st = $this->pdo->prepare(
-            "SELECT v.id, v.cognome, v.disambiguatore, q.codice AS qcodice, $pat AS patente_max,
+            "SELECT v.id, v.cognome, v.disambiguatore, v.specialista, q.codice AS qcodice, $pat AS patente_max,
                     v.sede_id AS vig_sede, s.codice AS sede_cod
              FROM vigili v JOIN qualifiche q ON q.id=v.qualifica_id JOIN sedi s ON s.id=v.sede_id WHERE v.id=?");
         $st->execute([$id]);
@@ -304,6 +306,14 @@ class FoglioRenderer
               WHERE a.vigile_id=? AND a.tipo_assenza_id=1
               ORDER BY f.data_servizio, f.tipo_turno"
         );
+        // #183 (4°): evidenziatore ferie estive/d'ufficio sull'odt — 'estiva' viene
+        // da bot_requests.ferie_estiva; 'ufficio' quando NON esiste nessuna richiesta
+        // bot per questo vigile/giorno/turno (assenza creata solo sul foglio).
+        $estUff = $this->pdo->prepare(
+            "SELECT ferie_estiva FROM bot_requests
+              WHERE vigile_id=? AND data_richiesta=? AND tipo_turno IN (?,'DN') AND tipo_assenza_id=1
+              ORDER BY id DESC LIMIT 1"
+        );
         foreach ($this->perTipo['FER'] as $i => $a) {
             $req->execute([(int)$a['vigile_id']]);
             $righe = array_map(fn($r) => $r + ['stato' => 'approved'], $req->fetchAll());
@@ -317,6 +327,13 @@ class FoglioRenderer
                     $this->perTipo['FER'][$i]['data_a']   = $aa;
                     break;
                 }
+            }
+            $estUff->execute([(int)$a['vigile_id'], $this->dataStr, $this->tipoParam]);
+            $estivaVal = $estUff->fetchColumn();
+            if ($estivaVal === false) {
+                $this->perTipo['FER'][$i]['ferie_ufficio'] = true;
+            } elseif ((int)$estivaVal === 1) {
+                $this->perTipo['FER'][$i]['ferie_estiva'] = true;
             }
         }
     }
@@ -379,22 +396,31 @@ class FoglioRenderer
     /** Nome funzionario: in anagrafica è salvato tutto maiuscolo (es. "IA BAGHINO"),
      *  qui va nello stesso stile degli altri nomi sul foglio — stessa regola usata
      *  per i nomi esterni al turno (etichetta(), campo nome_libero). */
+    /** #183 (2°): apostrofo dritto ' → tipografico ’ nei nomi (es. D'Amato), per
+     *  compatibilità col file ferie LibreOffice ancora in uso. */
+    private static function apostrofoTipografico(string $s): string
+    {
+        return str_replace("'", '’', $s);
+    }
+
     private static function formattaFunzionario(string $nome): string
     {
         $nome = trim($nome);
         if ($nome === '') return '';
-        return self::$formatoNome === 'tutto_maiusc'
+        $out = self::$formatoNome === 'tutto_maiusc'
             ? mb_strtoupper($nome, 'UTF-8')
             : self::capitalizzaParole(mb_strtolower($nome, 'UTF-8'));
+        return self::apostrofoTipografico($out);
     }
 
     private static function etichetta(array $v): string
     {
         if (isset($v['nome_libero'])) {   // esterno al turno: stesso stile testo dei vigili
             $n = trim((string)$v['nome_libero']);
-            return self::$formatoNome === 'tutto_maiusc'
+            $out = self::$formatoNome === 'tutto_maiusc'
                 ? mb_strtoupper($n, 'UTF-8')
                 : self::capitalizzaParole(mb_strtolower($n, 'UTF-8'));
+            return self::apostrofoTipografico($out);
         }
         $q = $v['qcodice'] ?? '';
         $c = $v['cognome'] ?? '';
@@ -406,21 +432,28 @@ class FoglioRenderer
             default:                 // 'standard' — es. "Cs D'Amato"
                 $q = ucfirst(strtolower($q)); $c = self::capitalizzaParole(mb_strtolower($c, 'UTF-8')); break;
         }
-        return trim("$q $c")
-             . (!empty($v['disambiguatore']) ? ' ' . (int)$v['disambiguatore'] : '');
+        return self::apostrofoTipografico(trim("$q $c")
+             . (!empty($v['disambiguatore']) ? ' ' . (int)$v['disambiguatore'] : ''));
     }
     /**
      * Stile testo: colore patente + straordinario (giallo + grassetto) + sottolineato
-     * (in servizio fuori sede). Ritorna SEMPRE uno stile esplicito, anche per il caso
-     * "nessun colore speciale": senza, il nome eredita la formattazione della cella del
-     * modello.odt, che non è uniforme cella per cella — un nome nero spostato in
-     * un'altra casella poteva uscire blu o rosso (#67).
+     * (in servizio fuori sede) + evidenziato (ferie estiva/d'ufficio, solo lista ferie).
+     * Ritorna SEMPRE uno stile esplicito, anche per il caso "nessun colore speciale":
+     * senza, il nome eredita la formattazione della cella del modello.odt, che non è
+     * uniforme cella per cella — un nome nero spostato in un'altra casella poteva
+     * uscire blu o rosso (#67).
+     *
+     * $specialista: #185, solo odt — per gli specialisti la patente non conta, sempre
+     * nero indipendentemente dal grado (il foglio web resta come oggi, non è toccato).
      */
-    private static function nameStyle(?string $t, bool $straord, bool $und = false): string
+    private static function nameStyle(?string $t, bool $straord, bool $und = false,
+                                       bool $specialista = false, bool $evidenziato = false): string
     {
         $col = ($t === '3' || $t === '4') ? 'Rosso' : ($t === '2' ? 'Blu' : '');
         if (self::$stilePatente === 'numero') $col = '';   // il grado lo dice il suffisso
-        return 'Nm' . ($straord ? 'S' : '') . ($und ? 'U' : '') . $col;  // es: Nm, NmRosso, NmS, NmSURosso…
+        if ($specialista) $col = '';
+        return 'Nm' . ($straord ? 'S' : '') . ($und ? 'U' : '') . ($evidenziato ? 'E' : '') . $col;
+        // es: Nm, NmRosso, NmS, NmSURosso, NmEBlu…
     }
 
     private function modelPath(): string { return __DIR__ . '/../templates/modello.odt'; }
@@ -717,7 +750,8 @@ class FoglioRenderer
     private function writeName(DOMDocument $doc, DOMElement $cell, array $a, string $suffix = '', string $prefix = '', bool $underline = false): void
     {
         $label = $prefix . self::etichetta($a) . self::suffissoPat($a['patente_max'] ?? null) . $suffix;
-        $style = self::nameStyle($a['patente_max'] ?? null, !empty($a['in_straordinario']), $underline);
+        $style = self::nameStyle($a['patente_max'] ?? null, !empty($a['in_straordinario']), $underline,
+            !empty($a['specialista']), !empty($a['ferie_estiva']) || !empty($a['ferie_ufficio']));
         $this->setText($doc, $cell, $label, $style);
     }
 
@@ -732,7 +766,8 @@ class FoglioRenderer
         $p->appendChild($doc->createElementNS(self::TXT, 'text:line-break'));
         $label = self::etichetta($a) . self::suffissoPat($a['patente_max'] ?? null)
                . (!empty($a['sigla']) ? ' ' . $a['sigla'] : '');
-        $style = self::nameStyle($a['patente_max'] ?? null, !empty($a['in_straordinario']), $underline);
+        $style = self::nameStyle($a['patente_max'] ?? null, !empty($a['in_straordinario']), $underline,
+            !empty($a['specialista']));
         if ($style) {
             $span = $doc->createElementNS(self::TXT, 'text:span');
             $span->setAttributeNS(self::TXT, 'text:style-name', $style);
@@ -979,31 +1014,39 @@ class FoglioRenderer
             $auto->appendChild($st);
         }
         $YEL = '#FFFF66';
-        // matrice: colore patente × straordinario (giallo) × sottolineato (fuori sede).
-        // '' → nero esplicito (#000000), MAI lasciato senza stile: altrimenti il nome
-        // eredita la formattazione della cella del modello.odt, che non è uniforme (#67).
+        // #183 (4°): evidenziatore ferie estive/d'ufficio — colore diverso da quello
+        // dello straordinario ($YEL) per non confonderli a colpo d'occhio.
+        $EVI = '#AEE3E8';
+        // matrice: colore patente × straordinario (giallo) × sottolineato (fuori sede)
+        // × evidenziato (ferie estiva/ufficio). '' → nero esplicito (#000000), MAI
+        // lasciato senza stile: altrimenti il nome eredita la formattazione della
+        // cella del modello.odt, che non è uniforme (#67).
         $colors = ['' => '#000000', 'Rosso' => self::$rossoPat, 'Blu' => self::$bluPat];
         foreach ([false, true] as $straord) {
             foreach ([false, true] as $und) {
-                foreach ($colors as $cName => $col) {
-                    $name = 'Nm' . ($straord ? 'S' : '') . ($und ? 'U' : '') . $cName;
-                    if (isset($have[$name])) continue;
-                    $st = $doc->createElementNS(self::STY, 'style:style');
-                    $st->setAttributeNS(self::STY, 'style:name', $name);
-                    $st->setAttributeNS(self::STY, 'style:family', 'text');
-                    $tp = $doc->createElementNS(self::STY, 'style:text-properties');
-                    if ($col)     $tp->setAttributeNS(self::FO, 'fo:color', $col);
-                    if ($straord) {
-                        $tp->setAttributeNS(self::FO, 'fo:background-color', $YEL);
-                        $tp->setAttributeNS(self::FO, 'fo:font-weight', 'bold');
+                foreach ([false, true] as $evid) {
+                    foreach ($colors as $cName => $col) {
+                        $name = 'Nm' . ($straord ? 'S' : '') . ($und ? 'U' : '') . ($evid ? 'E' : '') . $cName;
+                        if (isset($have[$name])) continue;
+                        $st = $doc->createElementNS(self::STY, 'style:style');
+                        $st->setAttributeNS(self::STY, 'style:name', $name);
+                        $st->setAttributeNS(self::STY, 'style:family', 'text');
+                        $tp = $doc->createElementNS(self::STY, 'style:text-properties');
+                        if ($col)     $tp->setAttributeNS(self::FO, 'fo:color', $col);
+                        if ($straord) {
+                            $tp->setAttributeNS(self::FO, 'fo:background-color', $YEL);
+                            $tp->setAttributeNS(self::FO, 'fo:font-weight', 'bold');
+                        } elseif ($evid) {
+                            $tp->setAttributeNS(self::FO, 'fo:background-color', $EVI);
+                        }
+                        if ($und) {
+                            $tp->setAttributeNS(self::STY, 'style:text-underline-style', 'solid');
+                            $tp->setAttributeNS(self::STY, 'style:text-underline-width', 'auto');
+                            $tp->setAttributeNS(self::STY, 'style:text-underline-color', 'font-color');
+                        }
+                        $st->appendChild($tp);
+                        $auto->appendChild($st);
                     }
-                    if ($und) {
-                        $tp->setAttributeNS(self::STY, 'style:text-underline-style', 'solid');
-                        $tp->setAttributeNS(self::STY, 'style:text-underline-width', 'auto');
-                        $tp->setAttributeNS(self::STY, 'style:text-underline-color', 'font-color');
-                    }
-                    $st->appendChild($tp);
-                    $auto->appendChild($st);
                 }
             }
         }
