@@ -11,21 +11,45 @@ $errore  = '';
 $sucesso = '';
 assicuraTabellaParametri($pdo);
 
-$stili   = stiliPatente();
-$palette = palettePatente();
+$stili = stiliPatente();
+// hex di riferimento quando l'admin non ha mai scelto una tinta propria (colonna
+// 'Classico (attuale)' della vecchia palette, e default storici ODT/#182)
+const HEX_ROSSO_DEFAULT      = '#c0392b';
+const HEX_BLU_DEFAULT        = '#2471a3';
+const HEX_STRAORD_DEFAULT    = '#FFFF66';
+const HEX_FERIE_ESTIVA_DEFAULT  = '#AEE3E8';
+const HEX_FERIE_UFFICIO_DEFAULT = '#AEE3E8';
+
+/** Normalizza il POST di un colore libero: '' (non un hex valido → classico) | '#rrggbb'. */
+function leggiColorePost(string $campo): string {
+    $v = trim((string)($_POST[$campo] ?? ''));
+    return preg_match('/^#[0-9a-fA-F]{6}$/', $v) ? strtolower($v) : '';
+}
+
+/** Colore di evidenziazione (#182): checkbox "spento" separata dall'input colore —
+ *  l'input non va mai disabilitato lato HTML, altrimenti il browser non lo invia
+ *  col form e uno stato "spento" salvato tornerebbe "classico" al salvataggio successivo. */
+function leggiEvidPost(string $campo): string {
+    if (isset($_POST["{$campo}_off"])) return 'none';
+    return leggiColorePost($campo);
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $stile = $_POST['stile'] ?? 'colore';
     if (!isset($stili[$stile])) $stile = 'colore';
-    $rosso = $_POST['rosso'] ?? '';
-    if (!isset($palette['rosso'][$rosso])) $rosso = '';
-    $blu = $_POST['blu'] ?? '';
-    if (!isset($palette['blu'][$blu])) $blu = '';
+    $rosso   = leggiColorePost('rosso');
+    $blu     = leggiColorePost('blu');
+    $straord = leggiEvidPost('straord');
+    $estiva  = leggiEvidPost('ferie_estiva');
+    $ufficio = leggiEvidPost('ferie_ufficio');
     try {
         setParam($pdo, "foglio_stile_patente_$TURNO", $stile, "Patenti sul foglio turno $TURNO: colore/numero/entrambi");
         setParam($pdo, "foglio_rosso_patente_$TURNO", $rosso, "Tinta rossa patenti 3ª/4ª turno $TURNO (vuoto = storica)");
         setParam($pdo, "foglio_blu_patente_$TURNO",   $blu,   "Tinta blu patente 2ª turno $TURNO (vuoto = storica)");
-        $sucesso = "Stile patenti del turno $TURNO salvato. Vale subito sul foglio web e dal prossimo ODT scaricato.";
+        setParam($pdo, "foglio_col_straord_$TURNO",       $straord, "Sfondo straordinario ODT turno $TURNO (vuoto=classico, none=spento)");
+        setParam($pdo, "foglio_col_ferie_estiva_$TURNO",  $estiva,  "Sfondo ferie estive ODT turno $TURNO (vuoto=classico, none=spento)");
+        setParam($pdo, "foglio_col_ferie_ufficio_$TURNO", $ufficio, "Sfondo ferie d'ufficio ODT turno $TURNO (vuoto=classico, none=spento)");
+        $sucesso = "Stili & Colori del turno $TURNO salvati. Le patenti valgono subito sul foglio web e dal prossimo ODT scaricato; le evidenziazioni solo sull'ODT.";
     } catch (Throwable $e) {
         $errore = 'Errore salvataggio: ' . $e->getMessage();
     }
@@ -33,14 +57,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 $cfg = validaStilePatente(leggiParametri($pdo, chiaviStilePatente($TURNO)), $TURNO);
 $cfg = ['stile' => $cfg['stile'] ?? 'colore', 'rosso' => $cfg['rosso'] ?? '', 'blu' => $cfg['blu'] ?? ''];
-$exRosso = $cfg['rosso'] !== '' ? $cfg['rosso'] : '#c0392b';
+$exRosso = $cfg['rosso'] !== '' ? $cfg['rosso'] : HEX_ROSSO_DEFAULT;
+
+$evid = validaStileEvidenziazioni(leggiParametri($pdo, chiaviStileEvidenziazioni($TURNO)), $TURNO);
+// per il form: valore grezzo del campo ('' | 'none' | '#hex') + hex da mostrare nel picker anche se spento
+$evidForm = [];
+foreach (['straord' => HEX_STRAORD_DEFAULT, 'estiva' => HEX_FERIE_ESTIVA_DEFAULT, 'ufficio' => HEX_FERIE_UFFICIO_DEFAULT] as $k => $def) {
+    $raw = $evid[$k] ?? null;
+    $evidForm[$k] = [
+        'raw' => $raw ?? '',
+        'spento' => $raw === 'none',
+        'hex' => ($raw !== null && $raw !== 'none') ? $raw : $def,
+    ];
+}
 ?>
 <!DOCTYPE html>
 <html lang="it">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>VVF – Stile patenti turno <?= htmlspecialchars($TURNO) ?></title>
+<title>VVF – Stili &amp; Colori turno <?= htmlspecialchars($TURNO) ?></title>
 <link rel="stylesheet" href="../assets/css/stile.css?v=<?= @filemtime(__DIR__.'/../assets/css/stile.css') ?>">
 <link rel="stylesheet" href="../assets/css/vigili.css?v=<?= @filemtime(__DIR__.'/../assets/css/vigili.css') ?>">
 <style>
@@ -51,6 +87,12 @@ $exRosso = $cfg['rosso'] !== '' ? $cfg['rosso'] : '#c0392b';
   .fmt-opt { display:flex; align-items:center; gap:10px; padding:8px 10px; border:1px solid #e3e6e9; border-radius:8px; margin-bottom:8px; cursor:pointer; }
   .fmt-opt input { width:auto; }
   .fmt-opt .ex { font-weight:700; margin-left:auto; }
+  .col-row { display:flex; align-items:center; gap:10px; padding:8px 10px; border:1px solid #e3e6e9; border-radius:8px; margin-bottom:8px; }
+  .col-row input[type=color] { width:40px; height:32px; padding:0; border:1px solid #ccc; border-radius:6px; cursor:pointer; }
+  .col-row .col-nome { flex:1; font-size:.85rem; }
+  .col-row .col-spento { display:flex; align-items:center; gap:5px; font-size:.72rem; color:var(--grigio-md); font-weight:400; text-transform:none; margin:0; white-space:nowrap; }
+  .col-row .col-spento input { width:auto; }
+  .col-row.is-spento input[type=color] { opacity:.35; }
   @media(max-width:640px){ .par-grid{ grid-template-columns:1fr; } }
 </style>
 </head>
@@ -81,7 +123,7 @@ $exRosso = $cfg['rosso'] !== '' ? $cfg['rosso'] : '#c0392b';
 </nav>
 <main class="main">
   <div class="page-title">
-    <h2>🎨 Patenti sul Foglio/ODT — turno <?= htmlspecialchars($TURNO) ?></h2>
+    <h2>🎨 Stili &amp; Colori — turno <?= htmlspecialchars($TURNO) ?></h2>
     <a href="index.php" class="btn btn-grigio">← Amministrazione</a>
   </div>
 
@@ -96,7 +138,7 @@ $exRosso = $cfg['rosso'] !== '' ? $cfg['rosso'] : '#c0392b';
         nome (es. <i>Cs Rossi 3°</i>), o entrambi. Vale solo per il turno <b><?= htmlspecialchars($TURNO) ?></b>,
         subito sul foglio web e dal prossimo ODT scaricato. «Classico» mantiene le tinte usate finora.
       </p>
-      <form method="POST" action="stile_patenti.php" class="par-form">
+      <form method="POST" action="stile_patenti.php" class="par-form" id="stiliForm">
         <div>
           <label>Stile</label>
           <?php foreach ($stili as $val => $lbl):
@@ -114,28 +156,67 @@ $exRosso = $cfg['rosso'] !== '' ? $cfg['rosso'] : '#c0392b';
         <div class="par-grid">
           <div>
             <label>Rosso (3ª/4ª)</label>
-            <?php foreach ($palette['rosso'] as $val => [$lbl, $hex]): ?>
-            <label class="fmt-opt" style="margin-bottom:4px;padding:6px 8px">
-              <input type="radio" name="rosso" value="<?= $val ?>" <?= $cfg['rosso'] === $val ? 'checked' : '' ?>>
-              <span style="color:<?= $hex ?>;font-weight:700"><?= htmlspecialchars($lbl) ?></span>
-            </label>
-            <?php endforeach; ?>
+            <div class="col-row">
+              <input type="color" name="rosso" value="<?= htmlspecialchars($exRosso) ?>">
+              <span class="col-nome">Colore libero</span>
+              <button type="button" class="btn btn-grigio btn-sm" onclick="ripristina(this, '<?= HEX_ROSSO_DEFAULT ?>')">↺ Classico</button>
+            </div>
           </div>
           <div>
             <label>Blu (2ª)</label>
-            <?php foreach ($palette['blu'] as $val => [$lbl, $hex]): ?>
-            <label class="fmt-opt" style="margin-bottom:4px;padding:6px 8px">
-              <input type="radio" name="blu" value="<?= $val ?>" <?= $cfg['blu'] === $val ? 'checked' : '' ?>>
-              <span style="color:<?= $hex ?>;font-weight:700"><?= htmlspecialchars($lbl) ?></span>
-            </label>
-            <?php endforeach; ?>
+            <div class="col-row">
+              <input type="color" name="blu" value="<?= htmlspecialchars($cfg['blu'] !== '' ? $cfg['blu'] : HEX_BLU_DEFAULT) ?>">
+              <span class="col-nome">Colore libero</span>
+              <button type="button" class="btn btn-grigio btn-sm" onclick="ripristina(this, '<?= HEX_BLU_DEFAULT ?>')">↺ Classico</button>
+            </div>
           </div>
         </div>
-        <div><button type="submit" class="btn btn-rosso">Salva stile turno <?= htmlspecialchars($TURNO) ?></button></div>
       </form>
     </div>
   </div>
+
+  <div class="card">
+    <div class="card-head">Evidenziazioni sull'ODT</div>
+    <div style="padding:14px">
+      <p class="hint" style="margin:0 0 12px">
+        Colore di sfondo dietro al nome per straordinario, ferie estive e ferie d'ufficio —
+        solo sul PDF/ODT scaricato, il foglio web non cambia. Spunta «nessuna evidenziazione»
+        per non colorare quel caso (lo straordinario resta comunque in grassetto).
+      </p>
+      <?php foreach ([
+          'straord'       => ['Straordinario',   HEX_STRAORD_DEFAULT],
+          'ferie_estiva'  => ["Ferie estive",    HEX_FERIE_ESTIVA_DEFAULT],
+          'ferie_ufficio' => ["Ferie d'ufficio", HEX_FERIE_UFFICIO_DEFAULT],
+      ] as $campo => [$etichetta, $def]):
+          $k = $campo === 'straord' ? 'straord' : ($campo === 'ferie_estiva' ? 'estiva' : 'ufficio');
+          $f = $evidForm[$k];
+      ?>
+      <div>
+        <label><?= htmlspecialchars($etichetta) ?></label>
+        <div class="col-row<?= $f['spento'] ? ' is-spento' : '' ?>" data-evid-row>
+          <input type="color" name="<?= $campo ?>" value="<?= htmlspecialchars($f['hex']) ?>" form="stiliForm">
+          <span class="col-nome">Colore libero</span>
+          <button type="button" class="btn btn-grigio btn-sm" onclick="ripristina(this, '<?= $def ?>')">↺ Classico</button>
+          <label class="col-spento">
+            <input type="checkbox" name="<?= $campo ?>_off" data-spegni value="1" <?= $f['spento'] ? 'checked' : '' ?> form="stiliForm">
+            nessuna evidenziazione
+          </label>
+        </div>
+      </div>
+      <?php endforeach; ?>
+      <div><button type="submit" form="stiliForm" class="btn btn-rosso">Salva turno <?= htmlspecialchars($TURNO) ?></button></div>
+    </div>
+  </div>
 </main>
+<script>
+function ripristina(btn, hex) {
+  btn.closest('.col-row').querySelector('input[type=color]').value = hex;
+}
+document.querySelectorAll('[data-evid-row]').forEach(row => {
+  const chk = row.querySelector('[data-spegni]');
+  chk.addEventListener('change', () => row.classList.toggle('is-spento', chk.checked));
+});
+</script>
 <?php require __DIR__ . '/../includes/logbook_widget.php'; ?>
 </body>
 </html>

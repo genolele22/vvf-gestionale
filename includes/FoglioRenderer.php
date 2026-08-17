@@ -53,6 +53,11 @@ class FoglioRenderer
     private static string $stilePatente = 'colore';
     private static string $rossoPat = '#C00000';
     private static string $bluPat   = '#0000C0';
+    // #182: colori di evidenziazione (sfondo dietro al nome) per turno, admin/stile_patenti.php
+    // (solo ODT). null = nessuna evidenziazione (spenta dall'admin), altrimenti '#rrggbb'.
+    private static ?string $colStraord      = '#FFFF66';
+    private static ?string $colFerieEstiva  = '#AEE3E8';
+    private static ?string $colFerieUfficio = '#AEE3E8';
 
     public function __construct(PDO $pdo, int $foglioId)
     {
@@ -426,13 +431,22 @@ class FoglioRenderer
         self::$stilePatente = 'colore';
         self::$rossoPat = '#C00000';
         self::$bluPat   = '#0000C0';
-        $p = leggiParametri($pdo, array_merge(['foglio_formato_nome'], chiaviStilePatente($turno)));
+        self::$colStraord      = '#FFFF66';
+        self::$colFerieEstiva  = '#AEE3E8';
+        self::$colFerieUfficio = '#AEE3E8';
+        $p = leggiParametri($pdo, array_merge(
+            ['foglio_formato_nome'], chiaviStilePatente($turno), chiaviStileEvidenziazioni($turno)
+        ));
         $fmt = $p['foglio_formato_nome'] ?? '';
         if (in_array($fmt, ['standard', 'cognome_maiusc', 'tutto_maiusc'], true)) self::$formatoNome = $fmt;
         $v = validaStilePatente($p, $turno);
         if ($v['stile'] !== null) self::$stilePatente = $v['stile'];
         if ($v['rosso'] !== null) self::$rossoPat = $v['rosso'];
         if ($v['blu']   !== null) self::$bluPat   = $v['blu'];
+        $e = validaStileEvidenziazioni($p, $turno);
+        if ($e['straord'] !== null) self::$colStraord      = $e['straord'] === 'none' ? null : $e['straord'];
+        if ($e['estiva']  !== null) self::$colFerieEstiva  = $e['estiva']  === 'none' ? null : $e['estiva'];
+        if ($e['ufficio'] !== null) self::$colFerieUfficio = $e['ufficio'] === 'none' ? null : $e['ufficio'];
     }
 
     /** " 3°" accanto al nome (stili numero/entrambi), '' altrimenti. */
@@ -492,7 +506,7 @@ class FoglioRenderer
              . (!empty($v['disambiguatore']) ? ' ' . (int)$v['disambiguatore'] : ''));
     }
     /**
-     * Stile testo: colore patente + straordinario (giallo + grassetto) + sottolineato
+     * Stile testo: colore patente + straordinario (evidenziato + grassetto) + sottolineato
      * (in servizio fuori sede) + evidenziato (ferie estiva/d'ufficio, solo lista ferie).
      * Ritorna SEMPRE uno stile esplicito, anche per il caso "nessun colore speciale":
      * senza, il nome eredita la formattazione della cella del modello.odt, che non è
@@ -501,15 +515,20 @@ class FoglioRenderer
      *
      * $specialista: #185, solo odt — per gli specialisti la patente non conta, sempre
      * nero indipendentemente dal grado (il foglio web resta come oggi, non è toccato).
+     *
+     * $evidKind: #182, 0=nessuna evidenziazione, 1=ferie estiva, 2=ferie d'ufficio —
+     * colori indipendenti (admin/stile_patenti.php), a differenza dello straordinario
+     * mai contemporanei sullo stesso nome (vedi ensureColorStyles).
      */
     private static function nameStyle(?string $t, bool $straord, bool $und = false,
-                                       bool $specialista = false, bool $evidenziato = false): string
+                                       bool $specialista = false, int $evidKind = 0): string
     {
         $col = ($t === '3' || $t === '4') ? 'Rosso' : ($t === '2' ? 'Blu' : '');
         if (self::$stilePatente === 'numero') $col = '';   // il grado lo dice il suffisso
         if ($specialista) $col = '';
-        return 'Nm' . ($straord ? 'S' : '') . ($und ? 'U' : '') . ($evidenziato ? 'E' : '') . $col;
-        // es: Nm, NmRosso, NmS, NmSURosso, NmEBlu…
+        $evidSuffix = [0 => '', 1 => 'Ee', 2 => 'Eu'][$evidKind] ?? '';
+        return 'Nm' . ($straord ? 'S' : '') . ($und ? 'U' : '') . $evidSuffix . $col;
+        // es: Nm, NmRosso, NmS, NmSURosso, NmEeBlu…
     }
 
     private function modelPath(): string { return __DIR__ . '/../templates/modello.odt'; }
@@ -811,8 +830,9 @@ class FoglioRenderer
     private function writeName(DOMDocument $doc, DOMElement $cell, array $a, string $suffix = '', string $prefix = '', bool $underline = false): void
     {
         $label = $prefix . self::etichetta($a) . self::suffissoPat($a['patente_max'] ?? null) . $suffix;
+        $evidKind = !empty($a['ferie_estiva']) ? 1 : (!empty($a['ferie_ufficio']) ? 2 : 0);
         $style = self::nameStyle($a['patente_max'] ?? null, !empty($a['in_straordinario']), $underline,
-            !empty($a['specialista']), !empty($a['ferie_estiva']) || !empty($a['ferie_ufficio']));
+            !empty($a['specialista']), $evidKind);
         $this->setText($doc, $cell, $label, $style);
     }
 
@@ -1074,20 +1094,23 @@ class FoglioRenderer
             $st->appendChild($tp);
             $auto->appendChild($st);
         }
-        $YEL = '#FFFF66';
-        // #183 (4°): evidenziatore ferie estive/d'ufficio — colore diverso da quello
-        // dello straordinario ($YEL) per non confonderli a colpo d'occhio.
-        $EVI = '#AEE3E8';
-        // matrice: colore patente × straordinario (giallo) × sottolineato (fuori sede)
+        // #182: colori di evidenziazione admin-configurabili (default = tinte storiche);
+        // null = evidenziazione spenta dall'admin, il nome resta nero senza sfondo.
+        // straordinario ed evidenziazione ferie non sono mai contemporanei sullo stesso
+        // nome (nameStyle() sceglie l'uno o l'altro), quindi non serve una combinazione
+        // straord+evid — l'indice evidKind (0=nessuna,1=estiva,2=ufficio) è indipendente.
+        $evidColors = [0 => null, 1 => self::$colFerieEstiva, 2 => self::$colFerieUfficio];
+        $evidSuffix = [0 => '', 1 => 'Ee', 2 => 'Eu'];
+        // matrice: colore patente × straordinario × sottolineato (fuori sede)
         // × evidenziato (ferie estiva/ufficio). '' → nero esplicito (#000000), MAI
         // lasciato senza stile: altrimenti il nome eredita la formattazione della
         // cella del modello.odt, che non è uniforme (#67).
         $colors = ['' => '#000000', 'Rosso' => self::$rossoPat, 'Blu' => self::$bluPat];
         foreach ([false, true] as $straord) {
             foreach ([false, true] as $und) {
-                foreach ([false, true] as $evid) {
+                foreach ([0, 1, 2] as $evidKind) {
                     foreach ($colors as $cName => $col) {
-                        $name = 'Nm' . ($straord ? 'S' : '') . ($und ? 'U' : '') . ($evid ? 'E' : '') . $cName;
+                        $name = 'Nm' . ($straord ? 'S' : '') . ($und ? 'U' : '') . $evidSuffix[$evidKind] . $cName;
                         if (isset($have[$name])) continue;
                         $st = $doc->createElementNS(self::STY, 'style:style');
                         $st->setAttributeNS(self::STY, 'style:name', $name);
@@ -1100,9 +1123,9 @@ class FoglioRenderer
                         // principio già usato per NmReg sulle righe data.
                         $tp->setAttributeNS(self::FO, 'fo:font-weight', $straord ? 'bold' : 'normal');
                         if ($straord) {
-                            $tp->setAttributeNS(self::FO, 'fo:background-color', $YEL);
-                        } elseif ($evid) {
-                            $tp->setAttributeNS(self::FO, 'fo:background-color', $EVI);
+                            if (self::$colStraord !== null) $tp->setAttributeNS(self::FO, 'fo:background-color', self::$colStraord);
+                        } elseif ($evidColors[$evidKind] !== null) {
+                            $tp->setAttributeNS(self::FO, 'fo:background-color', $evidColors[$evidKind]);
                         }
                         if ($und) {
                             $tp->setAttributeNS(self::STY, 'style:text-underline-style', 'solid');

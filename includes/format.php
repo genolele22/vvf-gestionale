@@ -22,15 +22,6 @@ function stiliPatente(): array {
     return ['colore' => 'Solo colore', 'numero' => 'Solo numero (2°, 3°, 4°)', 'entrambi' => 'Colore + numero'];
 }
 
-/** Tinte selezionabili (valore => [etichetta, hex anteprima]); '' = tinta storica
- *  del medium (web e ODT hanno da sempre rossi/blu leggermente diversi). */
-function palettePatente(): array {
-    return [
-        'rosso' => ['' => ['Classico (attuale)', '#c0392b'], '#E53935' => ['Rosso vivo', '#E53935'], '#7B241C' => ['Bordeaux', '#7B241C']],
-        'blu'   => ['' => ['Classico (attuale)', '#2471a3'], '#2E86C1' => ['Azzurro', '#2E86C1'], '#1A5276' => ['Blu notte', '#1A5276']],
-    ];
-}
-
 /** Legge un set di chiavi da `parametri` in un giro solo ([chiave => valore], assenti escluse). */
 function leggiParametri(PDO $pdo, array $chiavi): array {
     try {
@@ -56,6 +47,29 @@ function validaStilePatente(array $p, string $turno): array {
     foreach (['rosso', 'blu'] as $c) {
         $hex = $p["foglio_{$c}_patente_$turno"] ?? '';
         $out[$c] = preg_match('/^#[0-9a-fA-F]{6}$/', $hex) ? $hex : null;
+    }
+    return $out;
+}
+
+/**
+ * #182: colori di evidenziazione (sfondo dietro al nome) su ODT — straordinario,
+ * ferie estive, ferie d'ufficio. Solo ODT, il foglio web non li usa (decisione
+ * esplicita: restano incoerenti come per gli specialisti, #185). Ogni chiave:
+ * '' = tinta classica del medium, 'none' = nessuna evidenziazione (il nome resta
+ * nero, valgono solo le altre regole — es. il grassetto dello straordinario),
+ * '#rrggbb' = tinta scelta in amministrazione.
+ */
+function chiaviStileEvidenziazioni(string $turno): array {
+    return ["foglio_col_straord_$turno", "foglio_col_ferie_estiva_$turno", "foglio_col_ferie_ufficio_$turno"];
+}
+
+/** null = non impostato/invalido (il chiamante tiene il default), 'none' = spento,
+ *  altrimenti '#rrggbb'. Stessa idea di validaStilePatente(). */
+function validaStileEvidenziazioni(array $p, string $turno): array {
+    $out = [];
+    foreach (['straord' => 'straord', 'estiva' => 'ferie_estiva', 'ufficio' => 'ferie_ufficio'] as $k => $suffix) {
+        $v = $p["foglio_col_{$suffix}_$turno"] ?? '';
+        $out[$k] = ($v === 'none' || preg_match('/^#[0-9a-fA-F]{6}$/', $v)) ? $v : null;
     }
     return $out;
 }
