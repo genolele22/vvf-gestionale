@@ -784,7 +784,12 @@ class FoglioRenderer
                 // esempio tipo "B4"/"A4" lasciato in una copia già compilata — in
                 // entrambi i casi va sostituito col salto vero del giorno (es. A7).
                 if (preg_match('/^(ST|[A-D]\s*\d+)$/i', $t)) { $this->setText($doc, $cell, $this->codSaltoRip); continue; }
-                if (stripos($t, 'ore') !== false) { $dateCells[] = [$i, $cell]; continue; }                     // riga data (testo d'esempio nel modello)
+                // "ore" con confine di parola + cifra: il testo d'esempio è ", ore 8.00".
+                // Un match "contains" nudo intercetta anche cognomi come MORELLO,
+                // MORETTI, FIORETTI, ONORATO (contengono "ore") già scritti in cella
+                // dal loop mezzi, sovrascrivendoli con la data (bug segnalato da Moli,
+                // #208: VP MORELLO spariva dall'ODT del 20/08 pur essendo assegnato).
+                if (preg_match('/\bore\s*\d/i', $t)) { $dateCells[] = [$i, $cell]; continue; }                     // riga data (testo d'esempio nel modello)
                 $tl = mb_strtolower($t);
                 if ($tl === 'furieri') { $furRow = $i; $furCol = $col; continue; }
                 // stile esplicito anche qui (mai ereditato dalla cella, #67): capo/vice
