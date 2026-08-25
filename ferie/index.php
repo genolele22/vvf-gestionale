@@ -674,6 +674,38 @@ foreach ($perData as &$gruppo) {
 }
 unset($gruppo);
 
+// #212: presenze per categoria per OGNI giorno, non solo il giorno in cui
+// inizia il blocco — prima il conteggio del resoconto guardava solo $perData
+// (chiave = giorno di inizio), quindi un'assenza pluriturno o un periodo
+// dichiarato (mal/inf/missione) sparivano dal conteggio dei giorni successivi
+// pur essendo ancora in corso. Ferie/permesso: un giorno conta solo se c'è un
+// turno REALMENTE scelto quel giorno (non i giorni di riposo dentro il
+// blocco, che restano contigui solo per la regola del gap<=3). Malattia/
+// infortunio/missione: ogni giorno di calendario del periodo dichiarato
+// (range_da/range_a) — è una dichiarazione continua, non turno per turno.
+$presenzePerGiorno = [];   // 'Y-m-d' => ['fer'|'miss'|'perm'|'malinf' => [vigile_id => true]]
+$catPerTipoAssenza  = [1 => 'fer', 3 => 'miss', 4 => 'perm', 5 => 'malinf', 6 => 'malinf'];
+foreach ($perVigile as $vid => $req) {
+    foreach (blocchiContigui($req) as $block) {
+        $tipoId = (int)($block[0]['tipo_assenza_id'] ?? 1);
+        $cat    = $catPerTipoAssenza[$tipoId] ?? null;
+        if (!$cat) continue;
+        if (in_array($tipoId, [3, 5, 6], true)) {
+            [$rDa, $rA] = rangeComunicatoBlocco($block);
+            $cur  = new DateTime($rDa ?: $block[0]['data_richiesta']);
+            $fine = new DateTime($rA  ?: end($block)['data_richiesta']);
+            while ($cur <= $fine) {
+                $presenzePerGiorno[$cur->format('Y-m-d')][$cat][$vid] = true;
+                $cur->modify('+1 day');
+            }
+        } else {
+            foreach ($block as $r) {
+                $presenzePerGiorno[$r['data_richiesta']][$cat][$vid] = true;
+            }
+        }
+    }
+}
+
 // ── Scambi salto approvati del mese → per data (insieme alle ferie) ──
 // Ogni scambio compare sotto la/le sue date di riposo (override tipo D) che
 // cadono nel mese: in quella data il "vigile_in" riposa al posto della controparte.
@@ -780,10 +812,12 @@ if (puoModificareTurno($TURNO)) {
     }
 }
 
-// Date da renderizzare = unione ferie + scambi + visite, in ordine cronologico
+// Date da renderizzare = unione ferie + scambi + visite + presenze in corso
+// (#212: anche i giorni dove non inizia nessun blocco ma un'assenza di un
+// giorno precedente è ancora in corso), in ordine cronologico.
 $tutteLeDate = array_unique(array_merge(
     array_keys($perData), array_keys($scambiPerData), array_keys($visitePerData),
-    array_keys($permessoOrarioPerData)));
+    array_keys($permessoOrarioPerData), array_keys($presenzePerGiorno)));
 sort($tutteLeDate);
 
 // Statistiche solo sul turno PRIMARIO: quelle degli extra sono lì per consultazione,
@@ -1164,14 +1198,21 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
     $dataHeader = $giorniNomi[(int)$dtInizio->format('N')] . ' '
                 . $dtInizio->format('d') . ' '
                 . $mesiNomi[(int)$dtInizio->format('n')];
+    // #212: conteggio da $presenzePerGiorno (overlap su tutto il periodo, non
+    // solo il giorno di inizio del blocco) — scambi/visite/permesso orario
+    // restano da $scambi/$visite/$permessoOr, già corretti per-giorno.
+    $nFerGiorno    = count($presenzePerGiorno[$dataInizio]['fer']    ?? []);
+    $nMissGiorno   = count($presenzePerGiorno[$dataInizio]['miss']   ?? []);
+    $nPermGiorno   = count($presenzePerGiorno[$dataInizio]['perm']   ?? []);
+    $nMalinfGiorno = count($presenzePerGiorno[$dataInizio]['malinf'] ?? []);
     $conteggio  = [];
     if ($visite) $conteggio[] = count($visite) . ' visit' . (count($visite) === 1 ? 'a' : 'e') . ' medic' . (count($visite) === 1 ? 'a' : 'he');
     if ($scambi) $conteggio[] = count($scambi) . (count($scambi) === 1 ? ' scambio' : ' scambi') . ' salto';
-    if ($gruppoMissione) $conteggio[] = count($gruppoMissione) . ' in missione';
-    if ($gruppoPermesso) $conteggio[] = count($gruppoPermesso) . ' permess' . (count($gruppoPermesso) === 1 ? 'o' : 'i') . ' giornalier' . (count($gruppoPermesso) === 1 ? 'o' : 'i');
+    if ($nMissGiorno) $conteggio[] = $nMissGiorno . ' in missione';
+    if ($nPermGiorno) $conteggio[] = $nPermGiorno . ' permess' . ($nPermGiorno === 1 ? 'o' : 'i') . ' giornalier' . ($nPermGiorno === 1 ? 'o' : 'i');
     if ($permessoOr) $conteggio[] = count($permessoOr) . ' permess' . (count($permessoOr) === 1 ? 'o' : 'i') . ' orari';
-    if ($gruppoMalattia) $conteggio[] = count($gruppoMalattia) . ' in malattia/infortunio';
-    if ($gruppoFerie) $conteggio[] = count($gruppoFerie) . ' vigil' . (count($gruppoFerie) === 1 ? 'e' : 'i') . ' in ferie';
+    if ($nMalinfGiorno) $conteggio[] = $nMalinfGiorno . ' in malattia/infortunio';
+    if ($nFerGiorno) $conteggio[] = $nFerGiorno . ' vigil' . ($nFerGiorno === 1 ? 'e' : 'i') . ' in ferie';
     // Quel giorno il turno PRIMARIO è in servizio diurno (☀️) o notturno (🌙):
     // mostro un'icona sola, col salto a riposo del foglio corrispondente (l'ancora
     // resta il turno primario anche in vista multi-turno).
