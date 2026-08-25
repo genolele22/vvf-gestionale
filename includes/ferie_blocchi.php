@@ -51,7 +51,10 @@ function periodLabel(array $block): string {
     if ($da->format('Y-m-d') === $a->format('Y-m-d')) {
         return $da->format('d/m');
     }
-    return $da->format('d') . '–' . $a->format('d/m');
+    // #215: mese sulla data iniziale solo se diverso da quello finale (stesso
+    // criterio di periodLabelComunicato in ferie/index.php).
+    $daStr = ($da->format('n') === $a->format('n')) ? $da->format('d') : $da->format('d/m');
+    return $daStr . '–' . $a->format('d/m');
 }
 
 function turniLabel(array $block): int {

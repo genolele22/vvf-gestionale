@@ -448,7 +448,11 @@ function periodLabelComunicato(string $rangeDa, string $rangeA): string {
     $da = new DateTime($rangeDa);
     $a  = new DateTime($rangeA);
     if ($da->format('Y-m-d') === $a->format('Y-m-d')) return $da->format('d/m');
-    return $da->format('d') . '–' . $a->format('d/m');
+    // #215: mese sulla data iniziale solo se diverso da quello finale — senza,
+    // un periodo a cavallo di due mesi (es. 28/10–11/11) diventava ambiguo
+    // ("28–11/11": sembra "dall'11 all'11").
+    $daStr = ($da->format('n') === $a->format('n')) ? $da->format('d') : $da->format('d/m');
+    return $daStr . '–' . $a->format('d/m');
 }
 
 // Ritorna [classe, etichetta] del badge comunicazione di un turno.
@@ -456,6 +460,150 @@ function comunicazioneTurno(array $r, array $outboxReq): array {
     $kind = in_array($r['stato'], ['rejected', 'declined'], true) ? 'neg' : 'ok';
     if (($outboxReq[(int)$r['id']][$kind] ?? null) === 'sent') return ['comunicata', '✉️ comunicata'];
     return ['dainviare', '📨 da inviare'];
+}
+
+// #215: un riquadro per categoria di assenza (missione / permesso giornaliero /
+// malattia+infortunio / ferie), invece dell'unico riquadro misto di prima —
+// stessa identica riga/tendina per tutte, quindi estratta qui una volta sola
+// (dichiarare la funzione dentro il loop per-giorno fallirebbe al secondo
+// giorno: "cannot redeclare"). $catKey serve solo a rendere univoco
+// $detailId quando lo stesso vigile compare in più di un riquadro nello
+// stesso giorno (prima non poteva succedere: un solo riquadro misto).
+function renderBoxAssenze(
+    array $catGruppo, string $catKey, string $dataInizio, string $turnoAttivo, bool $turniExtra,
+    array $tipoAssenzaLabelIt, array $statoLabelIt, array $outboxReq, array $giorniNomi
+): void {
+    if (!$catGruppo) return;
+    ?>
+    <div class="vigile-card" style="margin-bottom:8px;">
+    <?php foreach ($catGruppo as $gi => $item):
+        $meta       = $item['meta'];
+        $block      = $item['block'];
+        $label      = etichettaVigile($meta);
+        $isCentrale = ($meta['sede_nome'] === 'CENTRALE');
+        // Malattia/infortunio (e missione): il periodo mostrato è quello COMUNICATO
+        // dal vigile (range_da/range_a, uguale su ogni turno decomposto), non quello
+        // ricalcolato dai turni — può divergere per via dei salti tra un turno e
+        // l'altro, e la fureria deve vedere esattamente ciò che è stato dichiarato.
+        $periodo    = $block[0]['range_da']
+            ? periodLabelComunicato($block[0]['range_da'], $block[0]['range_a'])
+            : periodLabel($block);
+        $turni      = turniLabel($block);
+        $stato      = statoBlock($block);
+        $detailId   = 'detail-' . $meta['vigile_id'] . '-' . $catKey . '-' . md5($dataInizio);
+        $allIds     = array_column($block, 'id');
+        $editabile  = ($meta['turno'] === $turnoAttivo);
+        // blocchiContigui non fonde più tipi diversi: ogni blocco è di un solo
+        // tipo_assenza_id. FER/PERM restano approvabili, MISS/MAL/INF sono già
+        // decise da sole (vedi database.py:insert_request).
+        $tipoAssenzaId = (int)$block[0]['tipo_assenza_id'];
+        $approvabile   = in_array($tipoAssenzaId, TIPI_APPROVABILI, true);
+        $tipoLabel     = $tipoAssenzaLabelIt[$tipoAssenzaId] ?? $block[0]['tipo_assenza_codice'];
+    ?>
+    <!-- Riga vigile -->
+    <div class="blocco-row" id="row-<?= $detailId ?>"
+         onclick="toggleDetail('<?= $detailId ?>')">
+      <span class="toggle-icon" id="icon-<?= $detailId ?>">▶</span>
+      <?php if ($turniExtra): ?><span class="turno-tag">Turno <?= htmlspecialchars($meta['turno']) ?></span><?php endif; ?>
+      <?php if ($tipoAssenzaId !== 1): ?><span class="turno-tag"><?= htmlspecialchars($tipoLabel) ?></span><?php endif; ?>
+      <span class="blocco-nome"><?= htmlspecialchars($label) ?></span>
+      <?php if (!$isCentrale): ?>
+        <span class="blocco-sede"><?= htmlspecialchars($meta['sede_codice']) ?></span>
+      <?php endif; ?>
+      <span class="blocco-periodo"><?= $periodo ?></span>
+      <?php if ($turni > 1): ?><span class="blocco-turni"><?= $turni ?> turni</span><?php endif; ?>
+      <?php if ($tipoAssenzaId === 3 && $block[0]['note']): ?>
+        <span class="blocco-nota">📝 <?= htmlspecialchars($block[0]['note']) ?></span>
+      <?php endif; ?>
+      <span class="blocco-spacer"></span>
+      <?php if ($approvabile): ?>
+      <span class="stato-badge stato-<?= $stato ?>" id="badge-<?= $detailId ?>"><?= $statoLabelIt[$stato] ?? $stato ?></span>
+      <?php else: ?>
+      <span class="stato-badge stato-approved">🔒 registrata</span>
+      <?php endif; ?>
+      <?php if ($editabile && $approvabile): ?>
+      <div class="blocco-azioni" onclick="event.stopPropagation()">
+        <button class="btn-mini accetta"
+                onclick='setStato(<?= htmlspecialchars(json_encode($allIds)) ?>, "pending")'
+                title="Accetta tutto il periodo (resta in attesa fino all'invio della mail)">✓ tutti</button>
+        <button class="btn-mini respingi"
+                onclick='setStato(<?= htmlspecialchars(json_encode($allIds)) ?>, "rejected")'
+                title="Respingi tutto il periodo">✗ tutti</button>
+      </div>
+      <?php elseif (!$editabile): ?>
+      <span class="ro-badge">👁 sola lettura</span>
+      <?php endif; ?>
+    </div>
+
+    <!-- Tendina singoli turni -->
+    <div class="turni-detail" id="<?= $detailId ?>" data-block="<?= $detailId ?>">
+      <?php foreach ($block as $r):
+        $d   = new DateTime($r['data_richiesta']);
+        $dow = $giorniNomi[(int)$d->format('N')];
+      ?>
+      <?php
+        [$comCls, $comLbl] = comunicazioneTurno($r, $outboxReq);
+        $sok  = (($outboxReq[(int)$r['id']]['ok']  ?? null) === 'sent') ? 1 : 0;
+        $sneg = (($outboxReq[(int)$r['id']]['neg'] ?? null) === 'sent') ? 1 : 0;
+      ?>
+      <div class="turno-riga" data-id="<?= $r['id'] ?>" data-stato="<?= $r['stato'] ?>" data-block="<?= $detailId ?>"
+           data-sok="<?= $sok ?>" data-sneg="<?= $sneg ?>">
+        <span class="turno-data"><?= $d->format('d/m') ?></span>
+        <span class="turno-dow"><?= $dow ?></span>
+        <span class="turno-tipo <?= $r['tipo_turno'] ?>">
+          <?= match($r['tipo_turno']) {
+              'D'  => '☀️ Diurno',
+              'N'  => '🌙 Notturno',
+              'DN' => '🌅 Giornata',
+              default => $r['tipo_turno'],
+          } ?>
+        </span>
+        <?php if ($tipoAssenzaId === 1 && in_array((int)$d->format('n'), [6, 7, 8, 9], true)): ?>
+          <?php if ($editabile): ?>
+            <label class="ferie-estiva-chk" title="Ferie estiva">
+              <input type="checkbox" <?= $r['ferie_estiva'] ? 'checked' : '' ?>
+                     onchange="toggleEstiva(<?= $r['id'] ?>, this)">🏖️
+            </label>
+          <?php elseif ($r['ferie_estiva']): ?>
+            <span class="ferie-estiva-chk" title="Ferie estiva">🏖️</span>
+          <?php endif; ?>
+        <?php endif; ?>
+        <?php if ($r['note'] && $tipoAssenzaId !== 3): ?>
+          <span class="turno-nota" title="<?= htmlspecialchars($r['note']) ?>">📝</span>
+        <?php endif; ?>
+        <span class="turno-spacer"></span>
+        <?php if ($approvabile): ?>
+        <span class="com-badge com-<?= $comCls ?>" id="com-<?= $r['id'] ?>"><?= $comLbl ?></span>
+        <?php endif; ?>
+        <?php if ($editabile && $approvabile): ?>
+        <div class="scelta">
+          <label class="lbl-si">
+            <input type="checkbox" class="chk-si" <?= !in_array($r['stato'], ['rejected', 'declined'], true) ? 'checked' : '' ?>
+                   onchange="onScelta(this, 'pending')">accetto
+          </label>
+          <label class="lbl-no">
+            <input type="checkbox" class="chk-no" <?= in_array($r['stato'], ['rejected', 'declined'], true) ? 'checked' : '' ?>
+                   onchange="onScelta(this, 'rejected')">respingo
+          </label>
+        </div>
+        <?php if (!in_array($r['stato'], ['rejected', 'declined'], true)): ?>
+          <label class="spezza-chk" title="Spezza qui: i turni successivi diventano un gruppo indipendente in Agenda, sul foglio e nell'ODT">
+            <input type="checkbox" <?= $r['spezza_dopo'] ? 'checked' : '' ?>
+                   onchange="toggleSpezza(<?= $r['id'] ?>, this)">⛓️‍💥
+          </label>
+        <?php endif; ?>
+        <?php endif; ?>
+        <?php if ($editabile): ?>
+        <button class="btn-elimina" title="Elimina definitivamente la richiesta"
+                onclick="eliminaTurno(<?= $r['id'] ?>, this)">🗑️</button>
+        <?php endif; ?>
+      </div>
+      <?php endforeach; ?>
+    </div>
+
+    <?php endforeach; ?>
+    </div><!-- /.vigile-card -->
+    <?php
 }
 
 // Raggruppa per vigile → blocchi
@@ -956,15 +1104,32 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
     $scambi     = $scambiPerData[$dataInizio] ?? [];
     $visite     = $visitePerData[$dataInizio] ?? [];
     $permessoOr = $permessoOrarioPerData[$dataInizio] ?? [];
+    // #215: un riquadro per categoria — $gruppo (ferie+missione+permesso
+    // giornaliero+malattia+infortunio, unici tipi che passano da blocchiContigui)
+    // va smistato PRIMA sia per il conteggio qui sotto sia per il rendering più
+    // in basso. Ordine di visualizzazione: cambio salto, missione, permesso
+    // giornaliero, permesso orario, malattia+infortunio, ferie.
+    $gruppoMissione = $gruppoPermesso = $gruppoMalattia = $gruppoFerie = [];
+    foreach ($gruppo as $item) {
+        switch ((int)$item['block'][0]['tipo_assenza_id']) {
+            case 3: $gruppoMissione[] = $item; break;
+            case 4: $gruppoPermesso[] = $item; break;
+            case 5: case 6: $gruppoMalattia[] = $item; break;
+            default: $gruppoFerie[] = $item;
+        }
+    }
     $dtInizio   = new DateTime($dataInizio);
     $dataHeader = $giorniNomi[(int)$dtInizio->format('N')] . ' '
                 . $dtInizio->format('d') . ' '
                 . $mesiNomi[(int)$dtInizio->format('n')];
     $conteggio  = [];
     if ($visite) $conteggio[] = count($visite) . ' visit' . (count($visite) === 1 ? 'a' : 'e') . ' medic' . (count($visite) === 1 ? 'a' : 'he');
-    if ($gruppo) $conteggio[] = count($gruppo) . ' vigil' . (count($gruppo) === 1 ? 'e' : 'i') . ' in ferie';
     if ($scambi) $conteggio[] = count($scambi) . (count($scambi) === 1 ? ' scambio' : ' scambi') . ' salto';
+    if ($gruppoMissione) $conteggio[] = count($gruppoMissione) . ' in missione';
+    if ($gruppoPermesso) $conteggio[] = count($gruppoPermesso) . ' permess' . (count($gruppoPermesso) === 1 ? 'o' : 'i') . ' giornalier' . (count($gruppoPermesso) === 1 ? 'o' : 'i');
     if ($permessoOr) $conteggio[] = count($permessoOr) . ' permess' . (count($permessoOr) === 1 ? 'o' : 'i') . ' orari';
+    if ($gruppoMalattia) $conteggio[] = count($gruppoMalattia) . ' in malattia/infortunio';
+    if ($gruppoFerie) $conteggio[] = count($gruppoFerie) . ' vigil' . (count($gruppoFerie) === 1 ? 'e' : 'i') . ' in ferie';
     // Quel giorno il turno PRIMARIO è in servizio diurno (☀️) o notturno (🌙):
     // mostro un'icona sola, col salto a riposo del foglio corrispondente (l'ancora
     // resta il turno primario anche in vista multi-turno).
@@ -1035,13 +1200,22 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
     </div>
     <?php endif; ?>
 
+    <?php
+    // #215: un riquadro per categoria, in quest'ordine dopo scambio salto:
+    // missione, permesso giornaliero, permesso orario, malattia+infortunio, ferie.
+    renderBoxAssenze($gruppoMissione, 'miss', $dataInizio, $TURNO, $turniExtra,
+        $TIPO_ASSENZA_LABEL_IT, $STATO_LABEL_IT, $outboxReq, $giorniNomi);
+    renderBoxAssenze($gruppoPermesso, 'perm', $dataInizio, $TURNO, $turniExtra,
+        $TIPO_ASSENZA_LABEL_IT, $STATO_LABEL_IT, $outboxReq, $giorniNomi);
+    ?>
+
     <?php if ($permessoOr): ?>
-    <!-- Permesso orario di questa data: tra scambi e ferie, stessi identici
-         controlli delle ferie (accetto/respingo/cestino + stato comunicazione).
-         Nasce già "accettato" di default come le ferie (stato pending mostrato
-         come accetto flaggato) — il vigile resta assegnato al turno, questa è
-         solo la riga di approvazione/annotazione (vedi permessi_orari per il
-         badge in squadra/box permessi sul foglio). -->
+    <!-- Permesso orario di questa data: stessi identici controlli delle ferie
+         (accetto/respingo/cestino + stato comunicazione). Nasce già "accettato"
+         di default come le ferie (stato pending mostrato come accetto flaggato)
+         — il vigile resta assegnato al turno, questa è solo la riga di
+         approvazione/annotazione (vedi permessi_orari per il badge in
+         squadra/box permessi sul foglio). -->
     <div class="vigile-card" style="margin-bottom:8px;">
       <?php foreach ($permessoOr as $po):
         [$comClsPo, $comLblPo] = comunicazioneTurno($po, $outboxReq);
@@ -1082,136 +1256,12 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
     </div>
     <?php endif; ?>
 
-    <?php if ($gruppo): ?>
-    <div class="vigile-card">
-    <?php foreach ($gruppo as $gi => $item):
-      $meta       = $item['meta'];
-      $block      = $item['block'];
-      $label      = etichettaVigile($meta);
-      $isCentrale = ($meta['sede_nome'] === 'CENTRALE');
-      // Malattia/infortunio (e missione): il periodo mostrato è quello COMUNICATO
-      // dal vigile (range_da/range_a, uguale su ogni turno decomposto), non quello
-      // ricalcolato dai turni — può divergere per via dei salti tra un turno e
-      // l'altro, e la fureria deve vedere esattamente ciò che è stato dichiarato.
-      $periodo    = $block[0]['range_da']
-          ? periodLabelComunicato($block[0]['range_da'], $block[0]['range_a'])
-          : periodLabel($block);
-      $turni      = turniLabel($block);
-      $stato      = statoBlock($block);
-      $detailId   = 'detail-' . $meta['vigile_id'] . '-' . md5($dataInizio);
-      $allIds     = array_column($block, 'id');
-      $editabile  = ($meta['turno'] === $TURNO);
-      // blocchiContigui non fonde più tipi diversi: ogni blocco è di un solo
-      // tipo_assenza_id. FER/PERM restano approvabili, MISS/MAL/INF sono già
-      // decise da sole (vedi database.py:insert_request).
-      $tipoAssenzaId = (int)$block[0]['tipo_assenza_id'];
-      $approvabile   = in_array($tipoAssenzaId, TIPI_APPROVABILI, true);
-      $tipoLabel     = $TIPO_ASSENZA_LABEL_IT[$tipoAssenzaId] ?? $block[0]['tipo_assenza_codice'];
+    <?php
+    renderBoxAssenze($gruppoMalattia, 'mal', $dataInizio, $TURNO, $turniExtra,
+        $TIPO_ASSENZA_LABEL_IT, $STATO_LABEL_IT, $outboxReq, $giorniNomi);
+    renderBoxAssenze($gruppoFerie, 'fer', $dataInizio, $TURNO, $turniExtra,
+        $TIPO_ASSENZA_LABEL_IT, $STATO_LABEL_IT, $outboxReq, $giorniNomi);
     ?>
-    <!-- Riga vigile -->
-    <div class="blocco-row" id="row-<?= $detailId ?>"
-         onclick="toggleDetail('<?= $detailId ?>')">
-      <span class="toggle-icon" id="icon-<?= $detailId ?>">▶</span>
-      <?php if ($turniExtra): ?><span class="turno-tag">Turno <?= htmlspecialchars($meta['turno']) ?></span><?php endif; ?>
-      <?php if ($tipoAssenzaId !== 1): ?><span class="turno-tag"><?= htmlspecialchars($tipoLabel) ?></span><?php endif; ?>
-      <span class="blocco-nome"><?= htmlspecialchars($label) ?></span>
-      <?php if (!$isCentrale): ?>
-        <span class="blocco-sede"><?= htmlspecialchars($meta['sede_codice']) ?></span>
-      <?php endif; ?>
-      <span class="blocco-periodo"><?= $periodo ?></span>
-      <span class="blocco-turni"><?= $turni ?> turni</span>
-      <?php if ($tipoAssenzaId === 3 && $block[0]['note']): ?>
-        <span class="blocco-nota">📝 <?= htmlspecialchars($block[0]['note']) ?></span>
-      <?php endif; ?>
-      <span class="blocco-spacer"></span>
-      <?php if ($approvabile): ?>
-      <span class="stato-badge stato-<?= $stato ?>" id="badge-<?= $detailId ?>"><?= $STATO_LABEL_IT[$stato] ?? $stato ?></span>
-      <?php else: ?>
-      <span class="stato-badge stato-approved">🔒 registrata</span>
-      <?php endif; ?>
-      <?php if ($editabile && $approvabile): ?>
-      <div class="blocco-azioni" onclick="event.stopPropagation()">
-        <button class="btn-mini accetta"
-                onclick='setStato(<?= htmlspecialchars(json_encode($allIds)) ?>, "pending")'
-                title="Accetta tutto il periodo (resta in attesa fino all'invio della mail)">✓ tutti</button>
-        <button class="btn-mini respingi"
-                onclick='setStato(<?= htmlspecialchars(json_encode($allIds)) ?>, "rejected")'
-                title="Respingi tutto il periodo">✗ tutti</button>
-      </div>
-      <?php elseif (!$editabile): ?>
-      <span class="ro-badge">👁 sola lettura</span>
-      <?php endif; ?>
-    </div>
-
-    <!-- Tendina singoli turni -->
-    <div class="turni-detail" id="<?= $detailId ?>" data-block="<?= $detailId ?>">
-      <?php foreach ($block as $r):
-        $d   = new DateTime($r['data_richiesta']);
-        $dow = $giorniNomi[(int)$d->format('N')];
-      ?>
-      <?php
-        [$comCls, $comLbl] = comunicazioneTurno($r, $outboxReq);
-        $sok  = (($outboxReq[(int)$r['id']]['ok']  ?? null) === 'sent') ? 1 : 0;
-        $sneg = (($outboxReq[(int)$r['id']]['neg'] ?? null) === 'sent') ? 1 : 0;
-      ?>
-      <div class="turno-riga" data-id="<?= $r['id'] ?>" data-stato="<?= $r['stato'] ?>" data-block="<?= $detailId ?>"
-           data-sok="<?= $sok ?>" data-sneg="<?= $sneg ?>">
-        <span class="turno-data"><?= $d->format('d/m') ?></span>
-        <span class="turno-dow"><?= $dow ?></span>
-        <span class="turno-tipo <?= $r['tipo_turno'] ?>">
-          <?= match($r['tipo_turno']) {
-              'D'  => '☀️ Diurno',
-              'N'  => '🌙 Notturno',
-              'DN' => '🌅 Giornata',
-              default => $r['tipo_turno'],
-          } ?>
-        </span>
-        <?php if ($tipoAssenzaId === 1 && in_array((int)$d->format('n'), [6, 7, 8, 9], true)): ?>
-          <?php if ($editabile): ?>
-            <label class="ferie-estiva-chk" title="Ferie estiva">
-              <input type="checkbox" <?= $r['ferie_estiva'] ? 'checked' : '' ?>
-                     onchange="toggleEstiva(<?= $r['id'] ?>, this)">🏖️
-            </label>
-          <?php elseif ($r['ferie_estiva']): ?>
-            <span class="ferie-estiva-chk" title="Ferie estiva">🏖️</span>
-          <?php endif; ?>
-        <?php endif; ?>
-        <?php if ($r['note'] && $tipoAssenzaId !== 3): ?>
-          <span class="turno-nota" title="<?= htmlspecialchars($r['note']) ?>">📝</span>
-        <?php endif; ?>
-        <span class="turno-spacer"></span>
-        <?php if ($approvabile): ?>
-        <span class="com-badge com-<?= $comCls ?>" id="com-<?= $r['id'] ?>"><?= $comLbl ?></span>
-        <?php endif; ?>
-        <?php if ($editabile && $approvabile): ?>
-        <div class="scelta">
-          <label class="lbl-si">
-            <input type="checkbox" class="chk-si" <?= !in_array($r['stato'], ['rejected', 'declined'], true) ? 'checked' : '' ?>
-                   onchange="onScelta(this, 'pending')">accetto
-          </label>
-          <label class="lbl-no">
-            <input type="checkbox" class="chk-no" <?= in_array($r['stato'], ['rejected', 'declined'], true) ? 'checked' : '' ?>
-                   onchange="onScelta(this, 'rejected')">respingo
-          </label>
-        </div>
-        <?php if (!in_array($r['stato'], ['rejected', 'declined'], true)): ?>
-          <label class="spezza-chk" title="Spezza qui: i turni successivi diventano un gruppo indipendente in Agenda, sul foglio e nell'ODT">
-            <input type="checkbox" <?= $r['spezza_dopo'] ? 'checked' : '' ?>
-                   onchange="toggleSpezza(<?= $r['id'] ?>, this)">⛓️‍💥
-          </label>
-        <?php endif; ?>
-        <?php endif; ?>
-        <?php if ($editabile): ?>
-        <button class="btn-elimina" title="Elimina definitivamente la richiesta"
-                onclick="eliminaTurno(<?= $r['id'] ?>, this)">🗑️</button>
-        <?php endif; ?>
-      </div>
-      <?php endforeach; ?>
-    </div>
-
-    <?php endforeach; ?>
-    </div><!-- /.vigile-card -->
-    <?php endif; ?>
 
   </div><!-- /.data-section -->
   <?php endforeach; ?>
