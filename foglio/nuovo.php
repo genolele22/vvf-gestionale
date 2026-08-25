@@ -395,10 +395,25 @@ function prepopolaRuoli(PDO $pdo, int $foglioId, array $resters): void {
 
         // prepopolaAssegnazioni li ha già messi in squadra: capo/vice non stanno
         // anche nelle squadre, vanno tolti (come al salvataggio manuale).
+        // #167/#217: se capo/vice era il PRIMO messo in una posizione (es. 4B
+        // riga 1), toglierlo senza ricompattare lasciava un buco in riga 1
+        // mentre chi veniva dopo restava impilato in riga 2+ — il compositore
+        // sceglie i CR prima per la squadra e solo dopo capi_pool, quindi il
+        // primo CR disponibile finisce spesso qui.
+        $stPos = $pdo->prepare("SELECT posizione_id FROM assegnazioni WHERE foglio_id=? AND vigile_id=?");
+        $stRicompatta = $pdo->prepare("SELECT id FROM assegnazioni WHERE foglio_id=? AND posizione_id=? ORDER BY ordine");
+        $stOrdine = $pdo->prepare("UPDATE assegnazioni SET ordine=? WHERE id=?");
         foreach ([$capo, $vice] as $rid) {
             if (!$rid) continue;
+            $stPos->execute([$foglioId, $rid]);
+            $posId = (int)($stPos->fetchColumn() ?: 0);
             $pdo->prepare("DELETE FROM assegnazioni  WHERE foglio_id=? AND vigile_id=?")->execute([$foglioId, $rid]);
             $pdo->prepare("DELETE FROM salto_servizio WHERE foglio_id=? AND vigile_id=?")->execute([$foglioId, $rid]);
+            if ($posId > 0) {
+                $stRicompatta->execute([$foglioId, $posId]);
+                $n = 1;
+                foreach ($stRicompatta->fetchAll(PDO::FETCH_COLUMN) as $aid) $stOrdine->execute([$n++, $aid]);
+            }
         }
     } catch (Throwable $e) { /* tabella capi_pool assente: nessun automatismo */ }
 
