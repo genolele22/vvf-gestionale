@@ -170,6 +170,12 @@ $nRegole  = contaTab($pdo, "SELECT COUNT(*) FROM regole_squadra WHERE attiva=1 A
       <div class="ac-meta"><?= $nRegole ?> regole attive</div>
     </a>
 
+    <a href="composizione_squadra.php" class="admin-card">
+      <div class="ac-ico">🎯</div>
+      <h3>Composizione squadra</h3>
+      <p>Minimi per ruolo (capo partenza, autisti, abilitazione) perché una squadra sia considerata completa.</p>
+    </a>
+
     <a href="ruoli.php" class="admin-card">
       <div class="ac-ico">👷</div>
       <h3>Capi servizio &amp; Furieri</h3>

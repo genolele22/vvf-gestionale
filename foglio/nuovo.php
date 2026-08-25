@@ -354,7 +354,11 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, arra
     // deve restare vuota. Chi viene tolto torna disponibile (non si assegna
     // automaticamente altrove: è la fureria a deciderne la sistemazione).
     try {
-        $posConCapoRichiesto = $pdo->query("SELECT id FROM posizioni WHERE min_capo > 0")->fetchAll(PDO::FETCH_COLUMN);
+        $posConCapoRichiesto = $pdo->prepare(
+            "SELECT posizione_id FROM posizione_composizione WHERE turno=? AND min_capo > 0"
+        );
+        $posConCapoRichiesto->execute([turnoAttivo()]);
+        $posConCapoRichiesto = $posConCapoRichiesto->fetchAll(PDO::FETCH_COLUMN);
         if ($posConCapoRichiesto) {
             $capoQualIds = $pdo->query("SELECT id FROM qualifiche WHERE codice IN ('Cr','Cs')")->fetchAll(PDO::FETCH_COLUMN);
             $phPos = implode(',', array_fill(0, count($posConCapoRichiesto), '?'));
@@ -1563,6 +1567,9 @@ $abilitazioneCodById = [];
 foreach ($pdo->query("SELECT id, codice FROM abilitazioni") as $ac) {
     $abilitazioneCodById[(int)$ac['id']] = $ac['codice'];
 }
+// #172/#163: minimi di composizione per QUESTO turno (per-turno, come regole_squadra).
+$composizionePerTurno = composizionePerTurno($pdo, $TURNO);
+$composizioneVuota    = composizioneVuota();
 
 // Tutto il personale attivo con qualifica e salto
 $tuttoPersonale = $pdo->query(
@@ -2387,7 +2394,7 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
       }
       // Card-renderer condiviso (Centrale + Distaccamenti + Aeroporto).
       // $gridStyle = posizionamento esplicito su griglia (es. "grid-column:6;grid-row:2").
-      $renderPosCard = function (array $pos, string $gridStyle = '') use (&$assPerPosizione, &$esterniPerPosizione, $scambioOut, $visiteFoglio, $visitaIds, $permessoOrarioMap) {
+      $renderPosCard = function (array $pos, string $gridStyle = '') use (&$assPerPosizione, &$esterniPerPosizione, $scambioOut, $visiteFoglio, $visitaIds, $permessoOrarioMap, $composizionePerTurno, $composizioneVuota, $abilitazioneCodById, $abilByVidRender) {
           $assQui = $assPerPosizione[$pos['id']] ?? [];
           $extQui = $esterniPerPosizione[$pos['id']] ?? [];
           $codPos = strtolower($pos['codice']);
@@ -2456,14 +2463,16 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
               }
               $maxRiga = max($cap, $righe ? max(array_keys($righe)) : $cap);
               // #148: le prime N caselle vuote sono evidenziate in rosso (personale
-              // mancante), N = totale minimo richiesto dalla composizione (#172);
-              // oltre N è capienza extra, normale.
-              $nRichiesti = richiestiTotalePosizione($pos);
+              // mancante), N = totale minimo richiesto dalla composizione di
+              // QUESTO turno (#172/#163: i minimi sono per turno); oltre N è
+              // capienza extra, normale.
+              $compPos    = $composizionePerTurno[(int)$pos['id']] ?? $composizioneVuota;
+              $nRichiesti = richiestiTotalePosizione($compPos);
             ?>
             <div class="pos-body" id="body-<?= $pos['id'] ?>" data-cap="<?= $cap ?>" data-n-richiesti="<?= $nRichiesti ?>"
-                 data-min-capo="<?= (int)$pos['min_capo'] ?>" data-min-autista34="<?= (int)$pos['min_autista34'] ?>"
-                 data-min-autista2="<?= (int)$pos['min_autista2'] ?>" data-min-altri="<?= (int)$pos['min_altri'] ?>"
-                 data-min-abil="<?= (int)$pos['min_abilitazione'] ?>" data-abil-cod="<?= htmlspecialchars($abilitazioneCodById[(int)($pos['abilitazione_id'] ?? 0)] ?? '') ?>">
+                 data-min-capo="<?= (int)$compPos['min_capo'] ?>" data-min-autista34="<?= (int)$compPos['min_autista34'] ?>"
+                 data-min-autista2="<?= (int)$compPos['min_autista2'] ?>" data-min-altri="<?= (int)$compPos['min_altri'] ?>"
+                 data-min-abil="<?= (int)$compPos['min_abilitazione'] ?>" data-abil-cod="<?= htmlspecialchars($abilitazioneCodById[(int)($compPos['abilitazione_id'] ?? 0)] ?? '') ?>">
               <?php
               for ($riga = 1; $riga <= $maxRiga; $riga++):
                   $r = $righe[$riga] ?? null;
