@@ -1622,9 +1622,14 @@ foreach ($assenze as $ass) {
 // FoglioRenderer::arricchisciFerie() (blocchiContigui su assenze), nessuna
 // scrittura: non tocca il flusso di approvazione in Agenda.
 if (!empty($assenzePerTipo['FER'])) {
+    // #224: spezza_dopo, stessa logica/join di FoglioRenderer::arricchisciBlocco().
     $stBlocco = $pdo->prepare(
-        "SELECT f.data_servizio AS data_richiesta, f.tipo_turno
+        "SELECT f.data_servizio AS data_richiesta, f.tipo_turno,
+                COALESCE(r.spezza_dopo, 0) AS spezza_dopo
            FROM assenze a JOIN fogli_servizio f ON f.id = a.foglio_id
+           LEFT JOIN bot_requests r ON r.vigile_id = a.vigile_id
+                AND r.data_richiesta = f.data_servizio
+                AND (r.tipo_turno = f.tipo_turno OR r.tipo_turno = 'DN')
           WHERE a.vigile_id=? AND a.tipo_assenza_id=1
           ORDER BY f.data_servizio, f.tipo_turno"
     );

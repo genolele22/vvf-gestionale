@@ -50,6 +50,12 @@ function assicuraSchemaRichiesteAssenza(PDO $pdo): void
         // ricalcolarlo dai turni (vedi ferie/index.php, blocco vigile-card).
         'range_da'        => 'DATE DEFAULT NULL',
         'range_a'         => 'DATE DEFAULT NULL',
+        // #224 (logbook): spezza manuale di un blocco ferie contiguo — quando
+        // vale 1, blocchiContigui() interrompe il blocco subito dopo questo
+        // turno, a prescindere dalla contiguità con quello successivo. Persiste
+        // al reset del foglio (non lo tocca), si toglie solo dal tasto stesso
+        // o cancellando la richiesta.
+        'spezza_dopo'     => 'TINYINT(1) NOT NULL DEFAULT 0',
     ]);
     // tipo_turno (D/N): senza, il foglio non sa su quale dei due fogli del
     // giorno (diurno/notturno) mostrare il badge orario.

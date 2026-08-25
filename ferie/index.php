@@ -224,6 +224,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
+    // #224 (logbook): spezza un blocco ferie contiguo subito dopo questo turno —
+    // i turni successivi diventano un gruppo indipendente in Agenda/foglio/ODT
+    // (blocchiContigui, includes/ferie_blocchi.php). Solo su turni già
+    // approvati: prima dell'approvazione non ha senso decidere dove spezzare.
+    if ($azione === 'toggle_spezza') {
+        $id = (int)($_POST['id'] ?? 0);
+        if ($id <= 0) { echo json_encode(['ok' => false, 'errore' => 'ID non valido']); exit; }
+
+        $st = $pdo->prepare(
+            "SELECT r.stato, r.spezza_dopo, v.turno
+             FROM bot_requests r JOIN vigili v ON v.id = r.vigile_id WHERE r.id=?"
+        );
+        $st->execute([$id]);
+        $r = $st->fetch();
+        if (!$r) { echo json_encode(['ok' => false, 'errore' => 'Richiesta inesistente']); exit; }
+        if (!puoModificareTurno($r['turno'])) {
+            echo json_encode(['ok' => false, 'errore' => 'Turno in sola lettura per il tuo profilo.']); exit;
+        }
+        if ($r['stato'] !== 'approved') {
+            echo json_encode(['ok' => false, 'errore' => 'Solo un turno già approvato può essere spezzato.']); exit;
+        }
+
+        $nuovo = $r['spezza_dopo'] ? 0 : 1;
+        $pdo->prepare("UPDATE bot_requests SET spezza_dopo=? WHERE id=?")->execute([$nuovo, $id]);
+        echo json_encode(['ok' => true, 'spezza_dopo' => $nuovo]);
+        exit;
+    }
+
     // ── Scambi salto nati dal bot: approva / rifiuta dall'Agenda ──
     // Molte approvazioni avvengono al computer invece che dal bot. Replica la
     // stessa logica del bot (override + patch fogli) e avvisa i due vigili via
@@ -337,7 +365,8 @@ $TIPO_ASSENZA_LABEL_IT = [3 => 'Missione', 4 => 'Permesso', 5 => 'Malattia', 6 =
 // ── Carica richieste del mese ────────────────────────────────
 $stmt = $pdo->prepare("
     SELECT r.id, r.vigile_id, r.data_richiesta, r.tipo_turno, r.stato, r.ferie_estiva,
-           r.tipo_assenza_id, r.note, r.ora_da, r.ora_a, r.range_da, r.range_a, ta.codice AS tipo_assenza_codice,
+           r.tipo_assenza_id, r.note, r.ora_da, r.ora_a, r.range_da, r.range_a, r.spezza_dopo,
+           ta.codice AS tipo_assenza_codice,
            v.nome, v.cognome, v.disambiguatore, v.email, v.turno,
            q.codice AS qcodice,
            s.nome   AS sede_nome,
@@ -712,6 +741,14 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
 }
 .ferie-estiva-chk:has(input:checked) { opacity: 1; }
 .ferie-estiva-chk input { cursor: pointer; }
+
+/* #224: spezza un blocco ferie contiguo dopo questo turno */
+.spezza-chk {
+    display: inline-flex; align-items: center; gap: 3px;
+    font-size: .85rem; cursor: pointer; flex-shrink: 0; opacity: .4; margin-left: 10px;
+}
+.spezza-chk:has(input:checked) { opacity: 1; }
+.spezza-chk input { cursor: pointer; }
 
 /* ── Doppia spunta accetto / respingo ── */
 .scelta {
@@ -1155,6 +1192,12 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
                    onchange="onScelta(this, 'rejected')">respingo
           </label>
         </div>
+        <?php if ($r['stato'] === 'approved'): ?>
+          <label class="spezza-chk" title="Spezza qui: i turni successivi diventano un gruppo indipendente in Agenda, sul foglio e nell'ODT">
+            <input type="checkbox" <?= $r['spezza_dopo'] ? 'checked' : '' ?>
+                   onchange="toggleSpezza(<?= $r['id'] ?>, this)">⛓️‍💥
+          </label>
+        <?php endif; ?>
         <?php endif; ?>
         <?php if ($editabile): ?>
         <button class="btn-elimina" title="Elimina definitivamente la richiesta"
@@ -1343,6 +1386,30 @@ async function toggleEstiva(id, chk) {
         res = await fetch('', { method: 'POST', body: fd }).then(r => r.json());
     } catch (e) { chk.checked = !chk.checked; return; }
     if (!res.ok) chk.checked = !chk.checked;   // rollback visivo, silenzioso
+}
+
+// #224: spezza un blocco ferie dopo questo turno — cambia il raggruppamento
+// (Agenda/foglio/ODT), calcolato solo lato PHP da blocchiContigui(): serve un
+// reload, come setStato(), non basta un rollback visivo in caso di errore.
+async function toggleSpezza(id, chk) {
+    const fd = new FormData();
+    fd.append('azione', 'toggle_spezza');
+    fd.append('id', id);
+    let res;
+    try {
+        res = await fetch('', { method: 'POST', body: fd }).then(r => r.json());
+    } catch (e) {
+        chk.checked = !chk.checked;
+        showMsg('⚠️ Errore di rete', 'err');
+        return;
+    }
+    if (!res.ok) {
+        chk.checked = !chk.checked;
+        showMsg('⚠️ ' + (res.errore || 'Errore'), 'err');
+        return;
+    }
+    sessionStorage.setItem('agendaScrollY', window.scrollY);
+    location.reload();
 }
 
 // ── Visite mediche (#95) ─────────────────────────────────────

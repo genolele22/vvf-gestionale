@@ -10,6 +10,9 @@
 // unico di 4 turni), ma due o più respinte consecutive restano un blocco loro
 // — sono comunque contigue, solo di segno opposto. Il cambio di gruppo rompe
 // sempre il blocco, a prescindere dalla distanza in giorni.
+// #224: 'spezza_dopo' sul turno rompe il blocco subito dopo di esso, anche se
+// il turno seguente sarebbe altrimenti contiguo — spezzatura manuale decisa
+// dalla fureria (turno per turno approvato), indipendente da gap/gruppo/tipo.
 // turniLabel = nr turni del blocco (DN vale 2). periodLabel = etichetta da–a.
 
 if (!function_exists('blocchiContigui')) {
@@ -29,7 +32,8 @@ function blocchiContigui(array $richieste): array {
         // un blocco solo. Assente su entrambe (righe FoglioRenderer, sempre FER)
         // → default 1, confronto sempre vero, comportamento invariato.
         $stessoTipo = (int)($prevReq['tipo_assenza_id'] ?? 1) === (int)($currReq['tipo_assenza_id'] ?? 1);
-        $contiguo = (int)$curr->diff($prev)->days <= 3 && $stessoGruppo && $stessoTipo;
+        $spezzato   = !empty($prevReq['spezza_dopo']);
+        $contiguo = (int)$curr->diff($prev)->days <= 3 && $stessoGruppo && $stessoTipo && !$spezzato;
         if ($contiguo) {
             $current[] = $currReq;
         } else {
