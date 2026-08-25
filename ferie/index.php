@@ -226,8 +226,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // #224 (logbook): spezza un blocco ferie contiguo subito dopo questo turno —
     // i turni successivi diventano un gruppo indipendente in Agenda/foglio/ODT
-    // (blocchiContigui, includes/ferie_blocchi.php). Solo su turni già
-    // approvati: prima dell'approvazione non ha senso decidere dove spezzare.
+    // (blocchiContigui, includes/ferie_blocchi.php). Su turni accettati
+    // (pending o approved): la decisione si prende mentre si compone il turno,
+    // non serve aver già inviato la mail (Lele, 25/08 — la versione iniziale
+    // richiedeva 'approved' e non trovava mai turni su cui comparire).
     if ($azione === 'toggle_spezza') {
         $id = (int)($_POST['id'] ?? 0);
         if ($id <= 0) { echo json_encode(['ok' => false, 'errore' => 'ID non valido']); exit; }
@@ -242,8 +244,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!puoModificareTurno($r['turno'])) {
             echo json_encode(['ok' => false, 'errore' => 'Turno in sola lettura per il tuo profilo.']); exit;
         }
-        if ($r['stato'] !== 'approved') {
-            echo json_encode(['ok' => false, 'errore' => 'Solo un turno già approvato può essere spezzato.']); exit;
+        if (in_array($r['stato'], ['rejected', 'declined'], true)) {
+            echo json_encode(['ok' => false, 'errore' => 'Solo un turno accettato può essere spezzato.']); exit;
         }
 
         $nuovo = $r['spezza_dopo'] ? 0 : 1;
@@ -1192,7 +1194,7 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
                    onchange="onScelta(this, 'rejected')">respingo
           </label>
         </div>
-        <?php if ($r['stato'] === 'approved'): ?>
+        <?php if (!in_array($r['stato'], ['rejected', 'declined'], true)): ?>
           <label class="spezza-chk" title="Spezza qui: i turni successivi diventano un gruppo indipendente in Agenda, sul foglio e nell'ODT">
             <input type="checkbox" <?= $r['spezza_dopo'] ? 'checked' : '' ?>
                    onchange="toggleSpezza(<?= $r['id'] ?>, this)">⛓️‍💥
