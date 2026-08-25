@@ -254,6 +254,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
+    // #209: nota di missione modificabile dalla fureria — anche quando il
+    // vigile non ne ha scritta una da Telegram. Aggiorna TUTTE le richieste
+    // del blocco (stesso valore su ogni turno): l'ODT (FoglioRenderer) legge
+    // la nota dell'id più recente, l'Agenda quella della prima — devono
+    // coincidere, altrimenti si vede un testo in agenda e un altro sull'odt.
+    if ($azione === 'edit_nota_missione') {
+        $ids  = json_decode($_POST['ids'] ?? '[]', true);
+        $nota = trim((string)($_POST['nota'] ?? ''));
+        $ids  = is_array($ids) ? array_values(array_filter(array_map('intval', $ids), fn($i) => $i > 0)) : [];
+        if (!$ids) { echo json_encode(['ok' => false, 'errore' => 'ID non validi']); exit; }
+
+        $ph = implode(',', array_fill(0, count($ids), '?'));
+        $st = $pdo->prepare(
+            "SELECT r.id, v.turno FROM bot_requests r JOIN vigili v ON v.id = r.vigile_id
+              WHERE r.id IN ($ph) AND r.tipo_assenza_id = 3"
+        );
+        $st->execute($ids);
+        $righe = $st->fetchAll();
+        if (count($righe) !== count($ids)) { echo json_encode(['ok' => false, 'errore' => 'Richiesta non di missione']); exit; }
+        foreach ($righe as $r) {
+            if (!puoModificareTurno($r['turno'])) {
+                echo json_encode(['ok' => false, 'errore' => 'Turno in sola lettura per il tuo profilo.']); exit;
+            }
+        }
+
+        $pdo->prepare("UPDATE bot_requests SET note=? WHERE id IN ($ph)")
+            ->execute(array_merge([$nota !== '' ? $nota : null], $ids));
+        echo json_encode(['ok' => true, 'nota' => $nota]);
+        exit;
+    }
+
     // ── Scambi salto nati dal bot: approva / rifiuta dall'Agenda ──
     // Molte approvazioni avvengono al computer invece che dal bot. Replica la
     // stessa logica del bot (override + patch fogli) e avvisa i due vigili via
@@ -516,7 +547,13 @@ function renderBoxAssenze(
       <?php endif; ?>
       <span class="blocco-periodo"><?= $periodo ?></span>
       <?php if ($turni > 1): ?><span class="blocco-turni"><?= $turni ?> turni</span><?php endif; ?>
-      <?php if ($tipoAssenzaId === 3 && $block[0]['note']): ?>
+      <?php if ($tipoAssenzaId === 3 && $editabile): ?>
+        <span class="blocco-nota">
+          <span class="blocco-nota-ico" title="Modifica nota missione"
+                onclick="event.stopPropagation(); modificaNotaMissione(<?= htmlspecialchars(json_encode($allIds)) ?>, <?= htmlspecialchars(json_encode((string)($block[0]['note'] ?? ''))) ?>)">📝</span>
+          <?= $block[0]['note'] ? htmlspecialchars($block[0]['note']) : '' ?>
+        </span>
+      <?php elseif ($tipoAssenzaId === 3 && $block[0]['note']): ?>
         <span class="blocco-nota">📝 <?= htmlspecialchars($block[0]['note']) ?></span>
       <?php endif; ?>
       <span class="blocco-spacer"></span>
@@ -837,6 +874,7 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
 .blocco-turni { font-size: .75rem; color: var(--grigio-md); min-width: 55px; }
 .blocco-nota { font-size: .78rem; color: var(--grigio-md); font-style: italic;
                flex: 1 1 160px; min-width: 0; }
+.blocco-nota-ico { cursor: pointer; font-style: normal; margin-right: 4px; }
 .blocco-spacer { flex: 1; }
 
 .stato-badge {
@@ -1467,6 +1505,28 @@ async function toggleSpezza(id, chk) {
     if (!res.ok) {
         chk.checked = !chk.checked;
         showMsg('⚠️ ' + (res.errore || 'Errore'), 'err');
+        return;
+    }
+    sessionStorage.setItem('agendaScrollY', window.scrollY);
+    location.reload();
+}
+
+// #209: nota di missione modificabile — anche quando è vuota (il vigile può
+// non averla scritta da Telegram), l'icona c'è sempre e apre un prompt di
+// testo libero. Aggiorna tutti i turni del blocco, poi ricarica: la stessa
+// nota deve comparire identica anche sull'ODT.
+async function modificaNotaMissione(ids, notaAttuale) {
+    const nuova = prompt('Nota missione (vuota per rimuoverla):', notaAttuale || '');
+    if (nuova === null) return;   // annullato
+    const fd = new FormData();
+    fd.append('azione', 'edit_nota_missione');
+    fd.append('ids', JSON.stringify(ids));
+    fd.append('nota', nuova.trim());
+    try {
+        const res = await fetch('', { method: 'POST', body: fd }).then(r => r.json());
+        if (!res.ok) { showMsg('⚠️ ' + (res.errore || 'Errore'), 'err'); return; }
+    } catch (e) {
+        showMsg('⚠️ Errore di rete', 'err');
         return;
     }
     sessionStorage.setItem('agendaScrollY', window.scrollY);

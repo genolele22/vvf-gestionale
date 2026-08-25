@@ -522,6 +522,7 @@ function mostraAvvisiScambioSalto(avvisi) {
              '<br><br>Puoi sistemare il foglio o lasciarlo così.',
     okLabel: 'Ho capito',
     okStyle: 'background:#b7950b;color:#fff',
+    soloOk:  true,   // #199: solo avviso, niente da annullare
   });
 }
 

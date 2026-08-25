@@ -1679,6 +1679,42 @@ if (!empty($assenzePerTipo['FER'])) {
     }
 }
 
+// #196: stesso "turni residui" già in uso per le ferie (#159/#171), anche per
+// missione/malattia/infortunio — decrescente foglio dopo foglio, nessun
+// numero se resterebbe 1. Niente spezza_dopo qui: è una possibilità solo
+// della ferie (#224), questi tipi non si spezzano manualmente.
+foreach (['MISS' => 3, 'MAL' => 5, 'INF' => 6] as $codiceTipoAltro => $tipoAssenzaIdAltro) {
+    if (empty($assenzePerTipo[$codiceTipoAltro])) continue;
+    $stBloccoAltro = $pdo->prepare(
+        "SELECT f.data_servizio AS data_richiesta, f.tipo_turno
+           FROM assenze a JOIN fogli_servizio f ON f.id = a.foglio_id
+          WHERE a.vigile_id=? AND a.tipo_assenza_id=?
+          ORDER BY f.data_servizio, f.tipo_turno"
+    );
+    foreach ($assenzePerTipo[$codiceTipoAltro] as $i => $a) {
+        $stBloccoAltro->execute([(int)$a['vigile_id'], $tipoAssenzaIdAltro]);
+        $righe = array_map(fn($r) => $r + ['stato' => 'approved'], $stBloccoAltro->fetchAll());
+        $blocchi = blocchiContigui($righe);
+        foreach ($blocchi as $b) {
+            $da = $b[0]['data_richiesta'];
+            $aa = end($b)['data_richiesta'];
+            if ($dataStr >= $da && $dataStr <= $aa) {
+                $idxCorrente = null;
+                foreach ($b as $bi => $br) {
+                    if ($br['data_richiesta'] === $dataStr
+                        && ($br['tipo_turno'] === $tipoParam || $br['tipo_turno'] === 'DN')) {
+                        $idxCorrente = $bi;
+                        break;
+                    }
+                }
+                $restanti = turniLabel($idxCorrente !== null ? array_slice($b, $idxCorrente) : $b);
+                $assenzePerTipo[$codiceTipoAltro][$i]['nr_turni'] = $restanti > 1 ? $restanti : null;
+                break;
+            }
+        }
+    }
+}
+
 // Vigili assenti (set di id)
 $vigiliAssenti = array_unique(array_column($assenze, 'vigile_id'));
 
@@ -2894,6 +2930,9 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
               <span class="assente-info">
                 <?= htmlspecialchars($a['tipo_codice']) ?>
               </span>
+              <?php if (!empty($a['nr_turni'])): ?>
+                  <span class="assente-info"><?= (int)$a['nr_turni'] ?>T</span>
+              <?php endif; ?>
               <button class="assente-del"
                       onclick="rimuoviDaAssenza(<?= $a['vigile_id'] ?>)"
                       title="Rimuovi">✕</button>
@@ -2945,6 +2984,9 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
               <span class="assente-info">
                 <?= htmlspecialchars($a['tipo_codice']) ?>
               </span>
+              <?php if (!empty($a['nr_turni'])): ?>
+                  <span class="assente-info"><?= (int)$a['nr_turni'] ?>T</span>
+              <?php endif; ?>
               <button class="assente-del"
                       onclick="rimuoviDaAssenza(<?= $a['vigile_id'] ?>)"
                       title="Rimuovi">✕</button>
@@ -3059,6 +3101,7 @@ function mostraAvvisiScambioFerie(avvisi) {
                  '<br><br>Puoi modificare il servizio o lasciarlo così.',
         okLabel: 'Ho capito',
         okStyle: 'background:#b7950b;color:#fff',
+        soloOk:  true,   // #199: solo avviso, niente da annullare
     });
 }
 

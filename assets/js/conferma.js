@@ -10,6 +10,10 @@
        onOk:   () => { ... }
      });
 
+   #199: un avviso puramente informativo (niente da annullare, nessuna
+   azione in sospeso) passa soloOk:true — un solo tasto invece di due che
+   fanno la stessa cosa (chiudere).
+
    Per i form:  onsubmit="return confermaSubmit(this, 'Testo?')"
 */
 (function () {
@@ -53,6 +57,7 @@
     const ok = document.getElementById('confermaOk');
     ok.textContent = o.okLabel || 'Conferma';
     ok.style.cssText = o.okStyle || 'background:var(--rosso);color:#fff';
+    document.getElementById('confermaAnnulla').style.display = o.soloOk ? 'none' : '';
     _cb = o.onOk || null;
     document.getElementById('confermaModal').style.display = 'flex';
   };
