@@ -470,7 +470,7 @@ function comunicazioneTurno(array $r, array $outboxReq): array {
 // $detailId quando lo stesso vigile compare in più di un riquadro nello
 // stesso giorno (prima non poteva succedere: un solo riquadro misto).
 function renderBoxAssenze(
-    array $catGruppo, string $catKey, string $dataInizio, string $turnoAttivo, bool $turniExtra,
+    array $catGruppo, string $catKey, string $dataInizio, string $turnoAttivo, array $turniExtra,
     array $tipoAssenzaLabelIt, array $statoLabelIt, array $outboxReq, array $giorniNomi
 ): void {
     if (!$catGruppo) return;
