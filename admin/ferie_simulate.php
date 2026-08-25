@@ -304,9 +304,10 @@ $vigili = $pdo->query(
   .fs-chip.active { background:var(--rosso); border-color:var(--rosso); color:#fff; }
   .fs-orario { margin-top:12px; }
   .fs-ora-row { display:flex; align-items:center; gap:10px; margin-bottom:8px; flex-wrap:wrap; }
-  .fs-ora-lbl { font-size:.8rem; font-weight:700; color:var(--grigio-md); min-width:44px; }
+  .fs-ora-lbl { font-size:.8rem; font-weight:700; color:var(--grigio-md); min-width:44px; white-space:nowrap; }
   .fs-chips .fs-chip.ora { padding:5px 10px; font-size:.8rem; border-radius:6px; }
-  .fs-chips .fs-chip.ora.active { background:#1e7e34; border-color:#1e7e34; }
+  .fs-chips .fs-chip.ora.active { background:#1e7e34; border-color:#1e7e34; color:#fff; }
+  .fs-chips .fs-chip.ora.in-range { background:#eafaf0; border-color:#a9dfbf; }
   .fs-chips .fs-chip.ora:disabled { opacity:.35; cursor:not-allowed; }
 </style>
 </head>
@@ -364,8 +365,9 @@ $vigili = $pdo->query(
         Permesso orario: un giorno alla volta — selezionandone un altro nel calendario sostituisce
         quello scelto.
       </p>
-      <div class="fs-ora-row"><span class="fs-ora-lbl">Dalle</span><div class="fs-chips" id="chipsOraDa"></div></div>
-      <div class="fs-ora-row"><span class="fs-ora-lbl">Alle</span><div class="fs-chips" id="chipsOraA"></div></div>
+      <!-- #210: una sola riga — clic sull'ora di inizio, poi clic sull'ora di
+           fine, invece di due righe Dalle/Alle separate. -->
+      <div class="fs-ora-row"><span class="fs-ora-lbl">Imposta orario</span><div class="fs-chips" id="chipsOra"></div></div>
     </div>
   </div>
 
@@ -458,32 +460,38 @@ function sequenzaOre(slot) {
   return seq;
 }
 
+// #210: una riga sola — primo clic = inizio, secondo clic (su un'ora
+// successiva) = fine. Un clic su un'ora uguale/precedente all'inizio, o
+// quando l'intervallo è già completo, ricomincia una nuova selezione.
 function renderOraChips(slot) {
-  const seq  = sequenzaOre(slot);
-  const daBox = document.getElementById('chipsOraDa');
-  const aBox  = document.getElementById('chipsOraA');
-  daBox.innerHTML = ''; aBox.innerHTML = '';
+  const seq = sequenzaOre(slot);
+  const box = document.getElementById('chipsOra');
+  box.innerHTML = '';
   const iDa = seq.indexOf(oraDaSel);
-  seq.forEach(h => {
-    const b = document.createElement('button');
-    b.type = 'button'; b.className = 'fs-chip ora' + (h === oraDaSel ? ' active' : '');
-    b.textContent = h;
-    b.onclick = () => { oraDaSel = h; oraASel = null; renderOraChips(slot); aggiornaContatori(); };
-    daBox.appendChild(b);
-  });
+  const iA  = seq.indexOf(oraASel);
   seq.forEach((h, idx) => {
     const b = document.createElement('button');
-    b.type = 'button'; b.className = 'fs-chip ora' + (h === oraASel ? ' active' : '');
+    b.type = 'button';
+    let cls = 'fs-chip ora';
+    if (idx === iDa || idx === iA) cls += ' active';
+    else if (iDa !== -1 && iA !== -1 && idx > iDa && idx < iA) cls += ' in-range';
+    b.className = cls;
     b.textContent = h;
-    b.disabled = iDa === -1 || idx <= iDa;
-    b.onclick = () => { oraASel = h; renderOraChips(slot); aggiornaContatori(); };
-    aBox.appendChild(b);
+    b.onclick = () => {
+      if (oraDaSel === null || oraASel !== null || idx <= iDa) {
+        oraDaSel = h; oraASel = null;
+      } else {
+        oraASel = h;
+      }
+      renderOraChips(slot);
+      aggiornaContatori();
+    };
+    box.appendChild(b);
   });
 }
 
 function svuotaOraChips() {
-  document.getElementById('chipsOraDa').innerHTML = '';
-  document.getElementById('chipsOraA').innerHTML = '';
+  document.getElementById('chipsOra').innerHTML = '';
   oraDaSel = null; oraASel = null;
 }
 

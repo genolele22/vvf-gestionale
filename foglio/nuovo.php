@@ -2063,14 +2063,15 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
              data-nferie="<?= (int)$nFerieDaApprovare ?>"
              onclick="return scaricaOdt(this)">📄 Scarica .odt</a>
           <button type="button" onclick="window.open('stampa.php?id=<?= $foglioId ?>','_blank')"
-                  class="btn btn-grigio btn-sm">🖨️ Stampa</button>
+                  class="btn btn-grigio btn-sm"
+                  title="Anteprima .odt del servizio del <?= htmlspecialchars(date('d/m/Y', strtotime($dataStr))) ?>">🔍 .odt</button>
           <?php if ($foglioPrec):
               $precLabel = date('d/m/Y', strtotime($foglioPrec['data_servizio']))
                          . ' ' . ($foglioPrec['tipo_turno'] === 'N' ? 'Notturno' : 'Diurno'); ?>
           <button type="button" class="btn btn-grigio btn-sm"
                   onclick="window.open('stampa.php?id=<?= (int)$foglioPrec['id'] ?>','servPrec','width=1000,height=1000,scrollbars=yes,resizable=yes')"
                   title="Apre la stampa del servizio precedente (<?= htmlspecialchars($precLabel) ?>)">
-            🕑 Precedente
+            🕑 Prec.
           </button>
           <?php endif; ?>
           <?php if (!soloLetturaAttivo()): ?>

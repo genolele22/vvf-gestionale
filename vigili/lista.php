@@ -182,6 +182,16 @@ $filtroSalto = (int)($_GET['salto']  ?? 0);
 $filtroStato = $_GET['stato']        ?? 'attivi';
 $filtroTesto = trim($_GET['cerca']   ?? '');
 
+// #173: querystring dei filtri attivi, da riattaccare a modifica/annulla/azioni
+// riga — senza, salvare o annullare la scheda di un vigile (o disattivarlo/
+// riattivarlo/eliminarlo) faceva perdere il filtro e tornava all'elenco intero.
+$filtroQS = http_build_query(array_filter([
+    'sede'  => $filtroSede  > 0     ? $filtroSede  : null,
+    'salto' => $filtroSalto > 0     ? $filtroSalto : null,
+    'stato' => $filtroStato !== 'attivi' ? $filtroStato : null,
+    'cerca' => $filtroTesto !== ''  ? $filtroTesto : null,
+]));
+
 $where  = ['v.turno = ?'];                 // multi-turno: solo il turno in vista
 $params = [$TURNO];
 if ($filtroStato === 'attivi') { $where[] = 'v.attivo = 1'; }
@@ -212,7 +222,10 @@ $qualifiche   = $pdo->query("SELECT * FROM qualifiche ORDER BY id DESC")->fetchA
 $sedi         = $pdo->query("SELECT * FROM sedi ORDER BY ordine")->fetchAll();
 $salti        = $pdo->query("SELECT * FROM salti_turno ORDER BY turno, id")->fetchAll();
 $patentiAll   = $pdo->query("SELECT * FROM patenti ORDER BY id")->fetchAll();
-$abilitazAll  = $pdo->query("SELECT * FROM abilitazioni ORDER BY id")->fetchAll();
+// #154: l'elenco nella scheda vigile deve seguire l'ordine configurato in
+// Amministrazione → Anagrafica di sistema (colonna `ordine`, drag-riordino),
+// non l'ordine di inserimento.
+$abilitazAll  = $pdo->query("SELECT * FROM abilitazioni ORDER BY ordine, id")->fetchAll();
 
 // ── VIGILE IN MODIFICA ───────────────────────────────────────
 $vigileEdit    = null;
@@ -317,7 +330,7 @@ if (!empty($vigili)) {
       <?= $vigileEdit ? '✏️ Modifica Vigile' : '➕ Inserisci Nuovo Vigile' ?>
     </div>
     <div class="card-body">
-      <form method="POST" action="lista.php">
+      <form method="POST" action="lista.php<?= $filtroQS ? '?' . $filtroQS : '' ?>">
         <input type="hidden" name="azione"
                value="<?= $vigileEdit ? 'modifica' : 'inserisci' ?>">
         <?php if ($vigileEdit): ?>
@@ -494,24 +507,27 @@ if (!empty($vigili)) {
           <button type="submit" class="btn btn-rosso">
             <?= $vigileEdit ? '💾 Salva modifiche' : '➕ Inserisci vigile' ?>
           </button>
-          <a href="lista.php" class="btn btn-grigio">✖ Annulla</a>
+          <a href="lista.php<?= $filtroQS ? '?' . $filtroQS : '' ?>" class="btn btn-grigio">✖ Annulla</a>
         </div>
       </form>
     </div>
   </div>
   <?php endif; ?>
   <!-- ══ FILTRI ════════════════════════════════════════════════ -->
-  <form method="GET" action="lista.php">
+  <!-- #173: si applicano subito (come i filtri della tabella sotto), niente
+       più tasto "Filtra" — resta solo Reset. -->
+  <form method="GET" action="lista.php" id="formFiltriTop">
     <div class="filtri">
       <div class="form-group">
         <label>🔍 Cerca</label>
         <input type="text" name="cerca"
                placeholder="Cognome o nome…"
-               value="<?= htmlspecialchars($filtroTesto) ?>">
+               value="<?= htmlspecialchars($filtroTesto) ?>"
+               oninput="filtriTopDebounce()">
       </div>
       <div class="form-group">
         <label>Sede</label>
-        <select name="sede">
+        <select name="sede" onchange="this.form.submit()">
           <option value="0">Tutte le sedi</option>
           <?php foreach ($sedi as $s): ?>
             <option value="<?= $s['id'] ?>"
@@ -523,7 +539,7 @@ if (!empty($vigili)) {
       </div>
       <div class="form-group">
         <label>Salto turno</label>
-        <select name="salto">
+        <select name="salto" onchange="this.form.submit()">
           <option value="0">Tutti i salti</option>
           <?php foreach ($salti as $st):
               if ($st['turno'] !== $TURNO) continue;   // solo i salti del turno in vista
@@ -537,7 +553,7 @@ if (!empty($vigili)) {
       </div>
       <div class="form-group">
         <label>Stato</label>
-        <select name="stato">
+        <select name="stato" onchange="this.form.submit()">
           <option value="attivi"
             <?= $filtroStato==='attivi' ? 'selected' : '' ?>>
             Solo attivi
@@ -549,11 +565,17 @@ if (!empty($vigili)) {
         </select>
       </div>
       <div style="display:flex;gap:8px;align-items:flex-end">
-        <button type="submit" class="btn btn-rosso btn-sm">🔍 Filtra</button>
         <a href="lista.php" class="btn btn-grigio btn-sm">↺ Reset</a>
       </div>
     </div>
   </form>
+  <script>
+    let _filtriTopTimer = null;
+    function filtriTopDebounce() {
+      clearTimeout(_filtriTopTimer);
+      _filtriTopTimer = setTimeout(() => document.getElementById('formFiltriTop').submit(), 500);
+    }
+  </script>
     <!-- ══ TABELLA ═══════════════════════════════════════════════ -->
   <div class="tabella-wrap">
 
@@ -736,14 +758,14 @@ if (!empty($vigili)) {
             <div class="azioni">
 
               <!-- Modifica -->
-              <a href="lista.php?modifica=<?= $v['id'] ?>"
+              <a href="lista.php?modifica=<?= $v['id'] ?><?= $filtroQS ? '&' . $filtroQS : '' ?>"
                  class="btn btn-grigio btn-sm">
                 ✏️ Modifica
               </a>
 
               <!-- Disattiva / Riattiva -->
               <?php if ($v['attivo']): ?>
-                <form method="POST" action="lista.php"
+                <form method="POST" action="lista.php<?= $filtroQS ? '?' . $filtroQS : '' ?>"
                       onsubmit="return confermaSubmit(this, 'Disattivare questo vigile?', {titolo:'Disattiva vigile', okLabel:'🚫 Disattiva'})">
                   <input type="hidden" name="azione" value="elimina">
                   <input type="hidden" name="id" value="<?= $v['id'] ?>">
@@ -752,7 +774,7 @@ if (!empty($vigili)) {
                   </button>
                 </form>
               <?php else: ?>
-                <form method="POST" action="lista.php">
+                <form method="POST" action="lista.php<?= $filtroQS ? '?' . $filtroQS : '' ?>">
                   <input type="hidden" name="azione" value="riattiva">
                   <input type="hidden" name="id" value="<?= $v['id'] ?>">
                   <button type="submit" class="btn btn-verde btn-sm">
@@ -763,7 +785,7 @@ if (!empty($vigili)) {
 
               <!-- Elimina DEFINITIVO (hard): rimuove dal DB con tutto lo storico.
                    Per trasferimenti/pensionamenti. Irreversibile → doppia conferma. -->
-              <form method="POST" action="lista.php"
+              <form method="POST" action="lista.php<?= $filtroQS ? '?' . $filtroQS : '' ?>"
                     onsubmit="return confermaSubmit(this, 'Eliminare DEFINITIVAMENTE <?= htmlspecialchars(addslashes(ucfirst(strtolower($v['cognome'])).' '.$v['nome'])) ?>? Sparisce dal database con tutto il suo storico (fogli, ferie, salti). Operazione irreversibile — per disattivare temporaneamente usa Disattiva.', {titolo:'Elimina definitivamente', okLabel:'🗑️ Elimina dal DB', okStyle:'background:var(--rosso);color:#fff'})">
                 <input type="hidden" name="azione" value="elimina_def">
                 <input type="hidden" name="id" value="<?= $v['id'] ?>">
@@ -907,6 +929,18 @@ if (tog && lbl) {
         applica();
         fC.removeAttribute('open');
     });
+
+    // #173: .comp-menu è position:fixed (esce dal ritaglio di .tabella-wrap),
+    // quindi la posizione va calcolata qui invece che lasciata al CSS.
+    const menu = fC.querySelector('.comp-menu');
+    if (menu) {
+        fC.addEventListener('toggle', () => {
+            if (!fC.open) return;
+            const r = fC.getBoundingClientRect();
+            menu.style.top   = (r.bottom + 4) + 'px';
+            menu.style.right = (window.innerWidth - r.right) + 'px';
+        });
+    }
 })();
 </script>
 <style>
@@ -922,7 +956,11 @@ if (tog && lbl) {
   .th-filtro-multi > summary::-webkit-details-marker { display:none; }
   .th-filtro-multi > summary::after { content:' ▾'; opacity:.6; }
   .th-filtro-multi #compSel { font-weight:700; }
-  .comp-menu { position:absolute; z-index:50; top:calc(100% + 4px); right:0; min-width:210px;
+  /* #173: position:fixed (non absolute) + posizione calcolata in JS al toggle —
+     .tabella-wrap ha overflow:hidden per gli angoli arrotondati (#179), che
+     tagliava via il menu quando la tabella filtrata restava bassa. fixed esce
+     da qualunque overflow:hidden degli antenati. */
+  .comp-menu { position:fixed; z-index:500; min-width:210px;
                background:#fff; color:#333; border:1px solid #cfd3d8; border-radius:8px;
                box-shadow:0 6px 18px rgba(0,0,0,.18); padding:6px; max-height:340px; overflow:auto; }
   .comp-menu .comp-group { font-size:.66rem; font-weight:800; text-transform:uppercase;
