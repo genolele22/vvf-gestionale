@@ -1854,7 +1854,8 @@ $cambioSaltoOk = !empty($contropartiSlot) && !empty($vigiliPerSlot[$slotRiposoOg
 // Scambi salto ATTIVI che toccano questo turno (per il tasto annulla)
 $stSA = $pdo->prepare(
     "SELECT DISTINCT s.id, s.slot_a, s.slot_b,
-            va.cognome AS a_cognome, vb.cognome AS b_cognome
+            va.cognome AS a_cognome, va.disambiguatore AS a_disambiguatore,
+            vb.cognome AS b_cognome, vb.disambiguatore AS b_disambiguatore
      FROM salto_override o
      JOIN bot_scambi_salto s ON s.id = o.scambio_id
      JOIN vigili va ON va.id = s.vigile_a_id
@@ -2754,8 +2755,8 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
         <?php foreach ($scambiAttivi as $sc): ?>
           <div style="display:flex;align-items:center;gap:6px;font-size:.74rem;
                       background:#fff7d6;border:1px solid #e0c200;border-radius:5px;padding:4px 6px">
-            <span style="flex:1">🔄 B<?= (int)$sc['slot_a'] ?> <?= htmlspecialchars(ucfirst(strtolower($sc['a_cognome']))) ?>
-                  ⇄ B<?= (int)$sc['slot_b'] ?> <?= htmlspecialchars(ucfirst(strtolower($sc['b_cognome']))) ?></span>
+            <span style="flex:1">🔄 B<?= (int)$sc['slot_a'] ?> <?= htmlspecialchars(ucfirst(strtolower($sc['a_cognome']))) ?><?= $sc['a_disambiguatore'] ? ' ' . (int)$sc['a_disambiguatore'] : '' ?>
+                  ⇄ B<?= (int)$sc['slot_b'] ?> <?= htmlspecialchars(ucfirst(strtolower($sc['b_cognome']))) ?><?= $sc['b_disambiguatore'] ? ' ' . (int)$sc['b_disambiguatore'] : '' ?></span>
             <button type="button" class="btn btn-grigio btn-sm" style="padding:2px 6px"
                     onclick="annullaScambio(<?= (int)$sc['id'] ?>)"
                     title="Annulla questo scambio">✖️</button>

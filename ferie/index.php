@@ -489,7 +489,7 @@ function renderBoxAssenze(
             ? periodLabelComunicato($block[0]['range_da'], $block[0]['range_a'])
             : periodLabel($block);
         $turni      = turniLabel($block);
-        $stato      = statoBlock($block);
+        $stato      = statoBlock($block, $outboxReq);
         $detailId   = 'detail-' . $meta['vigile_id'] . '-' . $catKey . '-' . md5($dataInizio);
         $allIds     = array_column($block, 'id');
         $editabile  = ($meta['turno'] === $turnoAttivo);
@@ -1364,12 +1364,17 @@ function sincronizzaDOM() {
     });
 
     // badge di blocco — declined si comporta come pending (in attesa di
-    // comunicazione); un blocco non uniforme mostra "in attesa" (#129, stessa
-    // regola di statoBlock() lato server).
+    // comunicazione); un blocco non uniforme mostra "in attesa" (#129); #223:
+    // approved/rejected valgono solo se già comunicati (stessa regola di
+    // statoBlock() lato server), altrimenti restano "in attesa" anche loro.
     document.querySelectorAll('.turni-detail').forEach(det => {
         const bid    = det.dataset.block;
-        const stati  = [...det.querySelectorAll('.turno-riga')].map(
-            r => r.dataset.stato === 'declined' ? 'pending' : r.dataset.stato);
+        const stati  = [...det.querySelectorAll('.turno-riga')].map(r => {
+            let s = r.dataset.stato === 'declined' ? 'pending' : r.dataset.stato;
+            if (s === 'approved' && r.dataset.sok !== '1') s = 'pending';
+            if (s === 'rejected' && r.dataset.sneg !== '1') s = 'pending';
+            return s;
+        });
         const unici  = [...new Set(stati)];
         const stato  = unici.length === 1 ? unici[0] : 'pending';
         const badge  = document.getElementById('badge-' + bid);

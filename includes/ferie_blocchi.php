@@ -69,11 +69,22 @@ function turniLabel(array $block): int {
 // comunicazione" e si equivalgono qui; un blocco non uniforme (anche se tutte
 // le righe sono decise ma diverse tra loro) mostra "pending" — una comunicazione
 // da inviare pesa più di una già inviata (voluto, vedi #129).
-function statoBlock(array $block): string {
-    $stati = array_unique(array_map(
-        fn($r) => ($r['stato'] ?? '') === 'declined' ? 'pending' : ($r['stato'] ?? ''),
-        $block
-    ));
+// #223: 'approved'/'rejected' contano come tali SOLO se la mail è già partita
+// (bot_outbox ha l'esito 'sent') — altrimenti restano 'pending' anche nel
+// badge di blocco, come già mostra correttamente il badge per-turno
+// (comunicazioneTurno). Senza, un turno deciso ma non ancora comunicato
+// mostrava "APPROVATO"/"RIFIUTATO" nell'intestazione e "da inviare" aprendo
+// il dettaglio — stessa informazione, due risposte diverse.
+function statoBlock(array $block, array $outboxReq = []): string {
+    $stati = array_unique(array_map(function ($r) use ($outboxReq) {
+        $s = ($r['stato'] ?? '') === 'declined' ? 'pending' : ($r['stato'] ?? '');
+        if ($s === 'approved' || $s === 'rejected') {
+            $kind = ($s === 'rejected') ? 'neg' : 'ok';
+            $sent = ($outboxReq[(int)($r['id'] ?? 0)][$kind] ?? null) === 'sent';
+            if (!$sent) $s = 'pending';
+        }
+        return $s;
+    }, $block));
     return count($stati) === 1 ? $stati[0] : 'pending';
 }
 
