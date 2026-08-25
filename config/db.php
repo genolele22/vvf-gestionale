@@ -5,6 +5,10 @@ define('DB_NAME',    getenv('MYSQL_DATABASE') ?: 'vvf_turno_b');
 define('DB_USER',    getenv('MYSQL_USER')     ?: '');
 define('DB_PASS',    getenv('MYSQL_PASSWORD') ?: '');
 define('DB_CHARSET', 'utf8mb4');
+// #136: stessa chiave del bot (Fernet, vvf-ferie-bot/crypto.py) — serve a
+// leggere/scrivere vigili.email_password_enc dal gestionale (solo per
+// l'account fureria, includes/fureria_credenziali.php).
+define('ENCRYPTION_KEY', getenv('ENCRYPTION_KEY') ?: '');
 
 function getDB(): PDO {
     static $pdo = null;

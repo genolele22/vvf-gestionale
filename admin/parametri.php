@@ -3,6 +3,7 @@ session_start();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/parametri_lib.php';
+require_once __DIR__ . '/../includes/fureria_credenziali.php';
 richiediComando();   // config di sistema: mail del bot + formato foglio (tutti i turni)
 $pdo     = getDB();
 $errore  = '';
@@ -32,6 +33,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $sucesso = 'Parametri posta salvati. Il bot li userà alla prossima mail (nessun redeploy).';
         } catch (Throwable $e) {
             $errore = 'Errore salvataggio posta: ' . $e->getMessage();
+        }
+
+    } elseif ($azione === 'salva_password_fureria') {
+        // #136: password dell'account fureria aggiornabile da qui invece che
+        // solo da Telegram (/aggiorna_password) — utile in vista di un
+        // indirizzo istituzionale non legato a nessun vigile su Telegram.
+        $t = strtoupper(trim($_POST['turno'] ?? ''));
+        $password = (string)($_POST['password'] ?? '');
+        if (!in_array($t, ['A', 'B', 'C', 'D'], true)) {
+            $errore = 'Turno non valido.';
+        } elseif ($password === '') {
+            $errore = 'Inserisci la password.';
+        } else {
+            $email = getParam($pdo, "mail_furiera_risposte_$t");
+            if (!$email) {
+                $errore = "Imposta prima l'indirizzo mittente del turno $t qui sopra.";
+            } else {
+                $host = getParam($pdo, 'smtp_host') ?: 'smtp-s.vigilfuoco.it';
+                $port = (int)(getParam($pdo, 'smtp_port') ?: 465);
+                [$ok, $msg] = aggiornaPasswordFureria($pdo, $email, $password, $host, $port);
+                if ($ok) { $sucesso = "Turno $t: $msg"; } else { $errore = "Turno $t: $msg"; }
+            }
         }
 
     } elseif ($azione === 'salva_nome') {
@@ -164,6 +187,9 @@ $righe = array_filter($righeTutte, fn($r) => !in_array($r['chiave'], $chiaviStru
     <a href="index.php" class="btn btn-grigio">← Amministrazione</a>
   </div>
 
+  <?php if ($errore): ?><div class="alert alert-err"><?= htmlspecialchars($errore) ?></div><?php endif; ?>
+  <?php if ($sucesso): ?><div class="alert alert-ok"><?= htmlspecialchars($sucesso) ?></div><?php endif; ?>
+
   <!-- ── POSTA (bot Telegram) ─────────────────────────────────────────── -->
   <div class="card">
     <div class="card-head">📧 Posta del bot</div>
@@ -172,8 +198,11 @@ $righe = array_filter($righeTutte, fn($r) => !in_array($r['chiave'], $chiaviStru
         Indirizzi e server usati dal bot per le mail di ferie/scambio. Ogni turno gestisce
         in autonomia: le richieste di un vigile <b>arrivano</b> alla casella del suo turno e
         conferme/dinieghi <b>partono</b> dalla stessa. Se un campo è vuoto, il bot usa il
-        valore configurato nel sistema (.env). La <b>password</b> di ogni casella resta
-        cifrata sull'anagrafica del vigile-fureria, non si tocca qui.
+        valore configurato nel sistema (.env). La <b>password</b> di ogni casella
+        (sotto, una per turno) va cifrata prima di salvarla: qui viene anche
+        verificata con un vero accesso al server di posta, così un errore di
+        battitura si vede subito invece di scoprirlo quando la fureria smette di
+        ricevere le notifiche.
       </p>
       <form method="POST" action="parametri.php" class="par-form">
         <input type="hidden" name="azione" value="salva_mail">
@@ -216,6 +245,25 @@ $righe = array_filter($righeTutte, fn($r) => !in_array($r['chiave'], $chiaviStru
         </div>
         <div><button type="submit" class="btn btn-rosso">Salva posta</button></div>
       </form>
+
+      <label style="margin-top:18px">🔑 Password casella mittente — una per turno</label>
+      <p class="hint" style="margin:0 0 8px">
+        L'indirizzo deve esistere già in anagrafica (è il "Mittente risposte" impostato sopra).
+        Verificata con un accesso reale al server prima di salvarla.
+      </p>
+      <div class="par-grid">
+        <?php foreach (['A', 'B', 'C', 'D'] as $t): ?>
+        <form method="POST" action="parametri.php" style="display:flex;gap:8px;align-items:flex-end">
+          <input type="hidden" name="azione" value="salva_password_fureria">
+          <input type="hidden" name="turno" value="<?= $t ?>">
+          <div style="flex:1">
+            <label>Turno <?= $t ?> <span style="text-transform:none;font-weight:400">(<?= htmlspecialchars($mailRispTurni[$t] ?: '— imposta prima il mittente —') ?>)</span></label>
+            <input type="password" name="password" placeholder="Nuova password" autocomplete="new-password" <?= $mailRispTurni[$t] ? '' : 'disabled' ?>>
+          </div>
+          <button type="submit" class="btn btn-grigio btn-sm" <?= $mailRispTurni[$t] ? '' : 'disabled' ?>>Salva</button>
+        </form>
+        <?php endforeach; ?>
+      </div>
     </div>
   </div>
 

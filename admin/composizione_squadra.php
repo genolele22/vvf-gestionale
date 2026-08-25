@@ -119,8 +119,8 @@ $vuota = composizioneVuota();
     Valori validi solo per il turno <?= htmlspecialchars($TURNO) ?>.
   </p>
 
-  <?php if ($errore): ?><div class="alert alert-errore"><?= htmlspecialchars($errore) ?></div><?php endif; ?>
-  <?php if ($sucesso): ?><div class="alert alert-successo"><?= htmlspecialchars($sucesso) ?></div><?php endif; ?>
+  <?php if ($errore): ?><div class="alert alert-err"><?= htmlspecialchars($errore) ?></div><?php endif; ?>
+  <?php if ($sucesso): ?><div class="alert alert-ok"><?= htmlspecialchars($sucesso) ?></div><?php endif; ?>
 
   <form method="POST" action="composizione_squadra.php">
     <input type="hidden" name="azione" value="salva">
