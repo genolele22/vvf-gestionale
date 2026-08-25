@@ -6,6 +6,7 @@ require_once __DIR__ . '/../includes/scambio_salto.php';
 require_once __DIR__ . '/../includes/FoglioRenderer.php';
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/format.php';
+require_once __DIR__ . '/../includes/composizione_squadra.php';
 richiediLogin();
 
 $TURNO = turnoAttivo();   // turno su cui si lavora (A/B/C/D); default B. Multi-turno.
@@ -14,6 +15,7 @@ $pdo = getDB();
 initStilePatente($pdo, $TURNO);   // colore/numero/entrambi + tinte (parametri admin)
 require_once __DIR__ . '/../includes/bot_requests_schema.php';
 assicuraSchemaRichiesteAssenza($pdo);
+assicuraSchemaComposizioneSquadra($pdo);
 
 // Capienza per posizione = slot del modello.odt + override editor. La mappa
 // codice→slot vive in scambioCapPos() (includes/scambio_salto.php): qui solo
@@ -1520,6 +1522,20 @@ foreach ($posizioni as $pos) {
     $posizioniPerSede[$pos['sede_id']][] = $pos;
 }
 
+// #172: abilitazioni per vigile, per il controllo composizione squadra
+// (data-abil sulle card, letto da squadreIncomplete() in JS).
+$abilByVidRender = [];
+foreach ($pdo->query(
+    "SELECT va.vigile_id, ab.codice FROM vigili_abilitazioni va
+     JOIN abilitazioni ab ON ab.id = va.abilitazione_id"
+) as $ar) {
+    $abilByVidRender[(int)$ar['vigile_id']][] = $ar['codice'];
+}
+$abilitazioneCodById = [];
+foreach ($pdo->query("SELECT id, codice FROM abilitazioni") as $ac) {
+    $abilitazioneCodById[(int)$ac['id']] = $ac['codice'];
+}
+
 // Tutto il personale attivo con qualifica e salto
 $tuttoPersonale = $pdo->query(
     "SELECT v.*, q.codice AS qcodice,
@@ -2411,11 +2427,15 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
                   $righe[$posto] = $r;
               }
               $maxRiga = max($cap, $righe ? max(array_keys($righe)) : $cap);
-              // #148: le prime n_richiesti caselle vuote sono evidenziate in rosso
-              // (personale mancante); oltre n_richiesti è capienza extra, normale.
-              $nRichiesti = (int)($pos['n_richiesti'] ?? 0);
+              // #148: le prime N caselle vuote sono evidenziate in rosso (personale
+              // mancante), N = totale minimo richiesto dalla composizione (#172);
+              // oltre N è capienza extra, normale.
+              $nRichiesti = richiestiTotalePosizione($pos);
             ?>
-            <div class="pos-body" id="body-<?= $pos['id'] ?>" data-cap="<?= $cap ?>" data-n-richiesti="<?= $nRichiesti ?>">
+            <div class="pos-body" id="body-<?= $pos['id'] ?>" data-cap="<?= $cap ?>" data-n-richiesti="<?= $nRichiesti ?>"
+                 data-min-capo="<?= (int)$pos['min_capo'] ?>" data-min-autista34="<?= (int)$pos['min_autista34'] ?>"
+                 data-min-autista2="<?= (int)$pos['min_autista2'] ?>" data-min-altri="<?= (int)$pos['min_altri'] ?>"
+                 data-min-abil="<?= (int)$pos['min_abilitazione'] ?>" data-abil-cod="<?= htmlspecialchars($abilitazioneCodById[(int)($pos['abilitazione_id'] ?? 0)] ?? '') ?>">
               <?php
               for ($riga = 1; $riga <= $maxRiga; $riga++):
                   $r = $righe[$riga] ?? null;
@@ -2442,6 +2462,9 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
                      data-pos-id="<?= $pos['id'] ?>"
                      data-ordine="<?= $riga ?>"
                      data-straord="<?= (int)$ass['in_straordinario'] ?>"
+                     data-qualifica="<?= htmlspecialchars($ass['qcodice']) ?>"
+                     data-patente="<?= htmlspecialchars((string)($ass['patente_max'] ?? '')) ?>"
+                     data-abil="<?= htmlspecialchars(implode(' ', $abilByVidRender[(int)$ass['vigile_id']] ?? [])) ?>"
                      draggable="true">
                   <span class="qual-dot <?= htmlspecialchars($ass['qcodice']) ?>"></span>
                   <span class="ass-nome" style="color:<?= $colore ?>"
@@ -3144,18 +3167,47 @@ function avvisaSeDisponibiliResidui(messaggioAzione, onProcedi) {
     });
 }
 
-// #149: squadre con caselle valorizzate diverse da n_richiesti (solo dove
-// configurato in amministrazione — 0 = nessun requisito, ignorata).
+// #172: squadre che non rispettano i minimi per ruolo configurati in
+// Amministrazione → Mezzi/Posizioni (capo partenza, autista 3/4, autista 2,
+// altri, abilitazione) — sostituisce il vecchio confronto "occupate vs
+// n_richiesti" (#149), che contava le teste senza guardare CHI le occupa.
+// Una stessa persona può soddisfare più requisiti insieme (es. un autista
+// 3/4 con l'abilitazione richiesta vale per entrambi).
 function squadreIncomplete() {
     const elenco = [];
     document.querySelectorAll('.pos-body[data-n-richiesti]').forEach(body => {
-        const nRich = parseInt(body.dataset.nRichiesti || '0');
-        if (!nRich) return;
-        const occupate = body.querySelectorAll('.ass-card').length;
-        if (occupate !== nRich) {
+        const minCapo  = parseInt(body.dataset.minCapo || '0');
+        const minAut34 = parseInt(body.dataset.minAutista34 || '0');
+        const minAut2  = parseInt(body.dataset.minAutista2 || '0');
+        const minAltri = parseInt(body.dataset.minAltri || '0');
+        const minAbil  = parseInt(body.dataset.minAbil || '0');
+        const abilCod  = body.dataset.abilCod || '';
+        const totMin   = minCapo + minAut34 + minAut2 + minAltri;
+        if (!totMin && !minAbil) return;   // nessun requisito configurato
+
+        const cards = Array.from(body.querySelectorAll('.ass-card'));
+        let capo = 0, aut34 = 0, aut2 = 0, abil = 0;
+        cards.forEach(c => {
+            const qual  = c.dataset.qualifica || '';
+            const pat   = c.dataset.patente || c.dataset.pat || '';
+            const abils = (c.dataset.abil || '').split(' ').filter(Boolean);
+            if (qual === 'Cr' || qual === 'Cs') capo++;
+            if (pat === '3' || pat === '4') aut34++;
+            if (pat === '2') aut2++;
+            if (abilCod && abils.includes(abilCod)) abil++;
+        });
+
+        const mancanze = [];
+        if (capo  < minCapo)  mancanze.push(`capo partenza ${capo}/${minCapo}`);
+        if (aut34 < minAut34) mancanze.push(`autista 3/4 ${aut34}/${minAut34}`);
+        if (aut2  < minAut2)  mancanze.push(`autista 2 ${aut2}/${minAut2}`);
+        if (minAbil && abil < minAbil) mancanze.push(`${abilCod || 'abilitazione'} ${abil}/${minAbil}`);
+        if (cards.length < totMin) mancanze.push(`totale ${cards.length}/${totMin}`);
+
+        if (mancanze.length) {
             const head = body.closest('.pos-card')?.querySelector('.pos-head');
             const nome = head ? head.textContent.trim() : '?';
-            elenco.push(`${nome} (${occupate}/${nRich})`);
+            elenco.push(`${nome} — ${mancanze.join(', ')}`);
         }
     });
     return elenco;

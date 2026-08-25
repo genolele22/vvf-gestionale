@@ -13,8 +13,13 @@ $TABELLE = [
     'sedi'         => ['label' => 'Sedi', 'icona' => '🏠',
         'cols' => ['codice' => ['Codice','text'], 'nome' => ['Nome','text'], 'ordine' => ['Ordine','int']]],
     'posizioni'    => ['label' => 'Mezzi / Posizioni', 'icona' => '🚒',
+        // #172: al posto del semplice conteggio "N. richiesti", i minimi per
+        // ruolo che il controllo pre-invio/pre-odt (#149) verifica davvero.
         'cols' => ['sede_id' => ['Sede','fk_sedi'], 'codice' => ['Codice','text'], 'nome' => ['Nome','text'],
-                   'n_richiesti' => ['N. richiesti','int'], 'ordine' => ['Ordine','int']]],
+                   'min_capo' => ['Capo Partenza','int'], 'min_autista34' => ['Autista 3/4','int'],
+                   'min_autista2' => ['Autista 2','int'], 'min_altri' => ['Altri','int'],
+                   'abilitazione_id' => ['Abilitazione','fk_abilitazioni'], 'min_abilitazione' => ['N. Abilitazione','int'],
+                   'ordine' => ['Ordine','int']]],
     'qualifiche'   => ['label' => 'Qualifiche', 'icona' => '🎖️',
         'cols' => ['codice' => ['Codice','text'], 'nome' => ['Nome','text']]],
     'salti_turno'  => ['label' => 'Salti turno', 'icona' => '😴',
@@ -37,6 +42,10 @@ $cols = $def['cols'];
 
 // Sedi per le tendine fk_sedi
 $sediOpt = $pdo->query("SELECT id, codice, nome FROM sedi ORDER BY ordine, codice")->fetchAll();
+// Abilitazioni per la tendina fk_abilitazioni
+require_once __DIR__ . '/../includes/composizione_squadra.php';
+assicuraSchemaComposizioneSquadra($pdo);
+$abilitazioniOpt = $pdo->query("SELECT id, codice, nome FROM abilitazioni ORDER BY ordine, id")->fetchAll();
 
 // ── AZIONI POST (sempre sulla tabella del tab) ───────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -55,6 +64,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $raw = trim($_POST[$c] ?? '');
             if ($tipo === 'int' || $tipo === 'fk_sedi') {
                 $vals[$c] = ($raw === '') ? 0 : (int)$raw;
+            } elseif ($tipo === 'fk_abilitazioni') {
+                // #172: a differenza di fk_sedi è opzionale — 0/vuoto = nessuna
+                // abilitazione richiesta per questa posizione, non un id reale.
+                $vals[$c] = ($raw !== '' && (int)$raw > 0) ? (int)$raw : null;
             } elseif ($tipo === 'turno') {
                 $vals[$c] = strtoupper(substr($raw, 0, 1)) ?: 'B';
             } else {
@@ -143,8 +156,12 @@ $righe = $pdo->query("SELECT * FROM `$tab` ORDER BY $orderBy")->fetchAll();
 $sediMap = [];
 foreach ($sediOpt as $s) $sediMap[(int)$s['id']] = $s['codice'] . ' · ' . $s['nome'];
 
-function valoreColonna(string $tipo, $v, array $sediMap): string {
+$abilitazioniMap = [];
+foreach ($abilitazioniOpt as $a) $abilitazioniMap[(int)$a['id']] = $a['codice'];
+
+function valoreColonna(string $tipo, $v, array $sediMap, array $abilitazioniMap = []): string {
     if ($tipo === 'fk_sedi') return htmlspecialchars($sediMap[(int)$v] ?? ('#' . (int)$v));
+    if ($tipo === 'fk_abilitazioni') return $v ? htmlspecialchars($abilitazioniMap[(int)$v] ?? ('#' . (int)$v)) : '—';
     return htmlspecialchars((string)$v);
 }
 ?>
@@ -254,6 +271,15 @@ function valoreColonna(string $tipo, $v, array $sediMap): string {
                   </option>
                 <?php endforeach; ?>
               </select>
+            <?php elseif ($tipo === 'fk_abilitazioni'): ?>
+              <select name="<?= $c ?>">
+                <option value="0">— nessuna —</option>
+                <?php foreach ($abilitazioniOpt as $a): ?>
+                  <option value="<?= (int)$a['id'] ?>" <?= (int)$val === (int)$a['id'] ? 'selected' : '' ?>>
+                    <?= htmlspecialchars($a['codice'] . ' · ' . $a['nome']) ?>
+                  </option>
+                <?php endforeach; ?>
+              </select>
             <?php elseif ($tipo === 'turno'): ?>
               <select name="<?= $c ?>">
                 <?php foreach (['A', 'B', 'C', 'D'] as $t): ?>
@@ -293,7 +319,7 @@ function valoreColonna(string $tipo, $v, array $sediMap): string {
         <?php foreach ($righe as $r): ?>
           <tr>
             <?php foreach ($cols as $c => [$lbl, $tipo]): ?>
-              <td><?= valoreColonna($tipo, $r[$c] ?? '', $sediMap) ?></td>
+              <td><?= valoreColonna($tipo, $r[$c] ?? '', $sediMap, $abilitazioniMap) ?></td>
             <?php endforeach; ?>
             <td>
               <div class="azioni">
