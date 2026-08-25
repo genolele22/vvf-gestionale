@@ -347,6 +347,34 @@ function prepopolaAssegnazioni(PDO $pdo, int $foglioId, int $saltoRiposoId, arra
             $riempi($posRg, $disp($cond));
         }
     } catch (Throwable $e) { /* tabella assente: nessuna regola extra */ }
+
+    // #218: posizioni che richiedono un capo partenza (Cr/Cs) — min_capo>0,
+    // vedi #172 — non devono mai avere un Vp come assegnazione automatica in
+    // riga 1: se il compositore ce l'ha messo per mancanza di Cr/Cs, la riga 1
+    // deve restare vuota. Chi viene tolto torna disponibile (non si assegna
+    // automaticamente altrove: è la fureria a deciderne la sistemazione).
+    try {
+        $posConCapoRichiesto = $pdo->query("SELECT id FROM posizioni WHERE min_capo > 0")->fetchAll(PDO::FETCH_COLUMN);
+        if ($posConCapoRichiesto) {
+            $capoQualIds = $pdo->query("SELECT id FROM qualifiche WHERE codice IN ('Cr','Cs')")->fetchAll(PDO::FETCH_COLUMN);
+            $phPos = implode(',', array_fill(0, count($posConCapoRichiesto), '?'));
+            $stRiga1 = $pdo->prepare(
+                "SELECT a.id, v.qualifica_id FROM assegnazioni a JOIN vigili v ON v.id = a.vigile_id
+                  WHERE a.foglio_id = ? AND a.ordine = 1 AND a.posizione_id IN ($phPos)"
+            );
+            $stRiga1->execute(array_merge([$foglioId], $posConCapoRichiesto));
+            $daRimuovere = [];
+            foreach ($stRiga1->fetchAll() as $r) {
+                if (!in_array((int)$r['qualifica_id'], array_map('intval', $capoQualIds), true)) {
+                    $daRimuovere[] = (int)$r['id'];
+                }
+            }
+            if ($daRimuovere) {
+                $phDel = implode(',', array_fill(0, count($daRimuovere), '?'));
+                $pdo->prepare("DELETE FROM assegnazioni WHERE id IN ($phDel)")->execute($daRimuovere);
+            }
+        }
+    } catch (Throwable $e) { /* difensivo: mai bloccare la generazione del foglio per questo */ }
 }
 
 function prepopolaFoglio(PDO $pdo, int $foglioId, int $saltoRiposoId, array $resters,
