@@ -69,11 +69,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // è la rotazione di base). Missione/malattia/infortunio ne restano
         // fuori: hanno precedenza sul salto per regola di dominio già esistente.
         $saltoIdVigile = [];
+        $nomiVigili    = [];
         if ($vigili) {
             $ph = implode(',', array_fill(0, count($vigili), '?'));
-            $stV = $pdo->prepare("SELECT id, salto_id FROM vigili WHERE id IN ($ph)");
+            $stV = $pdo->prepare("SELECT id, salto_id, cognome, nome, disambiguatore FROM vigili WHERE id IN ($ph)");
             $stV->execute($vigili);
-            foreach ($stV->fetchAll() as $r) $saltoIdVigile[(int)$r['id']] = (int)$r['salto_id'];
+            foreach ($stV->fetchAll() as $r) {
+                $saltoIdVigile[(int)$r['id']] = (int)$r['salto_id'];
+                $lbl = strtoupper($r['cognome']) . ' ' . $r['nome'];
+                if (!empty($r['disambiguatore'])) $lbl .= ' (' . $r['disambiguatore'] . ')';
+                $nomiVigili[(int)$r['id']] = $lbl;
+            }
         }
         $saltoIdGiornoCache = [];
         $saltoIdGiorno = function (string $data, string $tipo) use ($pdo, $TURNO, &$saltoIdGiornoCache): ?int {
@@ -85,6 +91,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             )->fetchColumn() ?: 0);
             return $saltoIdGiornoCache[$key] = ($id ?: null);
         };
+
+        // #225: il vigile può già risultare impegnato sul foglio in un altro
+        // riquadro (Missione/Permesso, Malattia/Infortunio) inserito a mano
+        // dal foglio stesso — senza passare da bot_requests, quindi invisibile
+        // al controllo di duplicato più sotto (chiave univoca vigile+data+turno
+        // su bot_requests). Va controllato direttamente su `assenze`, altrimenti
+        // si crea la doppia presenza: stessa persona assente e in servizio.
+        $LABEL_TIPO_ASSENZA = [1 => 'ferie', 3 => 'missione', 4 => 'permesso', 5 => 'malattia', 6 => 'infortunio'];
+        $foglioIdCache = [];
+        $foglioIdEsistente = function (string $data, string $tipo) use ($pdo, $TURNO, &$foglioIdCache): ?int {
+            $key = "$data:$tipo";
+            if (array_key_exists($key, $foglioIdCache)) return $foglioIdCache[$key];
+            $st = $pdo->prepare("SELECT id FROM fogli_servizio WHERE turno=? AND data_servizio=? AND tipo_turno=?");
+            $st->execute([$TURNO, $data, $tipo]);
+            $id = $st->fetchColumn();
+            return $foglioIdCache[$key] = ($id !== false ? (int)$id : null);
+        };
+        $stAssenzaEsistente = $pdo->prepare("SELECT tipo_assenza_id FROM assenze WHERE foglio_id=? AND vigile_id=?");
 
         // Finestra oraria valida per uno slot — mirror dei bottoni "a ore piene"
         // del bot (08-20 diurno, 20-08 notturno). Sequenza ordinata per poter
@@ -117,6 +141,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         );
 
         $creati = 0; $duplicati = 0; $scartati = 0; $scartatiSalto = 0;
+        $conflittiAltriTipi = [];   // messaggi per il popup di sovrapposizione (#225)
         $righeSincronizzate = [];   // [vigile_id, data, tipo] — per l'avviso scambio salto
         $pdo->beginTransaction();
         try {
@@ -141,6 +166,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     if ($saltoGiorno !== null && ($saltoIdVigile[$vid] ?? null) === $saltoGiorno) {
                         $scartatiSalto++;
                         continue;
+                    }
+
+                    // #225: blocca (non solo avviso) se il vigile è già presente sul
+                    // foglio con un tipo di assenza diverso (Missione/Permesso,
+                    // Malattia/Infortunio) — la ferie/permesso non va creata.
+                    $foglioIdEsist = $foglioIdEsistente($data, $tipo);
+                    if ($foglioIdEsist !== null) {
+                        $stAssenzaEsistente->execute([$foglioIdEsist, $vid]);
+                        $tipoConflitto = null;
+                        foreach ($stAssenzaEsistente->fetchAll() as $rowEsist) {
+                            if ((int)$rowEsist['tipo_assenza_id'] !== $tipoAssenzaId) {
+                                $tipoConflitto = (int)$rowEsist['tipo_assenza_id'];
+                                break;
+                            }
+                        }
+                        if ($tipoConflitto !== null) {
+                            $conflittiAltriTipi[] = ($nomiVigili[$vid] ?? "#$vid") . ' — già in '
+                                . ($LABEL_TIPO_ASSENZA[$tipoConflitto] ?? 'altra assenza')
+                                . " il $data ($tipo)";
+                            continue;
+                        }
                     }
 
                     $insReq->execute([$vid, $data, $tipo, $tipoAssenzaId, $isEstiva, $oraDa, $oraA]);
@@ -187,7 +233,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         echo json_encode([
             'ok' => true,
             'creati' => $creati, 'duplicati' => $duplicati, 'scartati' => $scartati,
-            'scartatiSalto' => $scartatiSalto, 'avvisi' => $avvisi,
+            'scartatiSalto' => $scartatiSalto, 'conflitti' => $conflittiAltriTipi, 'avvisi' => $avvisi,
         ]);
         exit;
     }
@@ -479,6 +525,28 @@ function mostraAvvisiScambioSalto(avvisi) {
   });
 }
 
+// #225: sovrapposizione con Missione/Permesso o Malattia/Infortunio già
+// presenti sul foglio — qui NON è stato creato nulla, va detto chiaramente.
+// Il modale è un singleton (assets/js/conferma.js): se c'è anche l'avviso
+// scambio salto, va incatenato con onOk invece che chiamato subito dopo,
+// altrimenti il secondo popup sovrascrive il primo prima che si veda.
+function mostraEsitiPostCrea(conflitti, avvisi) {
+  if (conflitti && conflitti.length) {
+    chiediConferma({
+      titolo:  '⛔ Non creata: sovrapposizione',
+      testo:   'Queste voci NON sono state create perché il vigile risulta già ' +
+               'impegnato in un\'altra assenza sul foglio di quel giorno:<br><br>' +
+               conflitti.map(c => '• ' + c).join('<br>') +
+               '<br><br>Sistema prima la situazione esistente, poi riprova.',
+      okLabel: 'Ho capito',
+      okStyle: 'background:#c0392b;color:#fff',
+      onOk:    () => mostraAvvisiScambioSalto(avvisi),
+    });
+  } else {
+    mostraAvvisiScambioSalto(avvisi);
+  }
+}
+
 function aggiornaEtichettaBtn() {
   document.getElementById('btnCrea').textContent =
     TIPO === 'ferie' ? 'Crea voci ferie' : 'Crea voci permesso';
@@ -593,7 +661,8 @@ async function creaVoci() {
       msg.textContent = `✅ Create ${res.creati} voci`
         + (res.duplicati ? ` · ${res.duplicati} già presenti` : '')
         + (res.scartati ? ` · ${res.scartati} scartate` : '')
-        + (res.scartatiSalto ? ` · ${res.scartatiSalto} scartate (vigile sul proprio salto)` : '') + '.';
+        + (res.scartatiSalto ? ` · ${res.scartatiSalto} scartate (vigile sul proprio salto)` : '')
+        + (res.conflitti && res.conflitti.length ? ` · ${res.conflitti.length} scartate (sovrapposizione)` : '') + '.';
       selezione.clear();
       svuotaOraChips();
       renderCal();
@@ -601,7 +670,7 @@ async function creaVoci() {
       // e ricrearci ferie non richieste al giro successivo.
       document.querySelectorAll('.vchk').forEach(c => c.checked = false);
       document.getElementById('chkEstiva').checked = false;
-      mostraAvvisiScambioSalto(res.avvisi);
+      mostraEsitiPostCrea(res.conflitti, res.avvisi);
     } else {
       msg.className = 'fs-msg err';
       msg.textContent = '⚠️ ' + (res.errore || 'Errore.');

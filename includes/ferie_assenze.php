@@ -43,11 +43,19 @@ function feriaInsertAssenza(PDO $pdo, int $vigileId, int $foglioId, int $tipoAss
         "SELECT id FROM assenze WHERE foglio_id=? AND vigile_id=? AND tipo_assenza_id=?"
     );
     $st->execute([$foglioId, $vigileId, $tipoAssenzaId]);
-    if ($st->fetchColumn()) return;
-    $next = nextId($pdo, 'assenze');
+    if (!$st->fetchColumn()) {
+        $next = nextId($pdo, 'assenze');
+        $pdo->prepare(
+            "INSERT INTO assenze (id, foglio_id, vigile_id, tipo_assenza_id) VALUES (?, ?, ?, ?)"
+        )->execute([$next, $foglioId, $vigileId, $tipoAssenzaId]);
+    }
+
+    // #225: se il foglio è già compilato (assegnazioni popolate), il vigile
+    // resterebbe anche nella squadra — stessa persona in ferie e in servizio.
+    // Stesso DELETE già usato in foglio/nuovo.php quando l'assenza si crea da lì.
     $pdo->prepare(
-        "INSERT INTO assenze (id, foglio_id, vigile_id, tipo_assenza_id) VALUES (?, ?, ?, ?)"
-    )->execute([$next, $foglioId, $vigileId, $tipoAssenzaId]);
+        "DELETE FROM assegnazioni WHERE foglio_id=? AND vigile_id=?"
+    )->execute([$foglioId, $vigileId]);
 }
 
 function feriaDeleteAssenza(PDO $pdo, int $vigileId, string $data, string $tipo, int $tipoAssenzaId = 1): void {
