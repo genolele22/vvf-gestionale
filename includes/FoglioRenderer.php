@@ -390,13 +390,24 @@ class FoglioRenderer
               WHERE a.vigile_id=? AND a.tipo_assenza_id=?
               ORDER BY f.data_servizio, f.tipo_turno"
         );
+        // #221: per missione/malattia/infortunio (range comunicato dal vigile,
+        // vedi TIPI_COMUNICAZIONE_RANGE nel bot) l'ultimo turno del blocco, se
+        // notturno, copre anche la mattina del giorno dopo — la fine del
+        // periodo mostrata deve essere quel giorno successivo, non la data
+        // (di inizio) del turno notturno stesso. Il permesso (giornaliero) non
+        // ha un range comunicato: resta la data del turno così com'è.
+        $ultimoNotteContaDopo = in_array($tipoAssenzaId, [3, 5, 6], true);
         foreach ($this->perTipo[$codice] as $i => $a) {
             $req->execute([(int)$a['vigile_id'], $tipoAssenzaId]);
             $righe = array_map(fn($r) => $r + ['stato' => 'approved'], $req->fetchAll());
             $blocchi = blocchiContigui($righe);
             foreach ($blocchi as $b) {
                 $da = $b[0]['data_richiesta'];
-                $aa = end($b)['data_richiesta'];
+                $ultima = end($b);
+                $aa = $ultima['data_richiesta'];
+                if ($ultimoNotteContaDopo && $ultima['tipo_turno'] === 'N') {
+                    $aa = (new DateTime($aa))->modify('+1 day')->format('Y-m-d');
+                }
                 if ($this->dataStr >= $da && $this->dataStr <= $aa) {
                     $this->perTipo[$codice][$i]['nr_turni'] = turniLabel($b);
                     $this->perTipo[$codice][$i]['data_da']  = $da;

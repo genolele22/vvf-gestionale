@@ -57,6 +57,24 @@ function periodLabel(array $block): string {
     return $daStr . '–' . $a->format('d/m');
 }
 
+// #211: periodo COMUNICATO (range_da/range_a) dell'intero blocco, non solo
+// della prima richiesta che lo compone — un'assenza prolungata più volte
+// (nuova dichiarazione con nuovo range_da/range_a, ma stesse date contigue
+// col blocco precedente) si fonde in blocchiContigui() in un blocco solo,
+// ma leggendo range_da/range_a della sola prima riga si vedeva sempre la
+// fine della PRIMA dichiarazione, mai delle proroghe successive. Righe
+// senza range (es. assenza d'ufficio senza richiesta) vengono ignorate;
+// se NESSUNA riga ha un range, torna [null,null] (fallback a periodLabel).
+function rangeComunicatoBlocco(array $block): array {
+    $de = $a = null;
+    foreach ($block as $r) {
+        if (empty($r['range_da']) || empty($r['range_a'])) continue;
+        if ($de === null || $r['range_da'] < $de) $de = $r['range_da'];
+        if ($a  === null || $r['range_a']  > $a)  $a  = $r['range_a'];
+    }
+    return [$de, $a];
+}
+
 function turniLabel(array $block): int {
     $n = 0;
     foreach ($block as $r) {

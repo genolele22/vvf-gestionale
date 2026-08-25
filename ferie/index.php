@@ -482,11 +482,15 @@ function renderBoxAssenze(
         $label      = etichettaVigile($meta);
         $isCentrale = ($meta['sede_nome'] === 'CENTRALE');
         // Malattia/infortunio (e missione): il periodo mostrato è quello COMUNICATO
-        // dal vigile (range_da/range_a, uguale su ogni turno decomposto), non quello
-        // ricalcolato dai turni — può divergere per via dei salti tra un turno e
-        // l'altro, e la fureria deve vedere esattamente ciò che è stato dichiarato.
-        $periodo    = $block[0]['range_da']
-            ? periodLabelComunicato($block[0]['range_da'], $block[0]['range_a'])
+        // dal vigile (range_da/range_a), non quello ricalcolato dai turni — può
+        // divergere per via dei salti tra un turno e l'altro, e la fureria deve
+        // vedere esattamente ciò che è stato dichiarato. #211: aggregato su TUTTO
+        // il blocco (una proroga successiva è una nuova richiesta con un nuovo
+        // range, fusa qui dentro da blocchiContigui se contigua) — non solo la
+        // prima riga, altrimenti una proroga restava invisibile.
+        [$rangeDaBlocco, $rangeABlocco] = rangeComunicatoBlocco($block);
+        $periodo    = $rangeDaBlocco
+            ? periodLabelComunicato($rangeDaBlocco, $rangeABlocco)
             : periodLabel($block);
         $turni      = turniLabel($block);
         $stato      = statoBlock($block, $outboxReq);
