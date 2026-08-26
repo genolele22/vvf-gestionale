@@ -1987,7 +1987,7 @@ $ruoloInfo = function ($id) use ($stCV): array {
     $stCV->execute([$id]);
     $r = $stCV->fetch();
     return $r
-        ? ['nome' => etichettaVigile($r), 'colore' => colorePatentePHP($r['patente_max'] ?? null)]
+        ? ['nome' => etichettaVigile($r), 'colore' => colorePatentePHP($r['patente_max'] ?? null, $r['qcodice'] ?? null)]
         : ['nome' => '', 'colore' => colorePatentePHP(null)];
 };
 $capoInfo   = $ruoloInfo($foglio['capo_servizio_id'] ?? 0);
@@ -2237,7 +2237,7 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
     // la casella "Ferie respinte" è solo un promemoria parallelo, non lavorabile.
     $classeCard  = 'persona-card' . ($occupato ? ' assente' : '');
     $label       = etichettaVigile($v);
-    $colore      = colorePatentePHP($v['patente_max'] ?? null);
+    $colore      = colorePatentePHP($v['patente_max'] ?? null, $v['qcodice'] ?? null);
 
     // Badge sede: solo per distaccamenti, calcolato QUI dentro il foreach
     $mostraSede  = (!empty($v['sede_nome']) && $v['sede_nome'] !== 'CENTRALE');
@@ -2314,7 +2314,7 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
         <?php foreach ($respinti as $v):
           $vid    = $v['id'];
           $label  = etichettaVigile($v);
-          $colore = colorePatentePHP($v['patente_max'] ?? null);
+          $colore = colorePatentePHP($v['patente_max'] ?? null, $v['qcodice'] ?? null);
           $mostraSede = (!empty($v['sede_nome']) && $v['sede_nome'] !== 'CENTRALE');
         ?>
         <div class="persona-card"
@@ -2346,7 +2346,7 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
           <div class="ferie-ufficio-vuoto" id="ferieUfficioVuoto">Trascina qui un vigile per dare ferie d'ufficio.</div>
         <?php endif; ?>
         <?php foreach ($ferieUfficio as $a):
-          $colore = colorePatentePHP($a['patente_max'] ?? null);
+          $colore = colorePatentePHP($a['patente_max'] ?? null, $a['qcodice'] ?? null);
         ?>
         <div class="assente-row" data-vigile-id="<?= $a['vigile_id'] ?>" data-cognome="<?= htmlspecialchars($a['cognome']) ?>"
              draggable="true" style="cursor:grab">
@@ -2427,7 +2427,7 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
                 <div class="ass-card" style="cursor:default;background:#fdecea"
                      title="In visita medica (resta anche nella sua squadra)">
                   <span class="qual-dot <?= htmlspecialchars($vm['qcodice']) ?>"></span>
-                  <span class="ass-nome" style="color:<?= colorePatentePHP($vm['patente_max'] ?? null) ?>">
+                  <span class="ass-nome" style="color:<?= colorePatentePHP($vm['patente_max'] ?? null, $vm['qcodice'] ?? null) ?>">
                     <span class="ass-nome-txt"><?= htmlspecialchars(etichettaVigile($vm)) ?> *</span>
                   </span>
                 </div>
@@ -2482,7 +2482,7 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
                      <?= $mancante ? 'title="Manca personale: previsti ' . $nRichiesti . ' in questa squadra"' : '' ?>></div>
               <?php elseif ($r['tipo'] === 'v'):
                   $ass = $r['d'];
-                  $colore = colorePatentePHP($ass['patente_max'] ?? null);
+                  $colore = colorePatentePHP($ass['patente_max'] ?? null, $ass['qcodice'] ?? null);
                   // Sigla sede SOLO se il vigile è fuori dalla propria sede (come ODT).
                   $mostraSede = (!empty($ass['sede_codice']) && $ass['sede_codice'] !== ($pos['sede_codice'] ?? null));
                   // #178: prima mancava il suffisso col numero patente (stile
@@ -2824,7 +2824,7 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
      style="cursor:grab">
     <span class="qual-dot <?= htmlspecialchars($v['qcodice']) ?>"></span>
     <span class="assente-nome"
-          style="color:<?= colorePatentePHP($v['patente_max'] ?? null) ?>">
+          style="color:<?= colorePatentePHP($v['patente_max'] ?? null, $v['qcodice'] ?? null) ?>">
         <?= htmlspecialchars($label) ?>
         <?php if ($v['sede_nome'] !== 'CENTRALE'): ?>
             <span class="persona-salto">
@@ -2940,7 +2940,7 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
           <?php /* Mostra TUTTE le ferie (da Telegram + a mano): le ferie a mano
                    si vedono sia qui sia nel box "Ferie d'ufficio" (ridondanza voluta). */ ?>
           <?php foreach ($ferieTutte as $a):
-    $colore = colorePatentePHP($a['patente_max'] ?? null);
+    $colore = colorePatentePHP($a['patente_max'] ?? null, $a['qcodice'] ?? null);
 ?>
     <div class="assente-row" data-vigile-id="<?= $a['vigile_id'] ?>" data-cognome="<?= htmlspecialchars($a['cognome']) ?>">
         <span class="qual-dot <?= htmlspecialchars($a['qcodice']) ?>"></span>
@@ -3501,9 +3501,16 @@ function rimuoviDOM(id) {
 
 
 // Restituisce il colore CSS in base alla patente massima (stessa regola di
-// colorePatentePHP: con stile 'numero' niente colore, lo dice il suffisso).
-function colorePatente(patente) {
-    if (STILE_PATENTE.stile === 'numero') return '#2c3e50';
+// colorePatentePHP: con stile 'numero' niente colore, lo dice il suffisso —
+// ed è solo lì che vale il colore per qualifica, #220: i due colori sono rami
+// alternativi, mai contemporanei, così un nome non può averne due).
+// qcodice è opzionale: gli esterni al turno non hanno qualifica in anagrafica.
+function colorePatente(patente, qcodice) {
+    if (STILE_PATENTE.stile === 'numero') {
+        const q = (qcodice || '').trim();
+        const k = q ? q.charAt(0).toUpperCase() + q.slice(1).toLowerCase() : '';
+        return (STILE_PATENTE.qual && STILE_PATENTE.qual[k]) || '#2c3e50';
+    }
     switch (patente) {
         case '4':
         case '3': return STILE_PATENTE.rosso;
@@ -3541,7 +3548,7 @@ function buildAssCard(p, posId, straord, ordine) {
         ? `<span title="Visita medica" style="font-size:.7rem">🚑</span>` : '';
     const permessoBadge = p.permesso
         ? `<span title="Permesso ${p.permesso}" style="font-size:.7rem">🕐</span>` : '';
-    const colore = colorePatente(p.patente);
+    const colore = colorePatente(p.patente, p.qcodice);
     const removeBtn = straord
         ? `<button class="remove-btn" onclick="rimuoviStraordinarioPos(${p.id}, ${posId})"
                     title="Togli dalla squadra, torna in salto">✕</button>` : '';
@@ -3564,7 +3571,7 @@ function buildAssCard(p, posId, straord, ordine) {
 function buildAssenteRow(p, tipoCodice, nTurni, dataDa, dataA) {
     const sedeBadge = (!p.sedeCentrale && p.sede)
         ? `<span class="persona-salto">${siglaSede(p.sede)}</span>` : '';
-    const colore = colorePatente(p.patente);
+    const colore = colorePatente(p.patente, p.qcodice);
     const turniInfo = nTurni ? `${nTurni}T` : tipoCodice;
 
     return `<div class="assente-row"
@@ -3806,7 +3813,7 @@ document.addEventListener('drop', async function(e) {
         if (nomeEl) {
             nomeEl.textContent = p.nome;
             nomeEl.classList.remove('vuoto');
-            nomeEl.style.color = colorePatente(p.patente);   // #152
+            nomeEl.style.color = colorePatente(p.patente, p.qcodice);   // #152
         }
         const strEl = document.getElementById(isCapo ? 'csStr' : 'vcsStr');
         if (strEl) strEl.style.display = straord ? '' : 'none';
@@ -3954,7 +3961,7 @@ function reinserisciInSalto(vigileId) {
         `<div class="assente-row" id="salto-${vigileId}" data-vigile-id="${vigileId}"
               draggable="true" style="cursor:grab">
            <span class="qual-dot ${p.qcodice}"></span>
-           <span class="assente-nome" style="color:${colorePatente(p.patente)}">
+           <span class="assente-nome" style="color:${colorePatente(p.patente, p.qcodice)}">
              ${p.nome}${sedeBadge}${scambioBadge}
            </span>
            <span class="drag-icon-salto" style="font-size:.75rem;color:var(--grigio-md);margin-left:auto"
@@ -4489,7 +4496,7 @@ function aggiungiCardRespinta(vigileId) {
     list.insertAdjacentHTML('beforeend',
         `<div class="persona-card" id="resp-${p.id}" data-id="${p.id}" style="cursor:default">
             <span class="qual-dot ${p.qcodice}"></span>
-            <span class="persona-nome" style="color:${colorePatente(p.patente)}">
+            <span class="persona-nome" style="color:${colorePatente(p.patente, p.qcodice)}">
                 ${p.nome}<small style="color:var(--rosso)">ferie respinta</small>
             </span>${sedeBadge}
          </div>`);
@@ -4520,7 +4527,7 @@ function updateRespinteCount() {
 function buildUfficioRow(p, nTurni, dataDa, dataA) {
     const sedeBadge = (!p.sedeCentrale && p.sede)
         ? `<span class="persona-salto">${siglaSede(p.sede)}</span>` : '';
-    const colore = colorePatente(p.patente);
+    const colore = colorePatente(p.patente, p.qcodice);
     const turniBadge = nTurni
         ? `<span class="assente-info" style="font-size:.65rem;color:var(--grigio-md)"
                  title="${dataDa || ''}→${dataA || ''}">${nTurni}T</span>` : '';

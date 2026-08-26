@@ -4,6 +4,7 @@ require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/parametri_lib.php';
 require_once __DIR__ . '/../includes/fureria_credenziali.php';
+require_once __DIR__ . '/../includes/format.php';   // chiavi di Stili & Colori (nascoste dall'editor libero)
 richiediComando();   // config di sistema: mail del bot + formato foglio (tutti i turni)
 $pdo     = getDB();
 $errore  = '';
@@ -120,8 +121,12 @@ $chiaviStrutturate = ['mail_furiera_richieste','mail_furiera_risposte',
                       'mail_furiera_richieste_A','mail_furiera_richieste_B','mail_furiera_richieste_C','mail_furiera_richieste_D',
                       'mail_furiera_risposte_A','mail_furiera_risposte_B','mail_furiera_risposte_C','mail_furiera_risposte_D',
                       'smtp_host','smtp_port','imap_host','imap_port','foglio_formato_nome'];
+// Tutte le chiavi di admin/stile_patenti.php, prese dagli helper condivisi invece
+// che riscritte a mano: #182 e #220 ne hanno aggiunte parecchie e quelle di #182
+// erano rimaste visibili (e cancellabili a mano) nell'editor libero.
 foreach (['A','B','C','D'] as $t) {
-    array_push($chiaviStrutturate, "foglio_stile_patente_$t", "foglio_rosso_patente_$t", "foglio_blu_patente_$t");
+    array_push($chiaviStrutturate, ...chiaviStilePatente($t), ...chiaviStileEvidenziazioni($t),
+                                   ...chiaviStileQualifica($t), ...chiaviStileOdt($t));
 }
 
 $rigaEdit = null;

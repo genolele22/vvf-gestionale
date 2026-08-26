@@ -58,6 +58,28 @@ class FoglioRenderer
     private static ?string $colStraord      = '#FFFF66';
     private static ?string $colFerieEstiva  = '#AEE3E8';
     private static ?string $colFerieUfficio = '#AEE3E8';
+    // #220: controlli admin che valgono solo sull'ODT (default = comportamento storico).
+    private static bool $coloriOdt  = true;    // false = nomi sempre neri sull'ODT
+    private static bool $strBold    = true;    // straordinario: grassetto (storico)
+    private static bool $strItalic  = false;
+    private static bool $fsBold     = false;   // fuori sede: solo sottolineato (storico)
+    private static bool $fsItalic   = false;
+    private static bool $fsUnder    = true;
+    private static ?string $colFuoriSede = null;   // evidenziazione fuori sede (storico: nessuna)
+    /** #220: colore per qualifica Cr/Cs/Vp, null = nessuno. Vale solo con stile 'numero'. */
+    private static array $qualCol = ['Cr' => null, 'Cs' => null, 'Vp' => null];
+    /**
+     * #220: stili di testo da emettere nel content.xml, name => proprietà.
+     * Registro riempito da nameStyle() DURANTE la scrittura dei nomi ed emesso in
+     * fondo a fill(): la vecchia matrice fissa (straord × underline × evid × colore)
+     * non regge le dimensioni nuove — corsivo, sfondo fuori sede, tre colori qualifica
+     * la porterebbero a centinaia di stili quasi tutti inutilizzati. Si generano
+     * invece solo le combinazioni davvero usate dal foglio del giorno.
+     * L'ordine non è un problema: in ODF gli automatic-styles vanno solo esistere nel
+     * documento salvato, non precedere l'uso (e l'anteprima HTML legge lo stesso doc,
+     * dopo fill()).
+     */
+    private static array $styleDefs = [];
 
     public function __construct(PDO $pdo, int $foglioId)
     {
@@ -453,8 +475,18 @@ class FoglioRenderer
         self::$colStraord      = '#FFFF66';
         self::$colFerieEstiva  = '#AEE3E8';
         self::$colFerieUfficio = '#AEE3E8';
+        self::$coloriOdt = true;
+        self::$strBold   = true;
+        self::$strItalic = false;
+        self::$fsBold    = false;
+        self::$fsItalic  = false;
+        self::$fsUnder   = true;
+        self::$colFuoriSede = null;
+        self::$qualCol   = ['Cr' => null, 'Cs' => null, 'Vp' => null];
+        self::$styleDefs = [];
         $p = leggiParametri($pdo, array_merge(
-            ['foglio_formato_nome'], chiaviStilePatente($turno), chiaviStileEvidenziazioni($turno)
+            ['foglio_formato_nome'], chiaviStilePatente($turno), chiaviStileEvidenziazioni($turno),
+            chiaviStileQualifica($turno), chiaviStileOdt($turno)
         ));
         $fmt = $p['foglio_formato_nome'] ?? '';
         if (in_array($fmt, ['standard', 'cognome_maiusc', 'tutto_maiusc'], true)) self::$formatoNome = $fmt;
@@ -466,6 +498,16 @@ class FoglioRenderer
         if ($e['straord'] !== null) self::$colStraord      = $e['straord'] === 'none' ? null : $e['straord'];
         if ($e['estiva']  !== null) self::$colFerieEstiva  = $e['estiva']  === 'none' ? null : $e['estiva'];
         if ($e['ufficio'] !== null) self::$colFerieUfficio = $e['ufficio'] === 'none' ? null : $e['ufficio'];
+        // #220
+        self::$qualCol = coloriQualificaRisolti($p, $turno);
+        $o = validaStileOdt($p, $turno);
+        self::$coloriOdt    = $o['colori_odt'];
+        self::$strBold      = $o['str_bold'];
+        self::$strItalic    = $o['str_italic'];
+        self::$fsBold       = $o['fs_bold'];
+        self::$fsItalic     = $o['fs_italic'];
+        self::$fsUnder      = $o['fs_under'];
+        self::$colFuoriSede = $o['fs_col'];
     }
 
     /** " 3°" accanto al nome (stili numero/entrambi), '' altrimenti. */
@@ -539,15 +581,54 @@ class FoglioRenderer
      * colori indipendenti (admin/stile_patenti.php), a differenza dello straordinario
      * mai contemporanei sullo stesso nome (vedi ensureColorStyles).
      */
+    /*
+     * #220: da qui lo stile non è più scelto in una matrice fissa ma RISOLTO nelle
+     * proprietà effettive (colore, grassetto, corsivo, sottolineato, sfondo) e
+     * registrato in self::$styleDefs col nome che ne deriva; ensureNameStyles() lo
+     * scrive nel content.xml. Nome stabile e leggibile: NmBIU_<colore>_<sfondo>
+     * (x = nessuno), così due nomi con le stesse proprietà condividono lo stile.
+     */
     private static function nameStyle(?string $t, bool $straord, bool $und = false,
-                                       bool $specialista = false, int $evidKind = 0): string
+                                       bool $specialista = false, int $evidKind = 0,
+                                       ?string $qcodice = null): string
     {
-        $col = ($t === '3' || $t === '4') ? 'Rosso' : ($t === '2' ? 'Blu' : '');
-        if (self::$stilePatente === 'numero') $col = '';   // il grado lo dice il suffisso
-        if ($specialista) $col = '';
-        $evidSuffix = [0 => '', 1 => 'Ee', 2 => 'Eu'][$evidKind] ?? '';
-        return 'Nm' . ($straord ? 'S' : '') . ($und ? 'U' : '') . $evidSuffix . $col;
-        // es: Nm, NmRosso, NmS, NmSURosso, NmEeBlu…
+        // ── colore del testo ────────────────────────────────────────────────
+        // "usa gli stessi colori su ODT" spento (#220) = nomi neri sull'ODT mentre il
+        // foglio web resta colorato: il nero è l'unica alternativa ammessa da Moli.
+        $col = null;
+        if (self::$coloriOdt) {
+            if (self::$stilePatente === 'numero') {
+                // il grado lo dice il suffisso: il colore è libero per la qualifica.
+                // Qui sta la risoluzione del conflitto patente/qualifica: sono rami
+                // alternativi, un nome non può mai prendere i due colori insieme.
+                $k = trim((string)$qcodice);
+                $col = $k !== '' ? (self::$qualCol[ucfirst(strtolower($k))] ?? null) : null;
+            } elseif (!$specialista) {   // #185: per gli specialisti la patente non conta
+                $col = ($t === '3' || $t === '4') ? self::$rossoPat : ($t === '2' ? self::$bluPat : null);
+            }
+        }
+        // ── peso / corsivo / sottolineato ───────────────────────────────────
+        $bold   = $straord && self::$strBold;
+        $italic = $straord && self::$strItalic;
+        $under  = false;
+        if ($und) {   // fuori sede: si somma allo straordinario, non lo sostituisce
+            $bold   = $bold   || self::$fsBold;
+            $italic = $italic || self::$fsItalic;
+            $under  = self::$fsUnder;
+        }
+        // ── sfondo ──────────────────────────────────────────────────────────
+        // priorità: straordinario > ferie (estiva/ufficio) > fuori sede. Lo sfondo è
+        // uno solo: il fuori sede è un'aggiunta, non deve coprire i due casi storici.
+        $bg = $straord ? self::$colStraord
+            : ([0 => null, 1 => self::$colFerieEstiva, 2 => self::$colFerieUfficio][$evidKind] ?? null);
+        if ($bg === null && $und) $bg = self::$colFuoriSede;
+
+        $tok  = fn(?string $c) => $c === null ? 'x' : strtoupper(ltrim($c, '#'));
+        $name = 'Nm' . ($bold ? 'B' : '') . ($italic ? 'I' : '') . ($under ? 'U' : '')
+              . '_' . $tok($col) . '_' . $tok($bg);
+        self::$styleDefs[$name] = ['col' => $col, 'bold' => $bold, 'italic' => $italic,
+                                   'under' => $under, 'bg' => $bg];
+        return $name;   // es: Nm_x_x, Nm_C0392B_x, NmB_x_FFFF66, NmU_2471A3_x
     }
 
     private function modelPath(): string { return __DIR__ . '/../templates/modello.odt'; }
@@ -767,6 +848,10 @@ class FoglioRenderer
 
         // ── INTESTAZIONE ─────────────────────────────────────────────────────────
         $this->fillHeader($doc, $rows, $pa);
+
+        // #220: gli stili dei nomi si emettono ORA, quando si sa quali combinazioni
+        // sono state davvero usate (nameStyle() le registra mentre scrive).
+        $this->ensureNameStyles($doc);
     }
 
     private function fillLista(DOMDocument $doc, array $rows, int $from, int $to, array $items): void
@@ -815,10 +900,12 @@ class FoglioRenderer
                 // in straordinario se richiamati dal salto a riposo di oggi (#92).
                 if (strpos($tl, 'vice') !== false && strpos($tl, 'capo') !== false && isset($cells[$j+1]))
                     $this->setText($doc, $cells[$j+1][1], $this->vice ? self::etichetta($this->vice) : '',
-                        self::nameStyle(null, $this->inSaltoRiposo($this->vice)));
+                        self::nameStyle(null, $this->inSaltoRiposo($this->vice), false, false, 0,
+                            $this->vice['qcodice'] ?? null));
                 elseif (strpos($tl, 'capo servizio') !== false && isset($cells[$j+1]))
                     $this->setText($doc, $cells[$j+1][1], $this->capo ? self::etichetta($this->capo) : '',
-                        self::nameStyle(null, $this->inSaltoRiposo($this->capo)));
+                        self::nameStyle(null, $this->inSaltoRiposo($this->capo), false, false, 0,
+                            $this->capo['qcodice'] ?? null));
                 elseif (strpos($tl, 'funzionario') !== false && isset($cells[$j+1]))
                     $this->setText($doc, $cells[$j+1][1], self::formattaFunzionario($this->foglio['funzionario'] ?? ''),
                         self::nameStyle(null, false));
@@ -879,7 +966,7 @@ class FoglioRenderer
         $label = $prefix . self::etichetta($a) . self::suffissoPat($a['patente_max'] ?? null) . $suffix;
         $evidKind = !empty($a['ferie_estiva']) ? 1 : (!empty($a['ferie_ufficio']) ? 2 : 0);
         $style = self::nameStyle($a['patente_max'] ?? null, !empty($a['in_straordinario']), $underline,
-            !empty($a['specialista']), $evidKind);
+            !empty($a['specialista']), $evidKind, $a['qcodice'] ?? null);
         $this->setText($doc, $cell, $label, $style);
     }
 
@@ -895,7 +982,7 @@ class FoglioRenderer
         $label = self::etichetta($a) . self::suffissoPat($a['patente_max'] ?? null)
                . (!empty($a['sigla']) ? ' ' . $a['sigla'] : '');
         $style = self::nameStyle($a['patente_max'] ?? null, !empty($a['in_straordinario']), $underline,
-            !empty($a['specialista']));
+            !empty($a['specialista']), 0, $a['qcodice'] ?? null);
         if ($style) {
             $span = $doc->createElementNS(self::TXT, 'text:span');
             $span->setAttributeNS(self::TXT, 'text:style-name', $style);
@@ -1098,6 +1185,7 @@ class FoglioRenderer
                     $bg = $p->getAttributeNS(self::FO, 'background-color'); if ($bg) $css[] = 'background:' . $bg;
                     $us = $p->getAttributeNS(self::STY, 'text-underline-style'); if ($us && $us !== 'none') $css[] = 'text-decoration:underline';
                     $fw = $p->getAttributeNS(self::FO, 'font-weight'); if ($fw) $css[] = 'font-weight:' . $fw;
+                    $fi = $p->getAttributeNS(self::FO, 'font-style'); if ($fi) $css[] = 'font-style:' . $fi;   // #220: corsivo configurabile
                     if ($css) $textCol[$name] = implode(';', $css);
                 }
             }
@@ -1141,51 +1229,57 @@ class FoglioRenderer
             $st->appendChild($tp);
             $auto->appendChild($st);
         }
-        // #182: colori di evidenziazione admin-configurabili (default = tinte storiche);
-        // null = evidenziazione spenta dall'admin, il nome resta nero senza sfondo.
-        // straordinario ed evidenziazione ferie non sono mai contemporanei sullo stesso
-        // nome (nameStyle() sceglie l'uno o l'altro), quindi non serve una combinazione
-        // straord+evid — l'indice evidKind (0=nessuna,1=estiva,2=ufficio) è indipendente.
-        $evidColors = [0 => null, 1 => self::$colFerieEstiva, 2 => self::$colFerieUfficio];
-        $evidSuffix = [0 => '', 1 => 'Ee', 2 => 'Eu'];
-        // matrice: colore patente × straordinario × sottolineato (fuori sede)
-        // × evidenziato (ferie estiva/ufficio). '' → nero esplicito (#000000), MAI
-        // lasciato senza stile: altrimenti il nome eredita la formattazione della
-        // cella del modello.odt, che non è uniforme (#67).
-        $colors = ['' => '#000000', 'Rosso' => self::$rossoPat, 'Blu' => self::$bluPat];
-        foreach ([false, true] as $straord) {
-            foreach ([false, true] as $und) {
-                foreach ([0, 1, 2] as $evidKind) {
-                    foreach ($colors as $cName => $col) {
-                        $name = 'Nm' . ($straord ? 'S' : '') . ($und ? 'U' : '') . $evidSuffix[$evidKind] . $cName;
-                        if (isset($have[$name])) continue;
-                        $st = $doc->createElementNS(self::STY, 'style:style');
-                        $st->setAttributeNS(self::STY, 'style:name', $name);
-                        $st->setAttributeNS(self::STY, 'style:family', 'text');
-                        $tp = $doc->createElementNS(self::STY, 'style:text-properties');
-                        if ($col)     $tp->setAttributeNS(self::FO, 'fo:color', $col);
-                        // peso SEMPRE esplicito (mai assente): senza, un nome normale può
-                        // ereditare il grassetto della cella del modello.odt se quella cella
-                        // lo porta (successo con GE-1A nel modello B0, #67-bis) — stesso
-                        // principio già usato per NmReg sulle righe data.
-                        $tp->setAttributeNS(self::FO, 'fo:font-weight', $straord ? 'bold' : 'normal');
-                        // sfondo SEMPRE esplicito quanto il peso, stesso motivo (#67-ter): la
-                        // cella GE-1A del modello B0 non porta solo grassetto residuo ma anche
-                        // uno sfondo giallo (fo:background-color) sul paragrafo — senza un
-                        // 'transparent' esplicito qui, un nome normale nella stessa cella
-                        // sembrava comunque "in straordinario" pur avendo font-weight corretto.
-                        $bgKind = $straord ? self::$colStraord : $evidColors[$evidKind];
-                        $tp->setAttributeNS(self::FO, 'fo:background-color', $bgKind ?? 'transparent');
-                        if ($und) {
-                            $tp->setAttributeNS(self::STY, 'style:text-underline-style', 'solid');
-                            $tp->setAttributeNS(self::STY, 'style:text-underline-width', 'auto');
-                            $tp->setAttributeNS(self::STY, 'style:text-underline-color', 'font-color');
-                        }
-                        $st->appendChild($tp);
-                        $auto->appendChild($st);
-                    }
-                }
+    }
+
+    /**
+     * #220: emette gli stili di testo dei nomi effettivamente usati dal foglio
+     * (registro riempito da nameStyle() mentre scrive). Prima era una matrice fissa
+     * di 36 stili (colore × straord × sottolineato × evid): con corsivo, sfondo
+     * fuori sede e tre colori qualifica sarebbero diventati centinaia, quasi tutti
+     * mai referenziati. Chiamata in fondo a fill(): in ODF l'ordine dentro
+     * <office:automatic-styles> non conta, basta che lo stile esista nel documento
+     * salvato — e l'anteprima HTML legge lo stesso doc dopo fill().
+     */
+    private function ensureNameStyles(DOMDocument $doc): void
+    {
+        $auto = $doc->getElementsByTagNameNS(self::OFF, 'automatic-styles')->item(0);
+        if (!$auto) return;
+        $have = [];
+        foreach ($auto->getElementsByTagNameNS(self::STY, 'style') as $s) $have[$s->getAttributeNS(self::STY, 'name')] = true;
+        foreach (self::$styleDefs as $name => $d) {
+            if (isset($have[$name])) continue;
+            $st = $doc->createElementNS(self::STY, 'style:style');
+            $st->setAttributeNS(self::STY, 'style:name', $name);
+            $st->setAttributeNS(self::STY, 'style:family', 'text');
+            $tp = $doc->createElementNS(self::STY, 'style:text-properties');
+            // colore SEMPRE esplicito: '' → nero (#000000), mai assente, altrimenti il
+            // nome eredita la formattazione della cella del modello.odt, che non è
+            // uniforme cella per cella — un nome nero spostato in un'altra casella
+            // poteva uscire blu o rosso (#67).
+            $tp->setAttributeNS(self::FO, 'fo:color', $d['col'] ?? '#000000');
+            // peso SEMPRE esplicito (mai assente): senza, un nome normale può
+            // ereditare il grassetto della cella del modello.odt se quella cella
+            // lo porta (successo con GE-1A nel modello B0, #67-bis) — stesso
+            // principio già usato per NmReg sulle righe data.
+            $tp->setAttributeNS(self::FO, 'fo:font-weight', $d['bold'] ? 'bold' : 'normal');
+            // corsivo esplicito per lo stesso motivo del peso (#220 lo rende
+            // configurabile: senza un 'normal' esplicito un nome non corsivo in una
+            // cella corsiva del modello uscirebbe corsivo lo stesso).
+            $tp->setAttributeNS(self::FO, 'fo:font-style', $d['italic'] ? 'italic' : 'normal');
+            // sfondo SEMPRE esplicito quanto il peso, stesso motivo (#67-ter): la
+            // cella GE-1A del modello B0 non porta solo grassetto residuo ma anche
+            // uno sfondo giallo (fo:background-color) sul paragrafo — senza un
+            // 'transparent' esplicito qui, un nome normale nella stessa cella
+            // sembrava comunque "in straordinario" pur avendo font-weight corretto.
+            $tp->setAttributeNS(self::FO, 'fo:background-color', $d['bg'] ?? 'transparent');
+            // sottolineatura esplicita in entrambi i versi, stesso principio.
+            $tp->setAttributeNS(self::STY, 'style:text-underline-style', $d['under'] ? 'solid' : 'none');
+            if ($d['under']) {
+                $tp->setAttributeNS(self::STY, 'style:text-underline-width', 'auto');
+                $tp->setAttributeNS(self::STY, 'style:text-underline-color', 'font-color');
             }
+            $st->appendChild($tp);
+            $auto->appendChild($st);
         }
     }
 }
