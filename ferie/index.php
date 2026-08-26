@@ -647,6 +647,47 @@ function renderBoxAssenze(
     <?php
 }
 
+// #230: riga di malattia/infortunio di un singolo turno. Ordine dei campi
+// deciso da Moli, da sinistra a destra: nome, targhetta, sigla sede (mai per
+// la Centrale), periodo dichiarato, numero di turni del periodo, cestino in
+// fondo a destra che elimina la malattia di QUEL turno.
+function renderRigheMalInf(
+    array $righe, array $blocchiMalInf, string $turnoAttivo, array $turniExtra,
+    array $tipoAssenzaLabelIt
+): void {
+    if (!$righe) return;
+    ?>
+    <div class="vigile-card" style="margin-bottom:8px;">
+    <?php foreach ($righe as $r):
+        $isCentrale = ($r['sede_nome'] === 'CENTRALE');
+        $info       = $blocchiMalInf[(int)$r['id']] ?? null;
+        $periodo    = $info['periodo'] ?? (new DateTime($r['data_richiesta']))->format('d/m');
+        $turni      = $info['turni']   ?? (($r['tipo_turno'] === 'DN') ? 2 : 1);
+        $editabile  = ($r['turno'] === $turnoAttivo);
+        $tipoLabel  = $tipoAssenzaLabelIt[(int)$r['tipo_assenza_id']] ?? $r['tipo_assenza_codice'];
+    ?>
+      <div class="blocco-row malinf-row" style="cursor:default;">
+        <?php if ($turniExtra): ?><span class="turno-tag">Turno <?= htmlspecialchars($r['turno']) ?></span><?php endif; ?>
+        <span class="blocco-nome"><?= htmlspecialchars(etichettaVigile($r)) ?></span>
+        <span class="turno-tag"><?= htmlspecialchars($tipoLabel) ?></span>
+        <?php if (!$isCentrale): ?>
+          <span class="blocco-sede"><?= htmlspecialchars($r['sede_codice']) ?></span>
+        <?php endif; ?>
+        <span class="blocco-periodo"><?= $periodo ?></span>
+        <span class="blocco-turni"><?= $turni ?> turn<?= $turni === 1 ? 'o' : 'i' ?></span>
+        <span class="blocco-spacer"></span>
+        <?php if ($editabile): ?>
+        <button class="btn-elimina" title="Elimina la malattia/infortunio di questo turno"
+                onclick="eliminaTurno(<?= (int)$r['id'] ?>, this)">🗑️</button>
+        <?php else: ?>
+        <span class="ro-badge">👁 sola lettura</span>
+        <?php endif; ?>
+      </div>
+    <?php endforeach; ?>
+    </div><!-- /.vigile-card -->
+    <?php
+}
+
 // Raggruppa per vigile → blocchi
 $perVigile = [];
 foreach ($tutteRichieste as $r) {
@@ -678,29 +719,69 @@ unset($gruppo);
 // inizia il blocco — prima il conteggio del resoconto guardava solo $perData
 // (chiave = giorno di inizio), quindi un'assenza pluriturno o un periodo
 // dichiarato (mal/inf/missione) sparivano dal conteggio dei giorni successivi
-// pur essendo ancora in corso. Ferie/permesso: un giorno conta solo se c'è un
-// turno REALMENTE scelto quel giorno (non i giorni di riposo dentro il
-// blocco, che restano contigui solo per la regola del gap<=3). Malattia/
-// infortunio/missione: ogni giorno di calendario del periodo dichiarato
-// (range_da/range_a) — è una dichiarazione continua, non turno per turno.
+// pur essendo ancora in corso.
+// #230: un giorno conta SOLO se c'è una richiesta reale quel giorno, per tutti
+// i tipi. Prima malattia/infortunio/missione venivano espansi giorno per giorno
+// di calendario da range_da a range_a: le chiavi finivano in $tutteLeDate e
+// l'Agenda apriva una sezione per ogni giorno del periodo dichiarato — anche
+// per i giorni che non sono turni di lavoro e anche per i mesi precedenti
+// (l'Agenda di agosto partiva dal 10 giugno). Le righe di bot_requests sono
+// già una per turno di lavoro, quindi bastano: il periodo dichiarato resta
+// visibile nell'etichetta della riga, non nella struttura della pagina.
 $presenzePerGiorno = [];   // 'Y-m-d' => ['fer'|'miss'|'perm'|'malinf' => [vigile_id => true]]
 $catPerTipoAssenza  = [1 => 'fer', 3 => 'miss', 4 => 'perm', 5 => 'malinf', 6 => 'malinf'];
 foreach ($perVigile as $vid => $req) {
-    foreach (blocchiContigui($req) as $block) {
-        $tipoId = (int)($block[0]['tipo_assenza_id'] ?? 1);
-        $cat    = $catPerTipoAssenza[$tipoId] ?? null;
+    foreach ($req as $r) {
+        $cat = $catPerTipoAssenza[(int)($r['tipo_assenza_id'] ?? 1)] ?? null;
         if (!$cat) continue;
-        if (in_array($tipoId, [3, 5, 6], true)) {
+        $presenzePerGiorno[$r['data_richiesta']][$cat][$vid] = true;
+    }
+}
+
+// ── #230: malattia/infortunio, una riga per TURNO ────────────
+// Non più un blocco unico appeso al solo giorno d'inizio: su ogni turno del
+// mese in cui il vigile è malato/infortunato compare la sua riga, che ripete
+// il periodo dichiarato e il totale dei turni del periodo. Quel totale (e il
+// periodo) vanno calcolati su TUTTE le richieste del periodo, comprese quelle
+// dei mesi precedenti/successivi: $tutteRichieste è filtrata sul mese, quindi
+// serve una lettura a parte dei soli vigili coinvolti.
+$malinfPerData  = [];   // 'Y-m-d' => [riga, ...] — solo righe del mese
+$blocchiMalInf  = [];   // id richiesta => ['periodo' => 'GG/MM–GG/MM', 'turni' => N]
+foreach ($tutteRichieste as $r) {
+    if (in_array((int)$r['tipo_assenza_id'], [5, 6], true)) {
+        $malinfPerData[$r['data_richiesta']][] = $r;
+    }
+}
+if ($malinfPerData) {
+    $vidMalinf = [];
+    foreach ($malinfPerData as $righe) {
+        foreach ($righe as $r) $vidMalinf[(int)$r['vigile_id']] = true;
+    }
+    $vidMalinf = array_keys($vidMalinf);
+    $phV = implode(',', array_fill(0, count($vidMalinf), '?'));
+    $stMi = $pdo->prepare("
+        SELECT id, vigile_id, data_richiesta, tipo_turno, stato, tipo_assenza_id,
+               range_da, range_a, spezza_dopo
+        FROM bot_requests
+        WHERE tipo_assenza_id IN (5,6) AND ora_da IS NULL AND vigile_id IN ($phV)
+        ORDER BY vigile_id, data_richiesta
+    ");
+    $stMi->execute($vidMalinf);
+    $storicoMalinf = [];
+    foreach ($stMi->fetchAll() as $r) $storicoMalinf[(int)$r['vigile_id']][] = $r;
+    foreach ($storicoMalinf as $righe) {
+        foreach (blocchiContigui($righe) as $block) {
             [$rDa, $rA] = rangeComunicatoBlocco($block);
-            $cur  = new DateTime($rDa ?: $block[0]['data_richiesta']);
-            $fine = new DateTime($rA  ?: end($block)['data_richiesta']);
-            while ($cur <= $fine) {
-                $presenzePerGiorno[$cur->format('Y-m-d')][$cat][$vid] = true;
-                $cur->modify('+1 day');
-            }
-        } else {
+            $da = new DateTime($rDa ?: $block[0]['data_richiesta']);
+            $a  = new DateTime($rA  ?: end($block)['data_richiesta']);
+            // Richiesta di Moli: sempre GG/MM su entrambe le date, niente forma
+            // compatta — qui il periodo può facilmente scavalcare due mesi.
+            $periodo = ($da->format('Y-m-d') === $a->format('Y-m-d'))
+                ? $da->format('d/m')
+                : $da->format('d/m') . '–' . $a->format('d/m');
+            $turni = turniLabel($block);
             foreach ($block as $r) {
-                $presenzePerGiorno[$r['data_richiesta']][$cat][$vid] = true;
+                $blocchiMalInf[(int)$r['id']] = ['periodo' => $periodo, 'turni' => $turni];
             }
         }
     }
@@ -1185,12 +1266,14 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
     // va smistato PRIMA sia per il conteggio qui sotto sia per il rendering più
     // in basso. Ordine di visualizzazione: cambio salto, missione, permesso
     // giornaliero, permesso orario, malattia+infortunio, ferie.
-    $gruppoMissione = $gruppoPermesso = $gruppoMalattia = $gruppoFerie = [];
+    // #230: malattia/infortunio (5/6) escono da qui — hanno il loro rendering
+    // per turno ($malinfPerData), non il blocco appeso al giorno d'inizio.
+    $gruppoMissione = $gruppoPermesso = $gruppoFerie = [];
     foreach ($gruppo as $item) {
         switch ((int)$item['block'][0]['tipo_assenza_id']) {
             case 3: $gruppoMissione[] = $item; break;
             case 4: $gruppoPermesso[] = $item; break;
-            case 5: case 6: $gruppoMalattia[] = $item; break;
+            case 5: case 6: break;
             default: $gruppoFerie[] = $item;
         }
     }
@@ -1340,8 +1423,10 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
     <?php endif; ?>
 
     <?php
-    renderBoxAssenze($gruppoMalattia, 'mal', $dataInizio, $TURNO, $turniExtra,
-        $TIPO_ASSENZA_LABEL_IT, $STATO_LABEL_IT, $outboxReq, $giorniNomi);
+    // #230: malattia/infortunio non passano più da renderBoxAssenze (blocco
+    // unico sul giorno d'inizio), ma da una riga per turno.
+    renderRigheMalInf($malinfPerData[$dataInizio] ?? [], $blocchiMalInf, $TURNO,
+        $turniExtra, $TIPO_ASSENZA_LABEL_IT);
     renderBoxAssenze($gruppoFerie, 'fer', $dataInizio, $TURNO, $turniExtra,
         $TIPO_ASSENZA_LABEL_IT, $STATO_LABEL_IT, $outboxReq, $giorniNomi);
     ?>
@@ -1501,6 +1586,11 @@ async function eseguiEliminaTurno(id, btn) {
         showMsg('⚠️ ' + (res.errore || 'Errore'), 'err');
         return;
     }
+
+    // #230: la riga di malattia/infortunio non sta in una tendina di blocco e
+    // il suo conteggio turni è condiviso con le altre righe dello stesso
+    // periodo — ricarico invece di aggiustare il DOM a mano.
+    if (btn.closest('.malinf-row')) { location.reload(); return; }
 
     // Rimuove la riga; se il blocco resta vuoto, toglie l'intera card
     const riga  = btn.closest('.turno-riga');
