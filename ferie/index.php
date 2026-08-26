@@ -647,12 +647,15 @@ function renderBoxAssenze(
     <?php
 }
 
-// #230: riga di malattia/infortunio di un singolo turno. Ordine dei campi
-// deciso da Moli, da sinistra a destra: nome, targhetta, sigla sede (mai per
-// la Centrale), periodo dichiarato, numero di turni del periodo, cestino in
-// fondo a destra che elimina la malattia di QUEL turno.
-function renderRigheMalInf(
-    array $righe, array $blocchiMalInf, string $turnoAttivo, array $turniExtra,
+// #230/#233: riga di missione/malattia/infortunio di un singolo TURNO (non di
+// un giorno di calendario, e non un blocco appeso al solo giorno d'inizio).
+// Ordine dei campi deciso da Moli, da sinistra a destra: nome, targhetta,
+// sigla sede (mai per la Centrale), periodo dichiarato GG/MM–GG/MM, numero di
+// turni del periodo, icona nota + nota (solo missione, regola #209: l'icona
+// c'è sempre, anche senza nota da Telegram, così la fureria può scriverla),
+// cestino in fondo a destra che elimina l'assenza di QUEL turno.
+function renderRigheTurno(
+    array $righe, array $blocchiInfo, string $turnoAttivo, array $turniExtra,
     array $tipoAssenzaLabelIt
 ): void {
     if (!$righe) return;
@@ -660,13 +663,21 @@ function renderRigheMalInf(
     <div class="vigile-card" style="margin-bottom:8px;">
     <?php foreach ($righe as $r):
         $isCentrale = ($r['sede_nome'] === 'CENTRALE');
-        $info       = $blocchiMalInf[(int)$r['id']] ?? null;
+        $info       = $blocchiInfo[(int)$r['id']] ?? null;
         $periodo    = $info['periodo'] ?? (new DateTime($r['data_richiesta']))->format('d/m');
         $turni      = $info['turni']   ?? (($r['tipo_turno'] === 'DN') ? 2 : 1);
+        // Gli id sono quelli dell'intero blocco contiguo: la nota si modifica
+        // su tutti i turni insieme, altrimenti l'ODT (che legge bot_requests
+        // turno per turno) mostrerebbe testi diversi da un giorno all'altro.
+        $ids        = $info['ids'] ?? [(int)$r['id']];
         $editabile  = ($r['turno'] === $turnoAttivo);
-        $tipoLabel  = $tipoAssenzaLabelIt[(int)$r['tipo_assenza_id']] ?? $r['tipo_assenza_codice'];
+        $tipoId     = (int)$r['tipo_assenza_id'];
+        $tipoLabel  = $tipoAssenzaLabelIt[$tipoId] ?? $r['tipo_assenza_codice'];
+        // Nota mostrata = quella di QUESTA riga: è esattamente il testo che
+        // l'ODT stampa per questo turno (FoglioRenderer::arricchisciAssentiVarie).
+        $nota       = (string)($r['note'] ?? '');
     ?>
-      <div class="blocco-row malinf-row" style="cursor:default;">
+      <div class="blocco-row riga-turno-flat" style="cursor:default;">
         <?php if ($turniExtra): ?><span class="turno-tag">Turno <?= htmlspecialchars($r['turno']) ?></span><?php endif; ?>
         <span class="blocco-nome"><?= htmlspecialchars(etichettaVigile($r)) ?></span>
         <span class="turno-tag"><?= htmlspecialchars($tipoLabel) ?></span>
@@ -675,9 +686,20 @@ function renderRigheMalInf(
         <?php endif; ?>
         <span class="blocco-periodo"><?= $periodo ?></span>
         <span class="blocco-turni"><?= $turni ?> turn<?= $turni === 1 ? 'o' : 'i' ?></span>
+        <?php if ($tipoId === 3): ?>
+        <span class="blocco-nota">
+          <?php if ($editabile): ?>
+          <span class="blocco-nota-ico" title="Modifica nota missione"
+                onclick="modificaNotaMissione(<?= htmlspecialchars(json_encode($ids)) ?>, <?= htmlspecialchars(json_encode($nota)) ?>)">📝</span>
+          <?php else: ?>
+          <span class="blocco-nota-ico" title="Nota missione (sola lettura)">📝</span>
+          <?php endif; ?>
+          <?= $nota !== '' ? htmlspecialchars($nota) : '' ?>
+        </span>
+        <?php endif; ?>
         <span class="blocco-spacer"></span>
         <?php if ($editabile): ?>
-        <button class="btn-elimina" title="Elimina la malattia/infortunio di questo turno"
+        <button class="btn-elimina" title="Elimina l'assenza di questo turno"
                 onclick="eliminaTurno(<?= (int)$r['id'] ?>, this)">🗑️</button>
         <?php else: ?>
         <span class="ro-badge">👁 sola lettura</span>
@@ -685,6 +707,60 @@ function renderRigheMalInf(
       </div>
     <?php endforeach; ?>
     </div><!-- /.vigile-card -->
+    <?php
+}
+
+// #233: permesso GIORNALIERO, una riga per turno. Richiesta di Moli: solo
+// nome, targhetta "Permesso", sigla sede (mai per la Centrale), data del
+// permesso in GG/MM e cestino in fondo a destra. Niente periodo aggregato,
+// niente conteggio turni, niente tendina: il permesso giornaliero non è
+// negoziabile dalla fureria (vedi TIPI_APPROVABILI), quindi non aveva né
+// accetta/respingi né badge di comunicazione nemmeno prima.
+function renderRighePermesso(
+    array $righe, string $turnoAttivo, array $turniExtra, array $tipoAssenzaLabelIt
+): void {
+    if (!$righe) return;
+    ?>
+    <div class="vigile-card" style="margin-bottom:8px;">
+    <?php foreach ($righe as $r):
+        $isCentrale = ($r['sede_nome'] === 'CENTRALE');
+        $editabile  = ($r['turno'] === $turnoAttivo);
+        $tipoLabel  = $tipoAssenzaLabelIt[(int)$r['tipo_assenza_id']] ?? $r['tipo_assenza_codice'];
+    ?>
+      <div class="blocco-row riga-turno-flat" style="cursor:default;">
+        <?php if ($turniExtra): ?><span class="turno-tag">Turno <?= htmlspecialchars($r['turno']) ?></span><?php endif; ?>
+        <span class="blocco-nome"><?= htmlspecialchars(etichettaVigile($r)) ?></span>
+        <span class="turno-tag"><?= htmlspecialchars($tipoLabel) ?></span>
+        <?php if (!$isCentrale): ?>
+          <span class="blocco-sede"><?= htmlspecialchars($r['sede_codice']) ?></span>
+        <?php endif; ?>
+        <span class="blocco-periodo"><?= (new DateTime($r['data_richiesta']))->format('d/m') ?></span>
+        <span class="blocco-spacer"></span>
+        <?php if ($editabile): ?>
+        <button class="btn-elimina" title="Elimina il permesso di questo turno"
+                onclick="eliminaTurno(<?= (int)$r['id'] ?>, this)">🗑️</button>
+        <?php else: ?>
+        <span class="ro-badge">👁 sola lettura</span>
+        <?php endif; ?>
+      </div>
+    <?php endforeach; ?>
+    </div><!-- /.vigile-card -->
+    <?php
+}
+
+// #232: la stessa intestazione di navigazione mese in cima e in fondo alla
+// pagina — copia identica per estetica e link, estratta qui per non
+// duplicarla a mano (se cambia una, cambiano tutte e due).
+function renderMeseNav(
+    int $annoPrev, int $mesePrev, int $annoNext, int $meseNext,
+    string $nomeMese, int $anno
+): void {
+    ?>
+    <div class="mese-nav">
+      <a href="?anno=<?= $annoPrev ?>&mese=<?= $mesePrev ?>" class="btn btn-grigio btn-sm">◀</a>
+      <h2>🗓️ Agenda — <?= htmlspecialchars($nomeMese) ?> <?= $anno ?></h2>
+      <a href="?anno=<?= $annoNext ?>&mese=<?= $meseNext ?>" class="btn btn-grigio btn-sm">▶</a>
+    </div>
     <?php
 }
 
@@ -738,38 +814,51 @@ foreach ($perVigile as $vid => $req) {
     }
 }
 
-// ── #230: malattia/infortunio, una riga per TURNO ────────────
+// ── #230/#233: missione, malattia e infortunio, una riga per TURNO ──
 // Non più un blocco unico appeso al solo giorno d'inizio: su ogni turno del
-// mese in cui il vigile è malato/infortunato compare la sua riga, che ripete
-// il periodo dichiarato e il totale dei turni del periodo. Quel totale (e il
-// periodo) vanno calcolati su TUTTE le richieste del periodo, comprese quelle
-// dei mesi precedenti/successivi: $tutteRichieste è filtrata sul mese, quindi
-// serve una lettura a parte dei soli vigili coinvolti.
-$malinfPerData  = [];   // 'Y-m-d' => [riga, ...] — solo righe del mese
-$blocchiMalInf  = [];   // id richiesta => ['periodo' => 'GG/MM–GG/MM', 'turni' => N]
+// mese in cui il vigile è in missione/malato/infortunato compare la sua riga,
+// che ripete il periodo dichiarato e il totale dei turni del periodo. Quel
+// totale (e il periodo) vanno calcolati su TUTTE le richieste del periodo,
+// comprese quelle dei mesi precedenti/successivi: $tutteRichieste è filtrata
+// sul mese, quindi serve una lettura a parte dei soli vigili coinvolti.
+// #233: la missione (3) segue le stesse regole di malattia/infortunio (5/6);
+// il permesso giornaliero (4) esce anche lui dal blocco, ma gli basta la sua
+// data — niente periodo aggregato, niente conteggio turni.
+$missPerData    = [];   // 'Y-m-d' => [riga, ...] — missione, solo righe del mese
+$malinfPerData  = [];   // 'Y-m-d' => [riga, ...] — malattia/infortunio, idem
+$permPerData    = [];   // 'Y-m-d' => [riga, ...] — permesso giornaliero, idem
+$blocchiRigaTurno = []; // id richiesta => ['periodo'=>'GG/MM–GG/MM','turni'=>N,'ids'=>[...]]
 foreach ($tutteRichieste as $r) {
-    if (in_array((int)$r['tipo_assenza_id'], [5, 6], true)) {
-        $malinfPerData[$r['data_richiesta']][] = $r;
+    switch ((int)$r['tipo_assenza_id']) {
+        case 3: $missPerData[$r['data_richiesta']][]   = $r; break;
+        case 4: $permPerData[$r['data_richiesta']][]   = $r; break;
+        case 5:
+        case 6: $malinfPerData[$r['data_richiesta']][] = $r; break;
     }
 }
-if ($malinfPerData) {
-    $vidMalinf = [];
-    foreach ($malinfPerData as $righe) {
-        foreach ($righe as $r) $vidMalinf[(int)$r['vigile_id']] = true;
+if ($missPerData || $malinfPerData) {
+    $vidRT = [];
+    foreach ([$missPerData, $malinfPerData] as $mappa) {
+        foreach ($mappa as $righe) {
+            foreach ($righe as $r) $vidRT[(int)$r['vigile_id']] = true;
+        }
     }
-    $vidMalinf = array_keys($vidMalinf);
-    $phV = implode(',', array_fill(0, count($vidMalinf), '?'));
+    $vidRT = array_keys($vidRT);
+    $phV = implode(',', array_fill(0, count($vidRT), '?'));
+    // ORDER BY tipo_assenza_id prima della data: blocchiContigui() confronta
+    // righe consecutive e spezza già al cambio di tipo, ma dentro ogni tipo le
+    // date devono restare crescenti.
     $stMi = $pdo->prepare("
         SELECT id, vigile_id, data_richiesta, tipo_turno, stato, tipo_assenza_id,
                range_da, range_a, spezza_dopo
         FROM bot_requests
-        WHERE tipo_assenza_id IN (5,6) AND ora_da IS NULL AND vigile_id IN ($phV)
-        ORDER BY vigile_id, data_richiesta
+        WHERE tipo_assenza_id IN (3,5,6) AND ora_da IS NULL AND vigile_id IN ($phV)
+        ORDER BY vigile_id, tipo_assenza_id, data_richiesta
     ");
-    $stMi->execute($vidMalinf);
-    $storicoMalinf = [];
-    foreach ($stMi->fetchAll() as $r) $storicoMalinf[(int)$r['vigile_id']][] = $r;
-    foreach ($storicoMalinf as $righe) {
+    $stMi->execute($vidRT);
+    $storicoRT = [];
+    foreach ($stMi->fetchAll() as $r) $storicoRT[(int)$r['vigile_id']][] = $r;
+    foreach ($storicoRT as $righe) {
         foreach (blocchiContigui($righe) as $block) {
             [$rDa, $rA] = rangeComunicatoBlocco($block);
             $da = new DateTime($rDa ?: $block[0]['data_richiesta']);
@@ -780,8 +869,10 @@ if ($malinfPerData) {
                 ? $da->format('d/m')
                 : $da->format('d/m') . '–' . $a->format('d/m');
             $turni = turniLabel($block);
+            $ids   = array_map('intval', array_column($block, 'id'));
             foreach ($block as $r) {
-                $blocchiMalInf[(int)$r['id']] = ['periodo' => $periodo, 'turni' => $turni];
+                $blocchiRigaTurno[(int)$r['id']] =
+                    ['periodo' => $periodo, 'turni' => $turni, 'ids' => $ids];
             }
         }
     }
@@ -1131,11 +1222,7 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
   <div id="msgBox"></div>
 
   <!-- Navigazione mese -->
-  <div class="mese-nav">
-    <a href="?anno=<?= $annoPrev ?>&mese=<?= $mesePrev ?>" class="btn btn-grigio btn-sm">◀</a>
-    <h2>🗓️ Agenda — <?= $mesiNomi[$meseP] ?> <?= $annoP ?></h2>
-    <a href="?anno=<?= $annoNext ?>&mese=<?= $meseNext ?>" class="btn btn-grigio btn-sm">▶</a>
-  </div>
+  <?php renderMeseNav($annoPrev, $mesePrev, $annoNext, $meseNext, $mesiNomi[$meseP], $annoP); ?>
 
   <!-- Turni extra in sola lettura: affianca le richieste di altri turni visibili -->
   <?php $turniAltri = array_diff(turniVisibili(), [$TURNO]);
@@ -1266,15 +1353,14 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
     // va smistato PRIMA sia per il conteggio qui sotto sia per il rendering più
     // in basso. Ordine di visualizzazione: cambio salto, missione, permesso
     // giornaliero, permesso orario, malattia+infortunio, ferie.
-    // #230: malattia/infortunio (5/6) escono da qui — hanno il loro rendering
-    // per turno ($malinfPerData), non il blocco appeso al giorno d'inizio.
-    $gruppoMissione = $gruppoPermesso = $gruppoFerie = [];
+    // #230/#233: missione (3), permesso giornaliero (4), malattia/infortunio
+    // (5/6) escono da qui — hanno il loro rendering per turno
+    // ($missPerData/$permPerData/$malinfPerData), non il blocco appeso al
+    // giorno d'inizio. Qui resta solo la tendina delle ferie.
+    $gruppoFerie = [];
     foreach ($gruppo as $item) {
-        switch ((int)$item['block'][0]['tipo_assenza_id']) {
-            case 3: $gruppoMissione[] = $item; break;
-            case 4: $gruppoPermesso[] = $item; break;
-            case 5: case 6: break;
-            default: $gruppoFerie[] = $item;
+        if (!in_array((int)$item['block'][0]['tipo_assenza_id'], [3, 4, 5, 6], true)) {
+            $gruppoFerie[] = $item;
         }
     }
     $dtInizio   = new DateTime($dataInizio);
@@ -1369,10 +1455,11 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
     <?php
     // #215: un riquadro per categoria, in quest'ordine dopo scambio salto:
     // missione, permesso giornaliero, permesso orario, malattia+infortunio, ferie.
-    renderBoxAssenze($gruppoMissione, 'miss', $dataInizio, $TURNO, $turniExtra,
-        $TIPO_ASSENZA_LABEL_IT, $STATO_LABEL_IT, $outboxReq, $giorniNomi);
-    renderBoxAssenze($gruppoPermesso, 'perm', $dataInizio, $TURNO, $turniExtra,
-        $TIPO_ASSENZA_LABEL_IT, $STATO_LABEL_IT, $outboxReq, $giorniNomi);
+    // #233: missione e permesso giornaliero sono righe per turno, non tendine.
+    renderRigheTurno($missPerData[$dataInizio] ?? [], $blocchiRigaTurno, $TURNO,
+        $turniExtra, $TIPO_ASSENZA_LABEL_IT);
+    renderRighePermesso($permPerData[$dataInizio] ?? [], $TURNO, $turniExtra,
+        $TIPO_ASSENZA_LABEL_IT);
     ?>
 
     <?php if ($permessoOr): ?>
@@ -1425,7 +1512,7 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
     <?php
     // #230: malattia/infortunio non passano più da renderBoxAssenze (blocco
     // unico sul giorno d'inizio), ma da una riga per turno.
-    renderRigheMalInf($malinfPerData[$dataInizio] ?? [], $blocchiMalInf, $TURNO,
+    renderRigheTurno($malinfPerData[$dataInizio] ?? [], $blocchiRigaTurno, $TURNO,
         $turniExtra, $TIPO_ASSENZA_LABEL_IT);
     renderBoxAssenze($gruppoFerie, 'fer', $dataInizio, $TURNO, $turniExtra,
         $TIPO_ASSENZA_LABEL_IT, $STATO_LABEL_IT, $outboxReq, $giorniNomi);
@@ -1433,6 +1520,14 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
 
   </div><!-- /.data-section -->
   <?php endforeach; ?>
+
+  <!-- #232: stessa navigazione mese anche in fondo, per non dover risalire
+       tutta l'agenda dopo aver scorso l'ultimo turno del mese. -->
+  <?php if ($tutteLeDate): ?>
+  <div style="margin-top:16px;">
+    <?php renderMeseNav($annoPrev, $mesePrev, $annoNext, $meseNext, $mesiNomi[$meseP], $annoP); ?>
+  </div>
+  <?php endif; ?>
 
 </div><!-- /.ferie-page -->
 
@@ -1587,10 +1682,11 @@ async function eseguiEliminaTurno(id, btn) {
         return;
     }
 
-    // #230: la riga di malattia/infortunio non sta in una tendina di blocco e
-    // il suo conteggio turni è condiviso con le altre righe dello stesso
-    // periodo — ricarico invece di aggiustare il DOM a mano.
-    if (btn.closest('.malinf-row')) { location.reload(); return; }
+    // #230/#233: le righe per turno (missione, permesso giornaliero,
+    // malattia/infortunio) non stanno in una tendina di blocco e il loro
+    // conteggio turni è condiviso con le altre righe dello stesso periodo —
+    // ricarico invece di aggiustare il DOM a mano.
+    if (btn.closest('.riga-turno-flat')) { location.reload(); return; }
 
     // Rimuove la riga; se il blocco resta vuoto, toglie l'intera card
     const riga  = btn.closest('.turno-riga');
