@@ -22,7 +22,9 @@ $TABELLE = [
     'salti_turno'  => ['label' => 'Salti turno', 'icona' => '😴',
         'cols' => ['codice' => ['Codice','text'], 'turno' => ['Turno','turno']]],
     // #219: il menu "Tipi assenza" è stato eliminato (Moli, non serviva).
-    'patenti'      => ['label' => 'Patenti', 'icona' => '🪪',
+    // #229: era 🪪 (U+1FAAA, emoji recente che su molti browser non viene disegnata
+    // e sembrava un tasto senza icona). Sostituita con l'automobile chiesta da Moli.
+    'patenti'      => ['label' => 'Patenti', 'icona' => '🚗',
         'cols' => ['tipo' => ['Tipo','text'], 'nome' => ['Nome','text']]],
     'abilitazioni' => ['label' => 'Abilitazioni', 'icona' => '✅',
         'cols' => ['codice' => ['Sigla','text'], 'ordine' => ['Ordine','int']]],
