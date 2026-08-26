@@ -43,6 +43,7 @@ class FoglioRenderer
     private ?array $capo = null, $vice = null;
     private array $scambioOut = [];
     private array $visite = [];   // visite mediche del giorno (#95): 5A → "Visita Medica"
+    private array $permOrario = [];   // #216: vigile_id => true, permesso orario di oggi (asterisco sul nome)
     private int $centrSedeId = 1;   // sede "Centrale": non sigla nessuno
     private int $saltoRiposoId = 0;   // id del salto a riposo di oggi (0 = non trovato)
     public array $overflow = [];   // mezzi con più nomi che slot
@@ -232,6 +233,20 @@ class FoglioRenderer
                 $this->visite = $st->fetchAll();
             } catch (Throwable $ignored) { /* tabella assente: nessuna visita */ }
         }
+
+        // Permessi orari (#216): chi ne usufruisce RESTA in squadra (mai un'assenza,
+        // vedi permessoOrarioSync in ferie_assenze.php) ma sull'ODT va marcato con un
+        // asterisco davanti alla qualifica. Stessa query del badge 🕐 sul foglio web
+        // (foglio/nuovo.php): filtrata anche per tipo_turno, così un permesso notturno
+        // non compare sul foglio diurno dello stesso giorno.
+        try {
+            $st = $this->pdo->prepare(
+                "SELECT po.vigile_id
+                   FROM permessi_orari po JOIN vigili v ON v.id = po.vigile_id
+                  WHERE po.data=? AND po.tipo_turno=? AND v.turno=?");
+            $st->execute([$this->dataStr, $this->tipoParam, $this->foglio['turno'] ?: 'B']);
+            foreach ($st->fetchAll() as $po) $this->permOrario[(int)$po['vigile_id']] = true;
+        } catch (Throwable $ignored) { /* tabella assente: nessun permesso orario */ }
 
         // SALTO TURNO = Riposo Compensativo: i riposanti effettivi vanno nella sezione RC.
         $this->aggiungiSaltoInRC($pat);
@@ -960,10 +975,19 @@ class FoglioRenderer
         return $m;
     }
 
+    /** #216: "* " davanti al nome (quindi davanti alla qualifica) per chi ha un
+     *  permesso orario oggi — il vigile resta in squadra, l'asterisco è l'unico segno
+     *  sull'ODT. Vale solo per i vigili in anagrafica (gli esterni non hanno vigile_id). */
+    private function asterisco(array $a): string
+    {
+        $id = (int)($a['vigile_id'] ?? 0);
+        return ($id > 0 && isset($this->permOrario[$id])) ? '* ' : '';
+    }
+
     /** scrive un nome (colore patente + giallo straord. + sottolineato se fuori sede) in una cella */
     private function writeName(DOMDocument $doc, DOMElement $cell, array $a, string $suffix = '', string $prefix = '', bool $underline = false): void
     {
-        $label = $prefix . self::etichetta($a) . self::suffissoPat($a['patente_max'] ?? null) . $suffix;
+        $label = $prefix . $this->asterisco($a) . self::etichetta($a) . self::suffissoPat($a['patente_max'] ?? null) . $suffix;
         $evidKind = !empty($a['ferie_estiva']) ? 1 : (!empty($a['ferie_ufficio']) ? 2 : 0);
         $style = self::nameStyle($a['patente_max'] ?? null, !empty($a['in_straordinario']), $underline,
             !empty($a['specialista']), $evidKind, $a['qcodice'] ?? null);
@@ -979,8 +1003,10 @@ class FoglioRenderer
         }
         if ($p === null) { $p = $doc->createElementNS(self::TXT, 'text:p'); $cell->appendChild($p); }
         $p->appendChild($doc->createElementNS(self::TXT, 'text:line-break'));
-        $label = self::etichetta($a) . self::suffissoPat($a['patente_max'] ?? null)
+        // #235: come in setText(), l'apostrofo qui non passa da setText()
+        $label = $this->asterisco($a) . self::etichetta($a) . self::suffissoPat($a['patente_max'] ?? null)
                . (!empty($a['sigla']) ? ' ' . $a['sigla'] : '');
+        $label = self::apostrofoTipografico($label);
         $style = self::nameStyle($a['patente_max'] ?? null, !empty($a['in_straordinario']), $underline,
             !empty($a['specialista']), 0, $a['qcodice'] ?? null);
         if ($style) {
@@ -1007,6 +1033,10 @@ class FoglioRenderer
         }
         while ($p->firstChild) $p->removeChild($p->firstChild);
         if ($text === '') return;
+        // #235: l'apostrofo tipografico non vale solo per i nomi (#183) — ogni testo
+        // che finisce nell'ODT (note di missione, "Riposa per…", furieri, intestazione)
+        // passa di qui, unico punto di conversione. Idempotente sui nomi già convertiti.
+        $text = self::apostrofoTipografico($text);
         if ($colorStyle) {
             $span = $doc->createElementNS(self::TXT, 'text:span');
             $span->setAttributeNS(self::TXT, 'text:style-name', $colorStyle);
