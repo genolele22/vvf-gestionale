@@ -698,6 +698,9 @@ function renderRigheTurno(
         </span>
         <?php endif; ?>
         <span class="blocco-spacer"></span>
+        <?php // Questi tipi non sono negoziabili dalla fureria: il badge dice che la
+              // richiesta è registrata e basta. C'era nella vecchia tendina, va tenuto. ?>
+        <span class="stato-badge stato-approved">🔒 registrata</span>
         <?php if ($editabile): ?>
         <button class="btn-elimina" title="Elimina l'assenza di questo turno"
                 onclick="eliminaTurno(<?= (int)$r['id'] ?>, this)">🗑️</button>
@@ -714,8 +717,9 @@ function renderRigheTurno(
 // nome, targhetta "Permesso", sigla sede (mai per la Centrale), data del
 // permesso in GG/MM e cestino in fondo a destra. Niente periodo aggregato,
 // niente conteggio turni, niente tendina: il permesso giornaliero non è
-// negoziabile dalla fureria (vedi TIPI_APPROVABILI), quindi non aveva né
-// accetta/respingi né badge di comunicazione nemmeno prima.
+// negoziabile dalla fureria (vedi TIPI_APPROVABILI), quindi niente accetta/
+// respingi né badge di comunicazione: resta il "🔒 registrata" che aveva già
+// nella vecchia tendina.
 function renderRighePermesso(
     array $righe, string $turnoAttivo, array $turniExtra, array $tipoAssenzaLabelIt
 ): void {
@@ -736,6 +740,7 @@ function renderRighePermesso(
         <?php endif; ?>
         <span class="blocco-periodo"><?= (new DateTime($r['data_richiesta']))->format('d/m') ?></span>
         <span class="blocco-spacer"></span>
+        <span class="stato-badge stato-approved">🔒 registrata</span>
         <?php if ($editabile): ?>
         <button class="btn-elimina" title="Elimina il permesso di questo turno"
                 onclick="eliminaTurno(<?= (int)$r['id'] ?>, this)">🗑️</button>

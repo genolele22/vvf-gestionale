@@ -44,6 +44,7 @@ class FoglioRenderer
     private array $scambioOut = [];
     private array $visite = [];   // visite mediche del giorno (#95): 5A → "Visita Medica"
     private array $permOrario = [];   // #216: vigile_id => true, permesso orario di oggi (asterisco sul nome)
+    private array $visiteIds  = [];   // #216: idem per le visite mediche del giorno
     private int $centrSedeId = 1;   // sede "Centrale": non sigla nessuno
     private int $saltoRiposoId = 0;   // id del salto a riposo di oggi (0 = non trovato)
     public array $overflow = [];   // mezzi con più nomi che slot
@@ -231,6 +232,7 @@ class FoglioRenderer
                      WHERE vm.data=? AND v.turno=? AND v.attivo=1 ORDER BY v.cognome");
                 $st->execute([$this->dataStr, $this->foglio['turno'] ?: 'B']);
                 $this->visite = $st->fetchAll();
+                foreach ($this->visite as $vm) $this->visiteIds[(int)$vm['vigile_id']] = true;
             } catch (Throwable $ignored) { /* tabella assente: nessuna visita */ }
         }
 
@@ -473,7 +475,10 @@ class FoglioRenderer
     private function vigById($id): ?array
     {
         if (!$id) return null;
-        $st = $this->pdo->prepare("SELECT v.id,v.cognome,v.disambiguatore,v.salto_id,q.codice AS qcodice FROM vigili v JOIN qualifiche q ON q.id=v.qualifica_id WHERE v.id=?");
+        // `v.id AS vigile_id`: capo/vice devono passare dagli stessi helper degli altri
+        // vigili (asterisco #216) e quelli leggono `vigile_id`. Alias esplicito, non
+        // `id`: negli array di assegnazione `id` è l'id della riga, non del vigile.
+        $st = $this->pdo->prepare("SELECT v.id,v.id AS vigile_id,v.cognome,v.disambiguatore,v.salto_id,q.codice AS qcodice FROM vigili v JOIN qualifiche q ON q.id=v.qualifica_id WHERE v.id=?");
         $st->execute([(int)$id]);
         return $st->fetch() ?: null;
     }
@@ -775,7 +780,12 @@ class FoglioRenderer
         foreach ($this->assByCode as $code => $list) { $queue[$code] = $list; }
         // #95: i nomi in visita medica vanno nella casella 5A (dopo eventuali
         // assegnati a mano; di norma la 5A non si forma nei giorni con visite)
-        if ($this->visite) $queue['5A'] = array_merge($queue['5A'] ?? [], $this->visite);
+        if ($this->visite) {
+            // Dentro la casella già intitolata "Visita Medica" l'asterisco sarebbe
+            // rumore: lo si vuole sul nome che resta nella sua squadra, non qui.
+            $copie = array_map(function (array $vm) { $vm['no_asterisco'] = 1; return $vm; }, $this->visite);
+            $queue['5A'] = array_merge($queue['5A'] ?? [], $copie);
+        }
 
         for ($i = 0; $i < $pa; $i++) {
             $cells = $this->rowCells($rows[$i]);
@@ -913,12 +923,15 @@ class FoglioRenderer
                 if ($tl === 'furieri') { $furRow = $i; $furCol = $col; continue; }
                 // stile esplicito anche qui (mai ereditato dalla cella, #67): capo/vice
                 // in straordinario se richiamati dal salto a riposo di oggi (#92).
+                // L'asterisco (permesso orario / visita medica) vale anche qui: capo e
+                // vice sono vigili come gli altri e possono benissimo trovarsi nella
+                // stessa condizione — il vice, all'occorrenza, fa il capo partenza.
                 if (strpos($tl, 'vice') !== false && strpos($tl, 'capo') !== false && isset($cells[$j+1]))
-                    $this->setText($doc, $cells[$j+1][1], $this->vice ? self::etichetta($this->vice) : '',
+                    $this->setText($doc, $cells[$j+1][1], $this->vice ? $this->asterisco($this->vice) . self::etichetta($this->vice) : '',
                         self::nameStyle(null, $this->inSaltoRiposo($this->vice), false, false, 0,
                             $this->vice['qcodice'] ?? null));
                 elseif (strpos($tl, 'capo servizio') !== false && isset($cells[$j+1]))
-                    $this->setText($doc, $cells[$j+1][1], $this->capo ? self::etichetta($this->capo) : '',
+                    $this->setText($doc, $cells[$j+1][1], $this->capo ? $this->asterisco($this->capo) . self::etichetta($this->capo) : '',
                         self::nameStyle(null, $this->inSaltoRiposo($this->capo), false, false, 0,
                             $this->capo['qcodice'] ?? null));
                 elseif (strpos($tl, 'funzionario') !== false && isset($cells[$j+1]))
@@ -975,13 +988,16 @@ class FoglioRenderer
         return $m;
     }
 
-    /** #216: "* " davanti al nome (quindi davanti alla qualifica) per chi ha un
-     *  permesso orario oggi — il vigile resta in squadra, l'asterisco è l'unico segno
-     *  sull'ODT. Vale solo per i vigili in anagrafica (gli esterni non hanno vigile_id). */
+    /** #216: "* " davanti al nome (quindi davanti alla qualifica) per chi oggi ha un
+     *  permesso orario o una visita medica — resta in squadra, l'asterisco è l'unico
+     *  segno sull'ODT. Vale solo per i vigili in anagrafica (gli esterni non hanno
+     *  vigile_id). Le visite mediche (#95) erano rimaste fuori: sul foglio web
+     *  l'asterisco ce l'hanno da sempre, sull'ODT no. */
     private function asterisco(array $a): string
     {
         $id = (int)($a['vigile_id'] ?? 0);
-        return ($id > 0 && isset($this->permOrario[$id])) ? '* ' : '';
+        if ($id <= 0 || !empty($a['no_asterisco'])) return '';
+        return (isset($this->permOrario[$id]) || isset($this->visiteIds[$id])) ? '* ' : '';
     }
 
     /** scrive un nome (colore patente + giallo straord. + sottolineato se fuori sede) in una cella */
