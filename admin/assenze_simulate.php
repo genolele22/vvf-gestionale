@@ -4,6 +4,7 @@ require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/auth.php';
 richiediAdmin();
 require_once __DIR__ . '/../includes/turni.php';               // getTurnoGiorno()
+require_once __DIR__ . '/../includes/turni_js.php';            // turniJsHtml() — porta JS del ciclo turni
 require_once __DIR__ . '/../includes/ferie_assenze.php';       // feriaSyncAssenza()
 require_once __DIR__ . '/../includes/bot_requests_schema.php'; // assicuraSchemaRichiesteAssenza()
 require_once __DIR__ . '/../includes/scambio_salto.php';       // scambioConflittiRighe()
@@ -177,14 +178,22 @@ $vigili = $pdo->query(
   .fs-chip.active { border-color:var(--rosso); background:#fde8e6; color:var(--rosso); }
 
   .fs-cal-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
-  .fs-cal-head h4 { margin:0; font-size:1.05rem; }
-  .fs-nav { background:var(--rosso); color:#fff; border:none; border-radius:6px; padding:6px 12px; cursor:pointer; font-size:1rem; }
+  /* #213/#214: stesso mese grande e maiuscolo del calendario ferie */
+  .fs-cal-head h4 { margin:0; font-size:1.7rem; font-weight:800; letter-spacing:1.5px;
+                    text-transform:uppercase; color:var(--grigio-sc); line-height:1.1; }
+  .fs-nav { background:var(--rosso); color:#fff; border:none; border-radius:6px; padding:6px 14px; cursor:pointer; font-size:1.15rem; }
   .fs-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:4px; }
   .fs-dow { text-align:center; font-size:.7rem; font-weight:700; color:var(--grigio-md); text-transform:uppercase; padding:4px 0; }
   .fs-cell { min-height:54px; border:1px solid #e8e8e8; border-radius:6px; padding:4px 6px; background:#fafafa;
              position:relative; cursor:pointer; }
   .fs-cell:hover { border-color:var(--rosso); }
   .fs-cell .gn { font-size:.8rem; font-weight:700; color:var(--grigio-sc); }
+  /* #213: stessa estetica del calendario ferie — ☀️ diurno, 🌙 notturno, e i
+     giorni in cui il turno riposa (salto) in grigio. Qui però restano tutti
+     cliccabili: un'assenza può cadere anche fuori dal turno lavorativo. */
+  .fs-cell .ico { display:block; font-size:1.1rem; line-height:1; margin-top:4px; }
+  .fs-cell.off { background:#f3f3f3; }
+  .fs-cell.off .gn { color:#bbb; }
   .fs-cell.rmid, .fs-cell.rstart, .fs-cell.rend, .fs-cell.rsingle, .fs-cell.rpending { background:#fde8e6; }
   .fs-cell.rstart, .fs-cell.rend, .fs-cell.rsingle, .fs-cell.rpending {
     border-color:var(--rosso); box-shadow:0 0 0 2px rgba(192,57,43,.25);
@@ -251,6 +260,9 @@ $vigili = $pdo->query(
     Scegli il tipo, poi l'intervallo di date <strong>dichiarato</strong> (primo click = inizio,
     secondo click = fine): i giorni in cui il turno <?= htmlspecialchars($TURNO) ?> non è in
     servizio vengono saltati automaticamente, senza bisogno di indicarli a mano.<br>
+    Ogni giorno mostra lo slot del turno <?= htmlspecialchars($TURNO) ?>: ☀️ diurno, 🌙 notturno,
+    grigio = riposo (salto). <strong>Tutti i giorni del calendario restano selezionabili</strong>,
+    riposi compresi: un'assenza può iniziare o finire anche fuori dal turno lavorativo.<br>
     Il permesso non è gestito qui: vedi lo strumento «Caricamento ferie».
   </p>
 
@@ -312,7 +324,10 @@ $vigili = $pdo->query(
   </div>
 </main>
 
+<?= turniJsHtml($TURNO) ?>
 <script>
+// Ciclo turni: vedi includes/turni_js.php (slotTurnoAttivo), unica porta JS
+// della logica di includes/turni.php.
 const MESI = ['Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno',
               'Luglio','Agosto','Settembre','Ottobre','Novembre','Dicembre'];
 const DOW  = ['Lun','Mar','Mer','Gio','Ven','Sab','Dom'];
@@ -354,10 +369,18 @@ function renderCal() {
   const ultimo = new Date(Date.UTC(viewY, viewM, 0)).getUTCDate();
   for (let g = 1; g <= ultimo; g++) {
     const dateStr = `${viewY}-${pad(viewM)}-${pad(g)}`;
-    const cls = classeGiorno(dateStr);
+    const cls  = classeGiorno(dateStr);
+    // #213: estetica del calendario ferie — slot reale del turno attivo.
+    // Attenzione: NON è un filtro di selezione, i giorni di riposo restano
+    // cliccabili (le assenze capitano anche fuori dal turno lavorativo).
+    const slot = slotTurnoAttivo(viewY, viewM, g);
     const cell = document.createElement('div');
-    cell.className = 'fs-cell' + (cls ? ' ' + cls : '');
-    cell.innerHTML = '<span class="gn">' + g + '</span>';
+    cell.className = 'fs-cell' + (slot ? ' slot' : ' off') + (cls ? ' ' + cls : '');
+    cell.innerHTML = '<span class="gn">' + g + '</span>'
+      + '<span class="ico">' + (slot === 'D' ? '☀️' : slot === 'N' ? '🌙' : '&nbsp;') + '</span>';
+    cell.title = slot === 'D' ? `Turno ${TURNO_ATTIVO} — diurno`
+               : slot === 'N' ? `Turno ${TURNO_ATTIVO} — notturno`
+               : `Turno ${TURNO_ATTIVO} a riposo (salto) — selezionabile lo stesso`;
     cell.onclick = () => onDayClick(dateStr);
     grid.appendChild(cell);
   }

@@ -4,6 +4,7 @@ require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/auth.php';
 richiediAdmin();
 require_once __DIR__ . '/../includes/turni.php';          // getTurnoGiorno()
+require_once __DIR__ . '/../includes/turni_js.php';       // turniJsHtml() — porta JS del ciclo turni
 require_once __DIR__ . '/../includes/ferie_assenze.php';  // feriaSyncAssenza(), permessoOrarioSync()
 require_once __DIR__ . '/../includes/bot_requests_schema.php';
 require_once __DIR__ . '/../includes/scambio_salto.php';  // scambioConflittiRighe()
@@ -260,7 +261,9 @@ $vigili = $pdo->query(
 <style>
   .fs-beta { display:inline-block; background:#b9770e; color:#fff; font-size:.66rem; font-weight:800;
              letter-spacing:.5px; padding:2px 8px; border-radius:6px; vertical-align:middle; margin-left:8px; }
-  .fs-wrap { display:grid; grid-template-columns:280px 1fr; gap:18px; align-items:start; }
+  /* #214: le due colonne alte uguali — il riquadro calendario si allunga fino
+     all'altezza del riquadro nomi, e lo spazio in più va al calendario. */
+  .fs-wrap { display:grid; grid-template-columns:280px 1fr; gap:18px; align-items:stretch; }
   @media (max-width:900px){ .fs-wrap{ grid-template-columns:1fr; } }
   .fs-box { background:#fff; border:1px solid #e4e7ea; border-radius:10px; padding:16px; box-shadow:var(--shadow); }
   .fs-box h3 { margin:0 0 10px; font-size:.95rem; color:var(--rosso); text-transform:uppercase; letter-spacing:.5px; }
@@ -271,11 +274,17 @@ $vigili = $pdo->query(
   .fs-vrow input { width:16px; height:16px; }
   .fs-vactions { display:flex; gap:8px; margin-bottom:8px; }
   .fs-cal-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
-  .fs-cal-head h4 { margin:0; font-size:1.05rem; }
-  .fs-nav { background:var(--rosso); color:#fff; border:none; border-radius:6px; padding:6px 12px; cursor:pointer; font-size:1rem; }
-  .fs-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:4px; }
+  /* #214: mese grande e tutto maiuscolo — c'è spazio anche per "SETTEMBRE 2026" */
+  .fs-cal-head h4 { margin:0; font-size:1.7rem; font-weight:800; letter-spacing:1.5px;
+                    text-transform:uppercase; color:var(--grigio-sc); line-height:1.1; }
+  .fs-nav { background:var(--rosso); color:#fff; border:none; border-radius:6px; padding:6px 14px; cursor:pointer; font-size:1.15rem; }
+  /* la colonna calendario è una colonna flex: la griglia si prende lo spazio
+     avanzato, così le celle crescono invece di lasciare un buco in fondo. */
+  .fs-cal-box { display:flex; flex-direction:column; }
+  .fs-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:4px;
+             flex:1 1 auto; min-height:0; grid-template-rows:auto; grid-auto-rows:minmax(50px,1fr); }
   .fs-dow { text-align:center; font-size:.7rem; font-weight:700; color:var(--grigio-md); text-transform:uppercase; padding:4px 0; }
-  .fs-cell { min-height:54px; border:1px solid #e8e8e8; border-radius:6px; padding:4px 6px; background:#fafafa; position:relative; }
+  .fs-cell { min-height:50px; border:1px solid #e8e8e8; border-radius:6px; padding:4px 6px; background:#fafafa; position:relative; }
   .fs-cell .gn { font-size:.8rem; font-weight:700; color:var(--grigio-sc); }
   .fs-cell.off { background:#f3f3f3; color:#bbb; }
   .fs-cell.off .gn { color:#bbb; }
@@ -295,9 +304,13 @@ $vigili = $pdo->query(
   .fs-msg.ok { background:#e6f4ea; color:#1e7e34; display:block; }
   .fs-msg.err { background:#fdecea; color:#c0392b; display:block; }
   .fs-hint { font-size:.78rem; color:var(--grigio-md); margin:0 0 10px; line-height:1.4; }
-  .fs-tipo { margin-bottom:18px; }
+  /* #214: niente titolo "Tipo" e riquadro più basso — spazio recuperato in alto */
+  .fs-tipo { margin-bottom:14px; padding:10px 16px; }
+  /* Ferie · Permesso · (Giornaliero · Orario) tutti sulla stessa riga, stessa
+     spaziatura: mostrando i sottotipi il calendario non scende più. */
+  .fs-tipo-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
   .fs-chips { display:flex; flex-wrap:wrap; gap:8px; }
-  .fs-chips.fs-sub { margin-top:10px; }
+  .fs-chips.fs-sub { margin-top:0; }
   .fs-chip { border:1px solid #ccc; background:#fff; border-radius:20px; padding:6px 14px;
              font-size:.85rem; font-weight:600; cursor:pointer; color:var(--grigio-sc); }
   .fs-chip:hover { border-color:var(--rosso); }
@@ -350,24 +363,18 @@ $vigili = $pdo->query(
     sola voce (ferie o permesso) per giorno/turno.
   </p>
 
+  <!-- #214: via la scritta "Tipo"; Giornaliero/Orario nella stessa riga di
+       Ferie/Permesso, così scegliendo Permesso la pagina non scende. -->
   <div class="fs-box fs-tipo">
-    <h3>Tipo</h3>
-    <div class="fs-chips" id="chipsTipo">
-      <button type="button" class="fs-chip active" data-tipo="ferie">🏖️ Ferie</button>
-      <button type="button" class="fs-chip" data-tipo="permesso">📝 Permesso</button>
-    </div>
-    <div class="fs-chips fs-sub" id="chipsModalita" style="display:none;">
-      <button type="button" class="fs-chip active" data-modalita="giornaliero">📅 Giornaliero</button>
-      <button type="button" class="fs-chip" data-modalita="orario">🕐 Orario</button>
-    </div>
-    <div class="fs-orario" id="orarioPicker" style="display:none;">
-      <p class="fs-hint" style="margin:8px 0 6px;">
-        Permesso orario: un giorno alla volta — selezionandone un altro nel calendario sostituisce
-        quello scelto.
-      </p>
-      <!-- #210: una sola riga — clic sull'ora di inizio, poi clic sull'ora di
-           fine, invece di due righe Dalle/Alle separate. -->
-      <div class="fs-ora-row"><span class="fs-ora-lbl">Imposta orario</span><div class="fs-chips" id="chipsOra"></div></div>
+    <div class="fs-tipo-row">
+      <div class="fs-chips" id="chipsTipo">
+        <button type="button" class="fs-chip active" data-tipo="ferie">🏖️ Ferie</button>
+        <button type="button" class="fs-chip" data-tipo="permesso">📝 Permesso</button>
+      </div>
+      <div class="fs-chips fs-sub" id="chipsModalita" style="display:none;">
+        <button type="button" class="fs-chip active" data-modalita="giornaliero">📅 Giornaliero</button>
+        <button type="button" class="fs-chip" data-modalita="orario">🕐 Orario</button>
+      </div>
     </div>
   </div>
 
@@ -395,13 +402,25 @@ $vigili = $pdo->query(
     </div>
 
     <!-- ── Calendario ── -->
-    <div class="fs-box">
+    <div class="fs-box fs-cal-box">
       <div class="fs-cal-head">
         <button type="button" class="fs-nav" onclick="cambiaMese(-1)">‹</button>
         <h4 id="calTitolo"></h4>
         <button type="button" class="fs-nav" onclick="cambiaMese(1)">›</button>
       </div>
       <div class="fs-grid" id="calGrid"></div>
+
+      <!-- #214: il selettore dell'orario sta sotto il calendario, non sopra:
+           comparendo non sposta più nulla di ciò che gli sta sopra. -->
+      <div class="fs-orario" id="orarioPicker" style="display:none;">
+        <p class="fs-hint" style="margin:8px 0 6px;">
+          Permesso orario: un giorno alla volta — selezionandone un altro nel calendario sostituisce
+          quello scelto.
+        </p>
+        <!-- #210: una sola riga — clic sull'ora di inizio, poi clic sull'ora di
+             fine, invece di due righe Dalle/Alle separate. -->
+        <div class="fs-ora-row"><span class="fs-ora-lbl">Imposta orario</span><div class="fs-chips" id="chipsOra"></div></div>
+      </div>
 
       <div class="fs-foot">
         <button type="button" class="fs-go" id="btnCrea" onclick="creaVoci()">Crea voci ferie</button>
@@ -416,27 +435,10 @@ $vigili = $pdo->query(
   </div>
 </main>
 
+<?= turniJsHtml($TURNO) ?>
 <script>
-// ── Ciclo turni (porta di includes/turni.php) ────────────────────────────────
-// Ancora 2026-05-01 = giorno 0, diurno turno B (indice 1 in A,B,C,D).
-const ANCHOR = Date.UTC(2026, 4, 1);   // 2026-05-01
-const ANCHOR_TURNO = 1;                // B
-function giorniDallAncora(y, m, d) {   // m: 1-12
-  return Math.round((Date.UTC(y, m - 1, d) - ANCHOR) / 86400000);
-}
-function turnoDiurno(giorni) {         // lettera del diurno (A,B,C,D)
-  const idx = (((ANCHOR_TURNO + giorni) % 4) + 4) % 4;
-  return ['A', 'B', 'C', 'D'][idx];
-}
-const TURNO_ATTIVO = '<?= $TURNO ?>';
-// Slot del turno attivo in una data: 'D', 'N' o null (non in servizio)
-function slotTurnoB(y, m, d) {
-  const g = giorniDallAncora(y, m, d);
-  if (turnoDiurno(g)     === TURNO_ATTIVO) return 'D';   // diurno
-  if (turnoDiurno(g - 1) === TURNO_ATTIVO) return 'N';   // notturno = diurno del giorno prima
-  return null;
-}
-
+// Ciclo turni: vedi includes/turni_js.php (slotTurnoAttivo), unica porta JS
+// della logica di includes/turni.php.
 const MESI = ['Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno',
               'Luglio','Agosto','Settembre','Ottobre','Novembre','Dicembre'];
 const DOW  = ['Lun','Mar','Mer','Gio','Ven','Sab','Dom'];
@@ -578,7 +580,7 @@ function renderCal() {
   }
   const ultimo = new Date(Date.UTC(viewY, viewM, 0)).getUTCDate();
   for (let g = 1; g <= ultimo; g++) {
-    const slot = slotTurnoB(viewY, viewM, g);
+    const slot = slotTurnoAttivo(viewY, viewM, g);
     const cell = document.createElement('div');
     cell.className = 'fs-cell' + (slot ? ' slot' : ' off');
     cell.innerHTML = '<span class="gn">' + g + '</span>';
