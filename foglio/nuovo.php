@@ -567,6 +567,74 @@ function contaFerieDaNotificare(PDO $pdo, int $foglioId, string $dataStr, string
             'nomi' => ['approva' => $nomi($approvaIds), 'ufficio' => $nomi($ufficioIds), 'negate' => $nomi($negateIds)]];
 }
 
+// ── Ferie NON estive consecutive (#254 logbook, Moli) ─────────────────────
+// Riusa la stessa nozione di "blocco contiguo" già in uso per il badge "turni
+// residui" (#159/#171, poco più sotto in questo file, e FoglioRenderer per
+// l'ODT): includes/ferie_blocchi.php::blocchiContigui() sulle righe FER del
+// vigile (join assenze+fogli_servizio, stesso identico metodo). 'ferie_estiva'
+// segue bot_requests.ferie_estiva (fonte già usata dall'evidenziatore ODT):
+// una ferie d'ufficio, senza richiesta, non è mai estiva. Un turno estivo in
+// mezzo a un blocco altrimenti contiguo interrompe comunque il conteggio "non
+// estive", anche se blocchiContigui() lo considera un unico blocco.
+function vigiliFerieConsecutiveDaAvvisare(PDO $pdo, int $foglioId, string $dataStr, string $tipoParam): array {
+    $stFer = $pdo->prepare("SELECT DISTINCT vigile_id FROM assenze WHERE foglio_id=? AND tipo_assenza_id=1");
+    $stFer->execute([$foglioId]);
+    $vigileIds = array_map('intval', $stFer->fetchAll(PDO::FETCH_COLUMN));
+    if (!$vigileIds) return [];
+
+    $stBlocco = $pdo->prepare(
+        "SELECT f.data_servizio AS data_richiesta, f.tipo_turno,
+                COALESCE(r.spezza_dopo, 0)   AS spezza_dopo,
+                COALESCE(r.ferie_estiva, 0)  AS ferie_estiva
+           FROM assenze a JOIN fogli_servizio f ON f.id = a.foglio_id
+           LEFT JOIN bot_requests r ON r.vigile_id = a.vigile_id
+                AND r.data_richiesta = f.data_servizio
+                AND (r.tipo_turno = f.tipo_turno OR r.tipo_turno = 'DN')
+          WHERE a.vigile_id=? AND a.tipo_assenza_id=1
+          ORDER BY f.data_servizio, f.tipo_turno"
+    );
+    $stNome = $pdo->prepare("SELECT cognome, disambiguatore FROM vigili WHERE id=?");
+
+    $risultato = [];
+    foreach ($vigileIds as $vid) {
+        $stBlocco->execute([$vid]);
+        $righe   = array_map(fn($r) => $r + ['stato' => 'approved'], $stBlocco->fetchAll());
+        $blocchi = blocchiContigui($righe);
+        foreach ($blocchi as $b) {
+            $da = $b[0]['data_richiesta'];
+            $aa = end($b)['data_richiesta'];
+            if ($dataStr < $da || $dataStr > $aa) continue;
+
+            $idxCorrente = null;
+            foreach ($b as $bi => $br) {
+                if ($br['data_richiesta'] === $dataStr
+                    && ($br['tipo_turno'] === $tipoParam || $br['tipo_turno'] === 'DN')) {
+                    $idxCorrente = $bi;
+                    break;
+                }
+            }
+            // Oggi non trovato nel blocco, o oggi è estiva: non conta come
+            // "non estiva" di partenza.
+            if ($idxCorrente === null || (int)$b[$idxCorrente]['ferie_estiva'] === 1) break;
+
+            // Sotto-run di turni NON estivi che comprende oggi (l'estiva
+            // spezza il conteggio "non estive" pur restando un blocco unico).
+            $ini = $fin = $idxCorrente;
+            while ($ini > 0 && (int)$b[$ini - 1]['ferie_estiva'] === 0) $ini--;
+            while ($fin < count($b) - 1 && (int)$b[$fin + 1]['ferie_estiva'] === 0) $fin++;
+            $n = turniLabel(array_slice($b, $ini, $fin - $ini + 1));
+            if ($n < 2) break;
+
+            $stNome->execute([$vid]);
+            $v = $stNome->fetch();
+            $nome = $v ? ucfirst(strtolower($v['cognome'])) . ($v['disambiguatore'] ? ' ' . $v['disambiguatore'] : '') : '?';
+            $risultato[] = ['vigile_id' => $vid, 'nome' => $nome, 'turni' => $n];
+            break;
+        }
+    }
+    return $risultato;
+}
+
 // ── Recupera o crea il foglio (identità: turno + data + tipo) ─
 $stmtF = $pdo->prepare(
     "SELECT * FROM fogli_servizio WHERE turno=? AND data_servizio=? AND tipo_turno=?"
@@ -1003,6 +1071,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stU->execute([$vigileId, $dataStr]);
         $ufficio = !(bool) $stU->fetchColumn();
         echo json_encode(['ok' => true, 'ufficio' => $ufficio]);
+        exit;
+    }
+
+    // ── AJAX: avviso ferie NON estive consecutive (#254 logbook, Moli) ──────
+    // Informativo, non bloccante: chiamato dal tasto ✉️ Invia, 📄 Scarica .odt
+    // e 🔍 anteprima .odt. Segnala i vigili di QUESTO foglio con 2+ turni di
+    // ferie NON estive consecutivi. Disattivabile da admin/parametri.php
+    // (parametro 'check_ferie_estive_consecutive', default attivo).
+    if ($azione === 'check_ferie_consecutive') {
+        require_once __DIR__ . '/../includes/parametri_lib.php';
+        assicuraTabellaParametri($pdo);
+        $attivo = getParam($pdo, 'check_ferie_estive_consecutive', '1') !== '0';
+        $avvisi = $attivo ? vigiliFerieConsecutiveDaAvvisare($pdo, $foglioId, $dataStr, $tipoParam) : [];
+        echo json_encode(['ok' => true, 'attivo' => $attivo, 'vigili' => $avvisi]);
         exit;
     }
 
@@ -2113,7 +2195,7 @@ $funzCorrente  = trim($foglio['funzionario'] ?? '');
              class="btn btn-grigio btn-sm"
              data-nferie="<?= (int)$nFerieDaApprovare ?>"
              onclick="return scaricaOdt(this)">📄 Scarica .odt</a>
-          <button type="button" onclick="window.open('stampa.php?id=<?= $foglioId ?>','_blank')"
+          <button type="button" onclick="apriAnteprimaOdt('stampa.php?id=<?= $foglioId ?>')"
                   class="btn btn-grigio btn-sm"
                   title="Anteprima .odt del servizio del <?= htmlspecialchars(date('d/m/Y', strtotime($dataStr))) ?>">🔍 .odt</button>
           <?php if ($foglioPrec):
@@ -4753,6 +4835,39 @@ async function annullaScambio(scambioId) {
     });
 }
 
+// Avviso "ferie NON estive consecutive" (#254 logbook, Moli): informativo,
+// NON blocca l'azione — un solo popup con OK (soloOk), poi si prosegue
+// comunque. Chiamato da ✉️ Invia, 📄 Scarica .odt e 🔍 anteprima .odt.
+// Best-effort: se il check fallisce (rete, sola lettura, ecc.) si prosegue
+// in silenzio senza avvisare.
+async function avvisaSeFerieConsecutive(prosegui) {
+    try {
+        const r = await ajax({ azione: 'check_ferie_consecutive' });
+        if (r.ok && r.attivo && Array.isArray(r.vigili) && r.vigili.length > 0) {
+            const elenco = r.vigili.map(v => `<b>${v.nome}</b> (${v.turni} turni)`).join(', ');
+            chiediConferma({
+                titolo:  '🏖️ Ferie non estive consecutive',
+                testo:   `Attenzione: ${elenco} ${r.vigili.length === 1 ? 'risulta' : 'risultano'} ` +
+                         `con 2 o più turni di ferie NON estive di fila.`,
+                okLabel: 'OK',
+                okStyle: 'background:var(--grigio-sc);color:#fff',
+                soloOk:  true,
+                onOk:    prosegui,
+            });
+            return;
+        }
+    } catch (e) { /* avviso best-effort */ }
+    prosegui();
+}
+
+// Anteprima .odt: si apre subito (evita che il browser blocchi il popup se il
+// tab si aprisse solo DOPO l'attesa della chiamata ajax del controllo ferie),
+// l'avviso ferie consecutive arriva in parallelo, indipendente dall'apertura.
+function apriAnteprimaOdt(url) {
+    window.open(url, '_blank');
+    avvisaSeFerieConsecutive(() => {});
+}
+
 // Scarica ODT = solo export del documento. NON approva ferie né notifica:
 // quello avviene dal tasto Salva (con conferma). Download diretto, salvo
 // l'avviso se resta personale in Disponibili (blocca la navigazione di
@@ -4760,15 +4875,13 @@ async function annullaScambio(scambioId) {
 function scaricaOdt(a) {
     const via = () => { window.location.href = a.href; };
     const conSquadre = () => avvisaSeSquadreIncomplete('lo scarico del .odt', via);
+    const conFerieConsecutive = () => avvisaSeFerieConsecutive(squadreIncomplete().length > 0 ? conSquadre : via);
     if (contaDisponibili() > 0) {
-        avvisaSeDisponibiliResidui('lo scarico del .odt', conSquadre);
+        avvisaSeDisponibiliResidui('lo scarico del .odt', conFerieConsecutive);
         return false;
     }
-    if (squadreIncomplete().length > 0) {
-        avvisaSeSquadreIncomplete('lo scarico del .odt', via);
-        return false;
-    }
-    return true;
+    conFerieConsecutive();
+    return false;
 }
 
 // proponiFerie: solo il tasto "✉️ Invia" propone di approvare le ferie pending
@@ -4781,11 +4894,12 @@ async function salvaIntestazioneAjax(proponiFerie = false) {
         if (proponiFerie && squadreIncomplete().length > 0) avvisaSeSquadreIncomplete('l\'invio delle comunicazioni', esegui);
         else esegui();
     };
+    const conFerieConsecutive = () => proponiFerie ? avvisaSeFerieConsecutive(conSquadre) : conSquadre();
     if (proponiFerie && contaDisponibili() > 0) {
-        avvisaSeDisponibiliResidui('l\'invio delle comunicazioni', conSquadre);
+        avvisaSeDisponibiliResidui('l\'invio delle comunicazioni', conFerieConsecutive);
         return;
     }
-    await conSquadre();
+    await conFerieConsecutive();
 }
 
 async function _salvaIntestazioneEsegui(proponiFerie) {
