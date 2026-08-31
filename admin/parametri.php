@@ -70,12 +70,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     } elseif ($azione === 'salva_check_ferie') {
         // #254 logbook (Moli): avviso ferie NON estive consecutive sul Foglio
-        // (tasti Invia/Scarica .odt/anteprima). Default ON se il parametro
-        // non esiste ancora (checkbox pensata per essere sempre accesa).
+        // (tasti Invia/Scarica .odt/anteprima). Indipendente per turno (bug
+        // segnalato da Lele il 31/08/2026: la prima versione era una chiave
+        // sola, valeva per tutti e quattro i turni insieme — corretto per
+        // seguire lo stesso schema già in uso per mail_furiera_* e le chiavi
+        // di Stili & Colori). Default ON se il parametro non esiste ancora.
         try {
-            $val = !empty($_POST['check_ferie_estive_consecutive']) ? '1' : '0';
-            setParam($pdo, 'check_ferie_estive_consecutive', $val,
-                     'Avvisa (popup informativo) se un vigile ha 2+ turni di ferie NON estive consecutivi');
+            foreach (['A','B','C','D'] as $t) {
+                $val = !empty($_POST["check_ferie_estive_consecutive_$t"]) ? '1' : '0';
+                setParam($pdo, "check_ferie_estive_consecutive_$t", $val,
+                         "Turno $t: avvisa (popup informativo) se un vigile ha 2+ turni di ferie NON estive consecutivi");
+            }
             $sucesso = 'Impostazione salvata.';
         } catch (Throwable $e) {
             $errore = 'Errore salvataggio: ' . $e->getMessage();
@@ -128,14 +133,18 @@ $mail = [
     'imap_port'              => getParam($pdo, 'imap_port'),
 ];
 $formatoNome = getParam($pdo, 'foglio_formato_nome', 'standard');
-$checkFerieConsecutive = getParam($pdo, 'check_ferie_estive_consecutive', '1') !== '0';
+$checkFerieConsecutive = [];
+foreach (['A','B','C','D'] as $t) {
+    $checkFerieConsecutive[$t] = getParam($pdo, "check_ferie_estive_consecutive_$t", '1') !== '0';
+}
 
 // Chiavi gestite dalle sezioni strutturate: nascoste dall'editor libero
 $chiaviStrutturate = ['mail_furiera_richieste','mail_furiera_risposte',
                       'mail_furiera_richieste_A','mail_furiera_richieste_B','mail_furiera_richieste_C','mail_furiera_richieste_D',
                       'mail_furiera_risposte_A','mail_furiera_risposte_B','mail_furiera_risposte_C','mail_furiera_risposte_D',
                       'smtp_host','smtp_port','imap_host','imap_port','foglio_formato_nome',
-                      'check_ferie_estive_consecutive'];
+                      'check_ferie_estive_consecutive_A','check_ferie_estive_consecutive_B',
+                      'check_ferie_estive_consecutive_C','check_ferie_estive_consecutive_D'];
 // Tutte le chiavi di admin/stile_patenti.php, prese dagli helper condivisi invece
 // che riscritte a mano: #182 e #220 ne hanno aggiunte parecchie e quelle di #182
 // erano rimaste visibili (e cancellabili a mano) nell'editor libero.
@@ -322,16 +331,18 @@ $righe = array_filter($righeTutte, fn($r) => !in_array($r['chiave'], $chiaviStru
       <p class="hint" style="margin:0 0 12px">
         Quando si preme ✉️ Invia, 📄 Scarica .odt o 🔍 anteprima .odt sul Foglio,
         avvisa (popup informativo, si chiude con OK, non blocca l'operazione) se
-        un vigile ha 2 o più turni di ferie <b>NON estive</b> di fila. Vale su
-        tutti i turni.
+        un vigile ha 2 o più turni di ferie <b>NON estive</b> di fila.
+        Indipendente per turno: spegnerlo su uno non tocca gli altri tre.
       </p>
       <form method="POST" action="parametri.php" class="par-form">
         <input type="hidden" name="azione" value="salva_check_ferie">
+        <?php foreach (['A','B','C','D'] as $t): ?>
         <label class="fmt-opt" style="cursor:pointer">
-          <input type="checkbox" name="check_ferie_estive_consecutive" value="1"
-                 style="width:auto" <?= $checkFerieConsecutive ? 'checked' : '' ?>>
-          <span>Avviso attivo</span>
+          <input type="checkbox" name="check_ferie_estive_consecutive_<?= $t ?>" value="1"
+                 style="width:auto" <?= $checkFerieConsecutive[$t] ? 'checked' : '' ?>>
+          <span>Turno <?= $t ?></span>
         </label>
+        <?php endforeach; ?>
         <div><button type="submit" class="btn btn-rosso">Salva</button></div>
       </form>
     </div>

@@ -1077,12 +1077,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // ── AJAX: avviso ferie NON estive consecutive (#254 logbook, Moli) ──────
     // Informativo, non bloccante: chiamato dal tasto ✉️ Invia, 📄 Scarica .odt
     // e 🔍 anteprima .odt. Segnala i vigili di QUESTO foglio con 2+ turni di
-    // ferie NON estive consecutivi. Disattivabile da admin/parametri.php
-    // (parametro 'check_ferie_estive_consecutive', default attivo).
+    // ferie NON estive consecutivi. Disattivabile per turno da
+    // admin/parametri.php (parametro 'check_ferie_estive_consecutive_<TURNO>',
+    // default attivo) — indipendente fra i quattro turni (bug segnalato da
+    // Lele il 31/08/2026: la prima versione era una chiave sola, condivisa).
     if ($azione === 'check_ferie_consecutive') {
         require_once __DIR__ . '/../includes/parametri_lib.php';
         assicuraTabellaParametri($pdo);
-        $attivo = getParam($pdo, 'check_ferie_estive_consecutive', '1') !== '0';
+        $attivo = getParam($pdo, 'check_ferie_estive_consecutive_' . turnoAttivo(), '1') !== '0';
         $avvisi = $attivo ? vigiliFerieConsecutiveDaAvvisare($pdo, $foglioId, $dataStr, $tipoParam) : [];
         echo json_encode(['ok' => true, 'attivo' => $attivo, 'vigili' => $avvisi]);
         exit;
