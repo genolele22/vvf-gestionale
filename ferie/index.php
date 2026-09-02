@@ -46,6 +46,53 @@ $giorniNomi = ['','Lun','Mar','Mer','Gio','Ven','Sab','Dom'];
 require_once __DIR__ . '/../includes/ferie_assenze.php';
 require_once __DIR__ . '/../includes/bot_requests_schema.php';
 assicuraSchemaRichiesteAssenza($pdo);
+require_once __DIR__ . '/../includes/ferie_blocchi.php';   // blocchiContigui() — serve anche in POST (#255)
+require_once __DIR__ . '/../includes/format.php';          // etichettaVigile() — idem
+
+// #255 (logbook, Moli): negando una richiesta FER che nel blocco contiguo
+// attuale (blocchiContigui, stesso criterio dell'Agenda/ODT) ha un vicino
+// già APPROVATO e comunicato (mail 'sent' su bot_outbox), avvisa il furiere
+// prima di procedere — il vicino resterebbe "confermato" isolato, spezzato
+// dalla negazione. Guarda solo FER (tipo_assenza_id=1): è l'unico tipo per
+// cui #255 è stato segnalato.
+function feriaVicinoGiaConfermato(PDO $pdo, array $righeInNegazione, array $idsEsclusi): ?string {
+    foreach ($righeInNegazione as $r) {
+        if ((int)$r['tipo_assenza_id'] !== 1) continue;
+
+        $st = $pdo->prepare(
+            "SELECT id, data_richiesta, stato, tipo_assenza_id, spezza_dopo
+             FROM bot_requests WHERE vigile_id = ? AND tipo_assenza_id = 1
+             ORDER BY data_richiesta"
+        );
+        $st->execute([$r['vigile_id']]);
+        $tutte = $st->fetchAll();
+
+        $blocco = null;
+        foreach (blocchiContigui($tutte) as $b) {
+            if (in_array((int)$r['id'], array_column($b, 'id'), true)) { $blocco = $b; break; }
+        }
+        if (!$blocco) continue;
+
+        $candidati = array_values(array_filter($blocco,
+            fn($x) => $x['stato'] === 'approved' && !in_array((int)$x['id'], $idsEsclusi, true)));
+        if (!$candidati) continue;
+
+        $ctxList = array_map(fn($x) => 'ferie:' . (int)$x['id'], $candidati);
+        $ph = implode(',', array_fill(0, count($ctxList), '?'));
+        $obq = $pdo->prepare("SELECT ctx FROM bot_outbox WHERE stato='sent' AND ctx IN ($ph)");
+        $obq->execute($ctxList);
+        if ($obq->fetch()) {
+            $vst = $pdo->prepare(
+                "SELECT v.cognome, v.disambiguatore, q.codice AS qcodice
+                 FROM vigili v JOIN qualifiche q ON q.id = v.qualifica_id WHERE v.id = ?"
+            );
+            $vst->execute([$r['vigile_id']]);
+            $v = $vst->fetch();
+            if ($v) return etichettaVigile($v);
+        }
+    }
+    return null;
+}
 
 // ── AJAX ─────────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -86,6 +133,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             fn($r) => puoModificareTurno($r['turno']) && in_array((int)$r['tipo_assenza_id'], [1, 4], true)));
         if (empty($rows)) {
             echo json_encode(['ok' => false, 'errore' => 'Turno in sola lettura o tipo non approvabile.']); exit;
+        }
+
+        // #255: sta per negare turni con un vicino già confermato — avvisa e
+        // ferma qui, a meno che il furiere non abbia già scelto di procedere.
+        if ($stato === 'rejected' && empty($_POST['forza'])) {
+            $nomeVigile = feriaVicinoGiaConfermato($pdo, $rows, $ids);
+            if ($nomeVigile !== null) {
+                echo json_encode(['ok' => true, 'richiedeConferma' => true, 'nomeVigile' => $nomeVigile]);
+                exit;
+            }
         }
 
         $up = $pdo->prepare("UPDATE bot_requests SET stato=?, processed_at=? WHERE id=?");
@@ -1564,12 +1621,13 @@ function onScelta(chk, target) {
 }
 
 // ── Applica uno stato a una lista di richieste ───────────────
-async function setStato(ids, stato) {
+async function setStato(ids, stato, forza) {
     if (!ids || ids.length === 0) return;
     const fd = new FormData();
     fd.append('azione', 'set_stato');
     fd.append('stato', stato);
     fd.append('ids', JSON.stringify(ids));
+    if (forza) fd.append('forza', '1');
 
     let res;
     try {
@@ -1581,6 +1639,22 @@ async function setStato(ids, stato) {
     if (!res.ok) {
         showMsg('⚠️ ' + (res.errore || 'Errore'), 'err');
         sincronizzaDOM(); // ripristina le spunte allo stato reale
+        return;
+    }
+
+    // #255: il vigile ha già un turno adiacente confermato — il furiere deve
+    // scegliere se procedere comunque prima che la negazione venga applicata.
+    if (res.richiedeConferma) {
+        const nomeSafe = document.createElement('div');
+        nomeSafe.textContent = res.nomeVigile;
+        chiediConferma({
+            titolo:  '⚠️ Attenzione',
+            testo:   `ATTENZIONE!<br><br><strong>${nomeSafe.innerHTML}</strong><br><br>ha già ricevuto conferma per questo turno di ferie!`,
+            okLabel: 'Continua',
+            okStyle: 'background:var(--rosso);color:#fff',
+            onOk:    () => setStato(ids, stato, true)
+        });
+        sincronizzaDOM(); // ripristina le spunte finché non si conferma
         return;
     }
 
