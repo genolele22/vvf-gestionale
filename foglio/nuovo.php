@@ -1281,12 +1281,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // errore il ramo sotto e la respingeva (bug scoperto su un permesso
         // orario respinto per errore mentre si toglieva una ferie d'ufficio).
         $stReq = $pdo->prepare(
-            "SELECT 1 FROM bot_requests
+            "SELECT id, vigile_id, tipo_assenza_id FROM bot_requests
              WHERE vigile_id=? AND data_richiesta=? AND stato IN ('pending','approved')
-               AND tipo_assenza_id=1 LIMIT 1"
+               AND tipo_assenza_id=1"
         );
         $stReq->execute([$vigileId, $dataStr]);
-        $eraRichiesta = (bool) $stReq->fetchColumn();
+        $richieste   = $stReq->fetchAll();
+        $eraRichiesta = !empty($richieste);
+
+        // #259 (logbook, Moli): negare la ferie dal Foglio è la stessa cosa che
+        // respingerla dall'Agenda, ma qui il furiere non vede la storia del
+        // vigile — se il blocco contiguo ha altri turni ancora in piedi
+        // (pending/approved) lo avvisa prima di procedere, con lo stesso popup
+        // di #255. Continua rimanda l'azione con forza=1.
+        if ($isFeria && $eraRichiesta && empty($_POST['forza'])) {
+            require_once __DIR__ . '/../includes/ferie_vicino_confermato.php';
+            $nomeVigile = feriaVicinoGiaConfermato($pdo, $richieste, array_column($richieste, 'id'));
+            if ($nomeVigile !== null) {
+                echo json_encode(['ok' => true, 'richiedeConferma' => true, 'nomeVigile' => $nomeVigile]);
+                exit;
+            }
+        }
 
         $pdo->prepare(
             "DELETE FROM assenze WHERE foglio_id=? AND vigile_id=?"
@@ -4543,9 +4558,26 @@ async function rimuoviEsternoPos(extId) {
 // Rimozione da posizione → "Centrale (disponibili)" del menu tasto destro
 // (mandaInCentraleDisponibili). La vecchia x sulla card era ridondante, rimossa.
 
-async function rimuoviDaAssenza(vigileId) {
-    const res = await ajax({ azione: 'rimuovi_assenza', vigile_id: vigileId });
+async function rimuoviDaAssenza(vigileId, forza) {
+    const dati = { azione: 'rimuovi_assenza', vigile_id: vigileId };
+    if (forza) dati.forza = 1;
+    const res = await ajax(dati);
     if (!res.ok) { showMsg('⚠️ Errore.','err'); return; }
+
+    // #259: il vigile ha altri turni dello stesso blocco di ferie ancora in
+    // piedi — il furiere decide se spezzargliele o lasciare tutto com'è.
+    if (res.richiedeConferma) {
+        const nomeSafe = document.createElement('div');
+        nomeSafe.textContent = res.nomeVigile;
+        chiediConferma({
+            titolo:  '⚠️ Attenzione',
+            testo:   `ATTENZIONE!<br><br><strong>${nomeSafe.innerHTML}</strong><br><br>ha già ricevuto conferma per questo turno di ferie!`,
+            okLabel: 'Continua',
+            okStyle: 'background:var(--rosso);color:#fff',
+            onOk:    () => rimuoviDaAssenza(vigileId, true)
+        });
+        return;
+    }
     rimuoviDOM(vigileId);          // toglie la card sia da Ferie sia da Ferie d'ufficio
     updateUfficioCount();
     const p = PERSONALE[vigileId];

@@ -48,51 +48,9 @@ require_once __DIR__ . '/../includes/bot_requests_schema.php';
 assicuraSchemaRichiesteAssenza($pdo);
 require_once __DIR__ . '/../includes/ferie_blocchi.php';   // blocchiContigui() — serve anche in POST (#255)
 require_once __DIR__ . '/../includes/format.php';          // etichettaVigile() — idem
-
-// #255 (logbook, Moli): negando una richiesta FER che nel blocco contiguo
-// attuale (blocchiContigui, stesso criterio dell'Agenda/ODT) ha un vicino
-// già APPROVATO e comunicato (mail 'sent' su bot_outbox), avvisa il furiere
-// prima di procedere — il vicino resterebbe "confermato" isolato, spezzato
-// dalla negazione. Guarda solo FER (tipo_assenza_id=1): è l'unico tipo per
-// cui #255 è stato segnalato.
-function feriaVicinoGiaConfermato(PDO $pdo, array $righeInNegazione, array $idsEsclusi): ?string {
-    foreach ($righeInNegazione as $r) {
-        if ((int)$r['tipo_assenza_id'] !== 1) continue;
-
-        $st = $pdo->prepare(
-            "SELECT id, data_richiesta, stato, tipo_assenza_id, spezza_dopo
-             FROM bot_requests WHERE vigile_id = ? AND tipo_assenza_id = 1
-             ORDER BY data_richiesta"
-        );
-        $st->execute([$r['vigile_id']]);
-        $tutte = $st->fetchAll();
-
-        $blocco = null;
-        foreach (blocchiContigui($tutte) as $b) {
-            if (in_array((int)$r['id'], array_column($b, 'id'), true)) { $blocco = $b; break; }
-        }
-        if (!$blocco) continue;
-
-        $candidati = array_values(array_filter($blocco,
-            fn($x) => $x['stato'] === 'approved' && !in_array((int)$x['id'], $idsEsclusi, true)));
-        if (!$candidati) continue;
-
-        $ctxList = array_map(fn($x) => 'ferie:' . (int)$x['id'], $candidati);
-        $ph = implode(',', array_fill(0, count($ctxList), '?'));
-        $obq = $pdo->prepare("SELECT ctx FROM bot_outbox WHERE stato='sent' AND ctx IN ($ph)");
-        $obq->execute($ctxList);
-        if ($obq->fetch()) {
-            $vst = $pdo->prepare(
-                "SELECT v.cognome, v.disambiguatore, q.codice AS qcodice
-                 FROM vigili v JOIN qualifiche q ON q.id = v.qualifica_id WHERE v.id = ?"
-            );
-            $vst->execute([$r['vigile_id']]);
-            $v = $vst->fetch();
-            if ($v) return etichettaVigile($v);
-        }
-    }
-    return null;
-}
+// #255/#259: avviso prima di negare una ferie con un vicino ancora in piedi
+// nello stesso blocco — funzione condivisa con il Foglio.
+require_once __DIR__ . '/../includes/ferie_vicino_confermato.php';
 
 // ── AJAX ─────────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
