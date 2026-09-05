@@ -115,7 +115,10 @@ $vuota = composizioneVuota();
     Per ogni mezzo/posizione, il minimo di elementi per ruolo richiesto perché la squadra sia
     considerata completa (controllo prima di Invia/Scarica .odt e caselle vuote evidenziate in rosso
     sul foglio). Una stessa persona può soddisfare più requisiti insieme — es. un Autista 3/4 con
-    l'abilitazione richiesta conta per entrambi. Lascia 0 dove non serve nessun requisito.
+    l'abilitazione richiesta conta per entrambi. <b>Capo Partenza</b> = qualifica Cr o Cs.
+    <b>Autista 2/3/4</b> si copre con patente 2, 3 o 4 (una patente più grande vale anche per il
+    ruolo più piccolo), <b>Autista 3/4</b> solo con patente 3 o 4; i due ruoli autista non li copre
+    la stessa persona. Lascia 0 dove non serve nessun requisito.
     Valori validi solo per il turno <?= htmlspecialchars($TURNO) ?>.
   </p>
 
@@ -129,7 +132,7 @@ $vuota = composizioneVuota();
         <thead>
           <tr>
             <th>Sede</th><th>Mezzo</th>
-            <th>Capo Partenza</th><th>Autista 3/4</th><th>Autista 2</th><th>Altri</th>
+            <th>Capo Partenza</th><th>Autista 3/4</th><th>Autista 2/3/4</th><th>Altri</th>
             <th>Abilitazione</th><th>N. Abilitazione</th>
           </tr>
         </thead>

@@ -9,7 +9,11 @@
  * Colonne di `posizione_composizione` (una riga per posizione+turno):
  *   min_capo         — minimo di Cr/Cs (capo partenza)
  *   min_autista34     — minimo di elementi con patente 3 o 4
- *   min_autista2      — minimo di elementi con patente 2
+ *   min_autista2      — minimo di elementi con patente 2, 3 o 4 (#257: "Autista
+ *                       2/3/4" — una patente più grande copre il ruolo più
+ *                       piccolo; la 1 no). I 3/4 vengono contati prima su
+ *                       min_autista34 e solo gli avanzi scendono qui: la stessa
+ *                       persona non copre i due ruoli autista insieme.
  *   min_altri         — minimo di elementi SENZA vincolo, in aggiunta ai precedenti
  *   abilitazione_id   — abilitazione richiesta (opzionale, FK verso `abilitazioni`)
  *   min_abilitazione  — minimo di elementi con quell'abilitazione

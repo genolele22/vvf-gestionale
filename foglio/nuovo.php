@@ -3289,7 +3289,7 @@ function avvisaSeDisponibiliResidui(messaggioAzione, onProcedi) {
 }
 
 // #172: squadre che non rispettano i minimi per ruolo configurati in
-// Amministrazione → Mezzi/Posizioni (capo partenza, autista 3/4, autista 2,
+// Amministrazione → Mezzi/Posizioni (capo partenza, autista 3/4, autista 2/3/4,
 // altri, abilitazione) — sostituisce il vecchio confronto "occupate vs
 // n_richiesti" (#149), che contava le teste senza guardare CHI le occupa.
 // Una stessa persona può soddisfare più requisiti insieme (es. un autista
@@ -3307,21 +3307,29 @@ function squadreIncomplete() {
         if (!totMin && !minAbil) return;   // nessun requisito configurato
 
         const cards = Array.from(body.querySelectorAll('.ass-card'));
-        let capo = 0, aut34 = 0, aut2 = 0, abil = 0;
+        let capo = 0, pat34 = 0, pat2 = 0, abil = 0;
         cards.forEach(c => {
             const qual  = c.dataset.qualifica || '';
-            const pat   = c.dataset.patente || c.dataset.pat || '';
+            const pat   = parseInt(c.dataset.patente || c.dataset.pat || '0');
             const abils = (c.dataset.abil || '').split(' ').filter(Boolean);
-            if (qual === 'Cr' || qual === 'Cs') capo++;
-            if (pat === '3' || pat === '4') aut34++;
-            if (pat === '2') aut2++;
+            if (qual === 'Cr' || qual === 'Cs') capo++;   // #257: entrambe valgono da capo partenza
+            if (pat >= 3) pat34++;
+            else if (pat === 2) pat2++;
             if (abilCod && abils.includes(abilCod)) abil++;
         });
+
+        // #257: una patente più grande copre il ruolo più piccolo — l'Autista
+        // 2/3/4 si valida con patente 2, 3 o 4 (mai con la 1), mentre l'Autista
+        // 3/4 resta riservato a chi ha la 3 o la 4. Prima i 3/4 sul loro posto,
+        // poi gli avanzi scendono a coprire l'Autista 2/3/4: la stessa persona
+        // non copre due ruoli autista insieme.
+        const aut34 = Math.min(pat34, minAut34);
+        const aut2  = pat2 + (pat34 - aut34);
 
         const mancanze = [];
         if (capo  < minCapo)  mancanze.push(`capo partenza ${capo}/${minCapo}`);
         if (aut34 < minAut34) mancanze.push(`autista 3/4 ${aut34}/${minAut34}`);
-        if (aut2  < minAut2)  mancanze.push(`autista 2 ${aut2}/${minAut2}`);
+        if (aut2  < minAut2)  mancanze.push(`autista 2/3/4 ${aut2}/${minAut2}`);
         if (minAbil && abil < minAbil) mancanze.push(`${abilCod || 'abilitazione'} ${abil}/${minAbil}`);
         if (cards.length < totMin) mancanze.push(`totale ${cards.length}/${totMin}`);
 
