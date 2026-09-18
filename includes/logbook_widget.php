@@ -9,6 +9,12 @@
  * Visibile solo a chi vede il Logbook (isLogbookUser(), vedi includes/auth.php)
  * — richiede che auth.php sia già stato incluso dalla pagina chiamante.
  */
+// #251 (logbook, Moli): tasto tolto da tutte le pagine — richiesto esplicitamente
+// ("eliminare il tasto giallo in basso a destra"). Lascio il resto del file
+// intatto (require_once invariati in tutte le pagine chiamanti) così basta
+// togliere questa riga per riattivarlo, se dovesse servire di nuovo.
+return;
+
 if (!function_exists('isLogbookUser') || !isLogbookUser()) return;
 
 $lbPagina = htmlspecialchars($_SERVER['REQUEST_URI'] ?? '', ENT_QUOTES);

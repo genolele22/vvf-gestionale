@@ -48,6 +48,16 @@ if ($azione === 'delete') {
     header('Location: index.php'); exit;
 }
 
+// #251 (logbook, Moli): modifica del testo di una nota già scritta.
+if ($azione === 'edit') {
+    $id    = (int)($_POST['id'] ?? 0);
+    $testo = trim($_POST['testo'] ?? '');
+    if ($id > 0 && $testo !== '') {
+        $pdo->prepare("UPDATE bot_logbook SET testo = ? WHERE id = ?")->execute([$testo, $id]);
+    }
+    header('Location: index.php'); exit;
+}
+
 // ── Lettura: da fare in cima, fatte in fondo ────────────────────────────────────
 $voci = $pdo->query(
     "SELECT * FROM bot_logbook ORDER BY fatto ASC, creato_il DESC"
@@ -63,6 +73,7 @@ foreach ($voci as $v) { $v['fatto'] ? $nFatte++ : $nDaFare++; }
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Logbook – Gestionale VVF</title>
 <link rel="stylesheet" href="../assets/css/stile.css">
+<script src="../assets/js/conferma.js"></script>
 <style>
   .lb-wrap   { max-width: 820px; margin: 0 auto; }
   .lb-banner { background:#fff8e1; border:1px solid #f0d27a; color:#7a5c00;
@@ -174,7 +185,16 @@ foreach ($voci as $v) { $v['fatto'] ? $nFatte++ : $nDaFare++; }
               </div>
             </div>
 
-            <form method="post" onsubmit="return confirm('Eliminare questa voce?')">
+            <form method="post" onsubmit="return lbPreparaModifica(this)"
+                  data-attuale="<?= htmlspecialchars($v['testo'], ENT_QUOTES) ?>">
+              <input type="hidden" name="azione" value="edit">
+              <input type="hidden" name="id" value="<?= (int)$v['id'] ?>">
+              <input type="hidden" name="testo" class="lb-edit-testo">
+              <button class="lb-btn ghost" type="submit" title="Modifica">✎</button>
+            </form>
+
+            <form method="post"
+                  onsubmit="return confermaSubmit(this, 'Vuoi eliminare questa nota?', {okLabel:'Sì', annullaLabel:'No', okStyle:'background:var(--rosso);color:#fff'})">
               <input type="hidden" name="azione" value="delete">
               <input type="hidden" name="id" value="<?= (int)$v['id'] ?>">
               <button class="lb-btn ghost" type="submit" title="Elimina">✕</button>
@@ -187,6 +207,19 @@ foreach ($voci as $v) { $v['fatto'] ? $nFatte++ : $nDaFare++; }
 
   </div>
 </main>
+<script>
+// #251 (logbook, Moli): modifica testo nota — prompt col testo attuale
+// precompilato, submit solo se non annullato e non vuoto.
+function lbPreparaModifica(form) {
+  const attuale = form.dataset.attuale || '';
+  const nuovo = prompt('Modifica nota:', attuale);
+  if (nuovo === null) return false;
+  const t = nuovo.trim();
+  if (!t) return false;
+  form.querySelector('.lb-edit-testo').value = t;
+  return true;
+}
+</script>
 <?php require __DIR__ . '/../includes/logbook_widget.php'; ?>
 </body>
 </html>

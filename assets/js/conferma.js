@@ -78,11 +78,13 @@
   window.confermaSubmit = function (form, testo, opts) {
     const o = opts || {};
     chiediConferma({
-      titolo:  o.titolo  || 'Conferma',
-      testo:   testo,
-      okLabel: o.okLabel || 'Conferma',
-      okStyle: o.okStyle,
-      onOk:    function () { form.submit(); }
+      titolo:       o.titolo       || 'Conferma',
+      testo:        testo,
+      okLabel:      o.okLabel      || 'Conferma',
+      okStyle:      o.okStyle,
+      annullaLabel: o.annullaLabel,
+      annullaStyle: o.annullaStyle,
+      onOk:         function () { form.submit(); }
     });
     return false;
   };
