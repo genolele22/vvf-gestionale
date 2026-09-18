@@ -300,6 +300,144 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
+    // #239 (logbook, Moli): modifica del periodo DICHIARATO di un blocco malattia/
+    // infortunio dall'Agenda — oggi si può solo allungare (telegram/Amministrazione)
+    // o cancellare turni già presenti col cestino; qui si può anche restringere,
+    // cancellando i turni che escono dal nuovo range e creando quelli che vi
+    // entrano, con la stessa identica logica di admin/assenze_simulate.php
+    // (slot del turno per giorno, salta i giorni fuori servizio). range_da/range_a
+    // vengono riallineati su tutte le righe superstiti + nuove, così l'etichetta
+    // del blocco (rangeComunicatoBlocco = min/max delle righe) mostra esattamente
+    // il nuovo periodo dichiarato.
+    if ($azione === 'modifica_periodo_malinf') {
+        $ids = json_decode($_POST['ids'] ?? '[]', true);
+        $ids = is_array($ids) ? array_values(array_filter(array_map('intval', $ids), fn($i) => $i > 0)) : [];
+        $nuovaDa = (string)($_POST['rangeDa'] ?? '');
+        $nuovaA  = (string)($_POST['rangeA']  ?? '');
+
+        $dataValida = function (string $s) {
+            return (bool)preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $s, $m)
+                && checkdate((int)$m[2], (int)$m[3], (int)$m[1]);
+        };
+        if (!$ids) { echo json_encode(['ok' => false, 'errore' => 'Nessun turno selezionato.']); exit; }
+        if (!$dataValida($nuovaDa) || !$dataValida($nuovaA)) {
+            echo json_encode(['ok' => false, 'errore' => 'Date non valide.']); exit;
+        }
+        if ($nuovaDa > $nuovaA) {
+            echo json_encode(['ok' => false, 'errore' => 'La data di fine deve essere successiva (o uguale) a quella di inizio.']); exit;
+        }
+        $nGiorni = (int)(new DateTime($nuovaDa))->diff(new DateTime($nuovaA))->days + 1;
+        if ($nGiorni > 180) {
+            echo json_encode(['ok' => false, 'errore' => 'Intervallo troppo lungo (max 180 giorni): controlla le date.']); exit;
+        }
+
+        $ph = implode(',', array_fill(0, count($ids), '?'));
+        $st = $pdo->prepare(
+            "SELECT r.id, r.vigile_id, r.data_richiesta, r.tipo_turno, r.tipo_assenza_id, v.turno
+             FROM bot_requests r JOIN vigili v ON v.id = r.vigile_id WHERE r.id IN ($ph)"
+        );
+        $st->execute($ids);
+        $rows = $st->fetchAll();
+        if (count($rows) !== count($ids)) { echo json_encode(['ok' => false, 'errore' => 'Richiesta non trovata.']); exit; }
+
+        $vigileId      = (int)$rows[0]['vigile_id'];
+        $turno         = $rows[0]['turno'];
+        $tipoAssenzaId = (int)$rows[0]['tipo_assenza_id'];
+        if (!in_array($tipoAssenzaId, [5, 6], true)) {
+            echo json_encode(['ok' => false, 'errore' => 'Solo malattia/infortunio.']); exit;
+        }
+        foreach ($rows as $r) {
+            if ((int)$r['vigile_id'] !== $vigileId || (int)$r['tipo_assenza_id'] !== $tipoAssenzaId) {
+                echo json_encode(['ok' => false, 'errore' => 'Il periodo non è omogeneo.']); exit;
+            }
+        }
+        if (!puoModificareTurno($turno)) {
+            echo json_encode(['ok' => false, 'errore' => 'Turno in sola lettura per il tuo profilo.']); exit;
+        }
+
+        // Slot reale del turno per una data: 'D', 'N' o null (non in servizio) —
+        // stessa funzione di admin/assenze_simulate.php.
+        $slotTurno = function (string $data) use ($turno): ?string {
+            $tg = getTurnoGiorno($data);
+            if (($tg['diurno']['turno'] ?? '') === $turno) return 'D';
+            if (($tg['notte']['turno']  ?? '') === $turno) return 'N';
+            return null;
+        };
+
+        $chiaveAttuale = fn($r) => $r['data_richiesta'] . '|' . $r['tipo_turno'];
+        $attualiPerChiave = [];
+        foreach ($rows as $r) $attualiPerChiave[$chiaveAttuale($r)] = $r;
+
+        $target = [];   // 'data|tipoTurno' => ['data'=>..,'tipoTurno'=>..]
+        $cur  = new DateTime($nuovaDa);
+        $fine = new DateTime($nuovaA);
+        while ($cur <= $fine) {
+            $data = $cur->format('Y-m-d');
+            $tt   = $slotTurno($data);
+            if ($tt !== null) $target[$data . '|' . $tt] = ['data' => $data, 'tipoTurno' => $tt];
+            $cur->modify('+1 day');
+        }
+
+        $daRimuovere = array_filter($rows, fn($r) => !isset($target[$chiaveAttuale($r)]));
+        $daCreare    = array_diff_key($target, $attualiPerChiave);
+        $daTenereIds = array_values(array_diff($ids, array_column($daRimuovere, 'id')));
+
+        $insReq = $pdo->prepare(
+            "INSERT IGNORE INTO bot_requests
+                (vigile_id, data_richiesta, tipo_turno, tipo_assenza_id, stato, processed_at, range_da, range_a)
+             VALUES (?, ?, ?, ?, 'approved', NOW(), ?, ?)"
+        );
+        $chkTipo = $pdo->prepare(
+            "SELECT tipo_assenza_id FROM bot_requests WHERE vigile_id=? AND data_richiesta=? AND tipo_turno=?"
+        );
+
+        $rimossi = 0; $creati = 0; $occupati = 0;
+        $righeSincronizzate = [];   // [vigile_id, data, tipo] — per l'avviso scambio salto
+        $pdo->beginTransaction();
+        try {
+            foreach ($daRimuovere as $r) {
+                feriaSyncAssenza($pdo, $vigileId, $r['data_richiesta'], $r['tipo_turno'], 'rejected', $tipoAssenzaId);
+                $pdo->prepare("DELETE FROM bot_requests WHERE id=?")->execute([(int)$r['id']]);
+                $rimossi++;
+            }
+            foreach ($daCreare as $t) {
+                $insReq->execute([$vigileId, $t['data'], $t['tipoTurno'], $tipoAssenzaId, $nuovaDa, $nuovaA]);
+                if ($insReq->rowCount() > 0) {
+                    $creati++;
+                    feriaSyncAssenza($pdo, $vigileId, $t['data'], $t['tipoTurno'], 'approved', $tipoAssenzaId);
+                    $righeSincronizzate[] = [$vigileId, $t['data'], $t['tipoTurno']];
+                } else {
+                    $chkTipo->execute([$vigileId, $t['data'], $t['tipoTurno']]);
+                    if ((int)$chkTipo->fetchColumn() === $tipoAssenzaId) {
+                        // già presente (creata da un'altra chiamata concorrente): riallinea comunque.
+                        feriaSyncAssenza($pdo, $vigileId, $t['data'], $t['tipoTurno'], 'approved', $tipoAssenzaId);
+                        $righeSincronizzate[] = [$vigileId, $t['data'], $t['tipoTurno']];
+                    } else {
+                        $occupati++;   // quel turno è già di un altro tipo (es. ferie): non si tocca
+                    }
+                }
+            }
+            if ($daTenereIds) {
+                $phT = implode(',', array_fill(0, count($daTenereIds), '?'));
+                $pdo->prepare("UPDATE bot_requests SET range_da=?, range_a=? WHERE id IN ($phT)")
+                    ->execute(array_merge([$nuovaDa, $nuovaA], $daTenereIds));
+            }
+            $pdo->commit();
+        } catch (Throwable $e) {
+            $pdo->rollBack();
+            echo json_encode(['ok' => false, 'errore' => 'Errore DB: ' . $e->getMessage()]); exit;
+        }
+
+        $labelTipo = $tipoAssenzaId === 5 ? 'malattia' : 'infortunio';
+        $avvisi = $righeSincronizzate ? scambioConflittiRighe($pdo, $righeSincronizzate, $labelTipo) : [];
+
+        echo json_encode([
+            'ok' => true, 'rimossi' => $rimossi, 'creati' => $creati, 'occupati' => $occupati,
+            'avvisi' => $avvisi,
+        ]);
+        exit;
+    }
+
     // ── Scambi salto nati dal bot: approva / rifiuta dall'Agenda ──
     // Molte approvazioni avvengono al computer invece che dal bot. Replica la
     // stessa logica del bot (override + patch fogli) e avvisa i due vigili via
@@ -691,15 +829,27 @@ function renderRigheTurno(
         // Nota mostrata = quella di QUESTA riga: è esattamente il testo che
         // l'ODT stampa per questo turno (FoglioRenderer::arricchisciAssentiVarie).
         $nota       = (string)($r['note'] ?? '');
+        $labelVigile = etichettaVigile($r);
+        // #239 (logbook, Moli): periodo cliccabile per malattia/infortunio, apre
+        // il popup di modifica date. Non missione (3): non richiesto, e lì il
+        // periodo non è mai stato ridimensionabile.
+        $modPeriodo = ($editabile && in_array($tipoId, [5, 6], true));
+        $rangeDaBlk = $info['range_da'] ?? $r['data_richiesta'];
+        $rangeABlk  = $info['range_a']  ?? $r['data_richiesta'];
     ?>
       <div class="blocco-row riga-turno-flat" style="cursor:default;">
         <?php if ($turniExtra): ?><span class="turno-tag">Turno <?= htmlspecialchars($r['turno']) ?></span><?php endif; ?>
-        <span class="blocco-nome"><?= htmlspecialchars(etichettaVigile($r)) ?></span>
+        <span class="blocco-nome"><?= htmlspecialchars($labelVigile) ?></span>
         <span class="turno-tag"><?= htmlspecialchars($tipoLabel) ?></span>
         <?php if (!$isCentrale): ?>
           <span class="blocco-sede"><?= htmlspecialchars($r['sede_codice']) ?></span>
         <?php endif; ?>
+        <?php if ($modPeriodo): ?>
+        <span class="blocco-periodo blocco-periodo-mod" title="Modifica periodo"
+              onclick="apriModificaPeriodoMalInf(<?= htmlspecialchars(json_encode($ids)) ?>, <?= htmlspecialchars(json_encode($labelVigile)) ?>, <?= $tipoId ?>, <?= htmlspecialchars(json_encode($rangeDaBlk)) ?>, <?= htmlspecialchars(json_encode($rangeABlk)) ?>)"><?= $periodo ?></span>
+        <?php else: ?>
         <span class="blocco-periodo"><?= $periodo ?></span>
+        <?php endif; ?>
         <span class="blocco-turni"><?= $turni ?> turn<?= $turni === 1 ? 'o' : 'i' ?></span>
         <?php if ($tipoId === 3): ?>
         <span class="blocco-nota">
@@ -890,9 +1040,15 @@ if ($missPerData || $malinfPerData) {
                 : $da->format('d/m') . '–' . $a->format('d/m');
             $turni = turniLabel($block);
             $ids   = array_map('intval', array_column($block, 'id'));
+            // range_da/range_a del blocco (per #239: popup di modifica periodo
+            // malattia/infortunio) — stesse date usate per $periodo sopra.
+            $rangeDaBlk = $da->format('Y-m-d');
+            $rangeABlk  = $a->format('Y-m-d');
             foreach ($block as $r) {
-                $blocchiRigaTurno[(int)$r['id']] =
-                    ['periodo' => $periodo, 'turni' => $turni, 'ids' => $ids];
+                $blocchiRigaTurno[(int)$r['id']] = [
+                    'periodo' => $periodo, 'turni' => $turni, 'ids' => $ids,
+                    'range_da' => $rangeDaBlk, 'range_a' => $rangeABlk,
+                ];
             }
         }
     }
@@ -1097,6 +1253,9 @@ $totVigili   = count(array_unique(array_column($richiestePrimarie, 'vigile_id'))
                color: #fff; border-radius: 3px; padding: 1px 6px; flex-shrink: 0; }
 .blocco-periodo { font-size: .85rem; font-weight: 600; color: var(--grigio-sc);
                   min-width: 80px; }
+/* #239: periodo malattia/infortunio cliccabile per modificarne le date —
+   niente sottolineato, resta identico a quello non modificabile a vista. */
+.blocco-periodo-mod { cursor: pointer; }
 .blocco-turni { font-size: .75rem; color: var(--grigio-md); min-width: 55px; }
 .blocco-nota { font-size: .78rem; color: var(--grigio-md); font-style: italic;
                flex: 1 1 160px; min-width: 0; }
@@ -1791,6 +1950,64 @@ async function modificaNotaMissione(ids, notaAttuale) {
         if (!res.ok) { showMsg('⚠️ ' + (res.errore || 'Errore'), 'err'); return; }
     } catch (e) {
         showMsg('⚠️ Errore di rete', 'err');
+        return;
+    }
+    sessionStorage.setItem('agendaScrollY', window.scrollY);
+    location.reload();
+}
+
+// #239 (logbook, Moli): modifica del periodo dichiarato di malattia/infortunio.
+// Caselle di testo libero GG/MM/AAAA (niente datepicker: si usa raramente),
+// Annulla verde a sinistra, Modifica rossa a destra — richiesta esplicita,
+// colori invertiti rispetto agli altri popup del gestionale.
+function apriModificaPeriodoMalInf(ids, nomeVigile, tipoAssenzaId, rangeDa, rangeA) {
+    const titolo = tipoAssenzaId === 6 ? 'INFORTUNIO' : 'MALATTIA';
+    const fmt = (ymd) => { const [y, m, d] = ymd.split('-'); return `${d}/${m}/${y}`; };
+    const testo =
+        `<div style="font-weight:700;margin-bottom:14px;">${nomeVigile}</div>` +
+        `<div style="display:flex;gap:10px;justify-content:center;align-items:center;">` +
+          `<input type="text" id="modPeriodoDa" value="${fmt(rangeDa)}" placeholder="GG/MM/AAAA" ` +
+                 `style="width:110px;padding:6px 8px;border:1px solid #ccc;border-radius:6px;text-align:center;font-size:.9rem;">` +
+          `<span>–</span>` +
+          `<input type="text" id="modPeriodoA" value="${fmt(rangeA)}" placeholder="GG/MM/AAAA" ` +
+                 `style="width:110px;padding:6px 8px;border:1px solid #ccc;border-radius:6px;text-align:center;font-size:.9rem;">` +
+        `</div>`;
+
+    chiediConferma({
+        titolo, testo,
+        okLabel: 'Modifica', okStyle: 'background:var(--rosso);color:#fff',
+        annullaLabel: 'Annulla', annullaStyle: 'background:var(--verde);color:#fff',
+        onOk: () => eseguiModificaPeriodoMalInf(ids)
+    });
+}
+
+async function eseguiModificaPeriodoMalInf(ids) {
+    const parseIt = (s) => {
+        const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec((s || '').trim());
+        if (!m) return null;
+        const [, d, mese, y] = m;
+        const dt = new Date(`${y}-${mese}-${d}T00:00:00`);
+        if (dt.getFullYear() != y || dt.getMonth() + 1 != mese || dt.getDate() != d) return null;
+        return `${y}-${mese}-${d}`;
+    };
+    const da = parseIt(document.getElementById('modPeriodoDa').value);
+    const a  = parseIt(document.getElementById('modPeriodoA').value);
+    if (!da || !a) { showMsg('⚠️ Data non valida (usa GG/MM/AAAA).', 'err'); return; }
+
+    const fd = new FormData();
+    fd.append('azione', 'modifica_periodo_malinf');
+    fd.append('ids', JSON.stringify(ids));
+    fd.append('rangeDa', da);
+    fd.append('rangeA', a);
+    let res;
+    try {
+        res = await fetch('', { method: 'POST', body: fd }).then(r => r.json());
+    } catch (e) {
+        showMsg('⚠️ Errore di rete', 'err');
+        return;
+    }
+    if (!res.ok) {
+        showMsg('⚠️ ' + (res.errore || 'Errore'), 'err');
         return;
     }
     sessionStorage.setItem('agendaScrollY', window.scrollY);

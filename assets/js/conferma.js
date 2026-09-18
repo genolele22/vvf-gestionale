@@ -57,7 +57,13 @@
     const ok = document.getElementById('confermaOk');
     ok.textContent = o.okLabel || 'Conferma';
     ok.style.cssText = o.okStyle || 'background:var(--rosso);color:#fff';
-    document.getElementById('confermaAnnulla').style.display = o.soloOk ? 'none' : '';
+    const annulla = document.getElementById('confermaAnnulla');
+    annulla.textContent = o.annullaLabel || 'Annulla';
+    // #239: alcuni popup (es. modifica periodo malattia/infortunio) vogliono
+    // l'Annulla colorato invece del grigio di default — stringa vuota
+    // (default) lascia fare alla classe .btn-grigio del CSS.
+    annulla.style.cssText = o.annullaStyle || '';
+    annulla.style.display = o.soloOk ? 'none' : '';
     _cb = o.onOk || null;
     document.getElementById('confermaModal').style.display = 'flex';
   };
