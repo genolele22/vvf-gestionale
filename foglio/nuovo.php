@@ -1376,31 +1376,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             echo json_encode(['ok' => false, 'errore' => 'Selezione non valida.']); exit;
         }
 
-        // Slot (1..8) dei due vigili
-        $stV = $pdo->prepare(
-            "SELECT v.id, v.attivo, CAST(SUBSTRING(st.codice,2) AS UNSIGNED) AS slot
-             FROM vigili v JOIN salti_turno st ON st.id = v.salto_id
-             WHERE v.id IN (?,?)"
-        );
-        $stV->execute([$aId, $bId]);
-        $info = [];
-        foreach ($stV->fetchAll() as $r) $info[(int)$r['id']] = $r;
-        if (!isset($info[$aId], $info[$bId]) || !$info[$aId]['attivo'] || !$info[$bId]['attivo']) {
+        // #260 (logbook, Moli): lo slot dei due vigili va letto da chi è DAVVERO
+        // a riposo quel turno (anagrafica ± scambi precedenti già attivi,
+        // resterEffettivi), non dalla sola anagrafica — altrimenti un vigile
+        // che ha già preso un salto con uno scambio precedente (cambio a 3)
+        // risulterebbe ancora nel suo salto originale e la validazione fallirebbe.
+        $stAtt = $pdo->prepare("SELECT id FROM vigili WHERE id IN (?,?) AND attivo=1");
+        $stAtt->execute([$aId, $bId]);
+        $attivi = array_map('intval', $stAtt->fetchAll(PDO::FETCH_COLUMN));
+        if (!in_array($aId, $attivi, true) || !in_array($bId, $attivi, true)) {
             echo json_encode(['ok' => false, 'errore' => 'Vigile inesistente o non attivo.']); exit;
         }
-        $slotA = (int)$info[$aId]['slot'];
-        $slotB = (int)$info[$bId]['slot'];
 
-        if ($slotA !== saltoRiposoNum($dataStr, $tipoParam)) {
+        $slotA = saltoRiposoNum($dataStr, $tipoParam);
+        if (!isset(resterEffettivi($pdo, $dataStr, $tipoParam, $saltoRiposoId)[$aId])) {
             echo json_encode(['ok' => false, 'errore' => 'Il primo vigile non è a riposo su questo foglio.']); exit;
         }
-        if ($slotA === $slotB) {
-            echo json_encode(['ok' => false, 'errore' => 'I due vigili sono dello stesso salto.']); exit;
-        }
-
         $aOcc = slotDatesInBlocco($slotA, $dataStr, $TURNO);
-        $bOcc = slotDatesInBlocco($slotB, $dataStr, $TURNO);
-        if (!$aOcc || !$bOcc) {
+
+        // Slot EFFETTIVO di B: cerca in quale degli altri 7 slot del blocco B
+        // risulta davvero a riposo (dopo eventuali scambi precedenti).
+        $slotB = 0; $bOcc = null;
+        $stIdSaltoK = $pdo->prepare("SELECT id FROM salti_turno WHERE codice=?");
+        for ($k = 1; $k <= 8; $k++) {
+            if ($k === $slotA) continue;
+            $occK = slotDatesInBlocco($k, $dataStr, $TURNO);
+            if (!$occK) continue;
+            $stIdSaltoK->execute([$TURNO . $k]);
+            $saltoIdK = (int)($stIdSaltoK->fetchColumn() ?: 0);
+            if (!$saltoIdK) continue;
+            if (isset(resterEffettivi($pdo, $occK[0][0], $occK[0][1], $saltoIdK)[$bId])) {
+                $slotB = $k; $bOcc = $occK; break;
+            }
+        }
+        if (!$aOcc || !$slotB || !$bOcc) {
             echo json_encode(['ok' => false, 'errore' => 'Controparte fuori dal blocco.']); exit;
         }
         // Scambio a ritroso (riposo controparte già passato): solo admin.
@@ -2036,19 +2045,37 @@ for ($k = 1; $k <= 8; $k++) {
     if ($passato && !$scambioRitroso) continue;
     $contropartiSlot[$k] = ['occ' => $sd, 'passato' => $passato];
 }
-// Vigili attivi raggruppati per slot (per i due menu del form)
-$vigiliPerSlot = [];
-$stVPS = $pdo->query(
-    "SELECT v.id, v.cognome, v.nome, v.disambiguatore, q.codice AS qcodice,
-            CAST(SUBSTRING(st.codice,2) AS UNSIGNED) AS slot
-     FROM vigili v
-     JOIN salti_turno st ON st.id = v.salto_id
-     JOIN qualifiche  q  ON q.id  = v.qualifica_id
-     WHERE v.attivo=1 AND v.turno = '" . $TURNO . "'
-     ORDER BY v.cognome, v.nome"
+// #260 (logbook, Moli): chi può cedere/prendere il salto K nel form di scambio
+// deve essere chi ci si trova DAVVERO quel turno — non l'anagrafica statica
+// (v.salto_id), che ignora scambi precedenti già attivi su quello slot.
+// Altrimenti un cambio a 3 è impossibile: aprendo il menu del secondo scambio
+// comparirebbe sempre il vigile "originale" del salto, mai chi lo ha già preso
+// con lo scambio precedente. resterEffettivi() (già usata per il foglio vero
+// e proprio) risolve esattamente questo: anagrafica ± salto_override attivi.
+$anagVigiliTurno = [];
+$stAnag = $pdo->query(
+    "SELECT v.id, v.cognome, v.nome, v.disambiguatore, q.codice AS qcodice
+     FROM vigili v JOIN qualifiche q ON q.id = v.qualifica_id
+     WHERE v.attivo=1 AND v.turno = '" . $TURNO . "'"
 );
-foreach ($stVPS as $r) {
-    $vigiliPerSlot[(int)$r['slot']][] = $r;
+foreach ($stAnag as $r) $anagVigiliTurno[(int)$r['id']] = $r;
+
+$vigiliPerSlot = [];
+$stIdSalto = $pdo->prepare("SELECT id FROM salti_turno WHERE codice=?");
+$riempiSlotEffettivo = function (int $slot, string $data, string $tipo) use (
+    $pdo, $stIdSalto, &$vigiliPerSlot, $anagVigiliTurno, $TURNO
+): void {
+    $stIdSalto->execute([$TURNO . $slot]);
+    $saltoId = (int)($stIdSalto->fetchColumn() ?: 0);
+    if (!$saltoId) return;
+    foreach (array_keys(resterEffettivi($pdo, $data, $tipo, $saltoId)) as $vid) {
+        if (isset($anagVigiliTurno[(int)$vid])) $vigiliPerSlot[$slot][] = $anagVigiliTurno[(int)$vid];
+    }
+};
+$riempiSlotEffettivo($slotRiposoOggi, $dataStr, $tipoParam);
+foreach ($contropartiSlot as $k => $info) {
+    [$dataK, $tipoK] = $info['occ'][0];   // prima occorrenza (D) del blocco per lo slot k
+    $riempiSlotEffettivo($k, $dataK, $tipoK);
 }
 $cambioSaltoOk = !empty($contropartiSlot) && !empty($vigiliPerSlot[$slotRiposoOggi] ?? []);
 
